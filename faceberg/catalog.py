@@ -104,9 +104,15 @@ class JsonCatalog(Catalog):
             Path to table metadata directory
         """
         table_id = self._identifier_to_str(identifier)
-        # Replace dots with underscores for filesystem safety
-        safe_id = table_id.replace(".", "_")
-        return self.warehouse / "metadata" / safe_id
+        # Split into namespace and table name
+        parts = table_id.split(".")
+        if len(parts) < 2:
+            raise ValueError(f"Invalid table identifier: {table_id}. Expected format: namespace.table_name")
+
+        # Construct path as namespace/table_name
+        namespace = parts[0]
+        table_name = ".".join(parts[1:])  # Handle multi-part table names
+        return self.warehouse / namespace / table_name
 
     # -------------------------------------------------------------------------
     # Namespace operations
@@ -132,8 +138,8 @@ class JsonCatalog(Catalog):
                 raise NamespaceAlreadyExistsError(f"Namespace {ns_str} already exists")
 
         # For JSON catalog, namespaces are implicit from table names
-        # Just create the directory
-        ns_dir = self.warehouse / "metadata" / ns_str
+        # Just create the directory at the warehouse root
+        ns_dir = self.warehouse / ns_str
         ns_dir.mkdir(parents=True, exist_ok=True)
 
     def drop_namespace(self, namespace: Union[str, Identifier]) -> None:
@@ -155,7 +161,7 @@ class JsonCatalog(Catalog):
 
         # For JSON catalog, if no tables, namespace doesn't really exist
         # But we can try to remove the directory
-        ns_dir = self.warehouse / "metadata" / ns_str
+        ns_dir = self.warehouse / ns_str
         if ns_dir.exists():
             ns_dir.rmdir()
 
@@ -657,9 +663,8 @@ class FacebergCatalog(JsonCatalog):
         if self.table_exists(table_info.identifier):
             raise TableAlreadyExistsError(f"Table {table_info.identifier} already exists")
 
-        # Determine table location (metadata directory)
-        table_id_safe = table_info.identifier.replace(".", "_")
-        table_path = self.warehouse / "metadata" / table_id_safe
+        # Determine table location using the same logic as _get_metadata_location
+        table_path = self._get_metadata_location(table_info.identifier)
         table_path.mkdir(parents=True, exist_ok=True)
 
         # Create metadata writer

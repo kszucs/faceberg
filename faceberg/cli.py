@@ -51,9 +51,9 @@ def init(ctx):
     """
     config_path = ctx.obj["config_path"]
     config = CatalogConfig.from_yaml(config_path)
-    catalog_location = Path(config.catalog.location)
+    catalog_location = Path(config.location)
 
-    console.print(f"[bold blue]Initializing catalog:[/bold blue] {config.catalog.name}")
+    console.print(f"[bold blue]Initializing catalog:[/bold blue] {config.name}")
     console.print(f"[bold blue]Location:[/bold blue] {catalog_location}")
 
     # Create catalog
