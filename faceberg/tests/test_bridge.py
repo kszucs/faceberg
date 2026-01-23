@@ -17,7 +17,6 @@ from pyiceberg.types import (
 from faceberg.bridge import (
     DatasetInfo,
     build_iceberg_schema_from_features,
-    infer_schema_from_dataset,
 )
 
 
@@ -288,34 +287,6 @@ def test_unique_field_ids():
 
     # Check all IDs are unique
     assert len(all_ids) == len(set(all_ids)), f"Duplicate field IDs found: {all_ids}"
-
-
-def test_infer_schema_from_dataset():
-    """Test inferring schema from actual HuggingFace dataset."""
-    # Skip if no HF_TOKEN
-    if not os.getenv("HF_TOKEN"):
-        pytest.skip("HF_TOKEN not set")
-
-    # Test with a known dataset
-    schema = infer_schema_from_dataset(
-        repo_id="stanfordnlp/imdb",
-        config_name="plain_text",
-        token=os.getenv("HF_TOKEN"),
-        include_split_column=True,
-    )
-
-    # Verify schema structure
-    assert isinstance(schema, Schema)
-    assert len(schema.fields) > 0
-
-    # Check split column is first
-    assert schema.fields[0].name == "split"
-    assert schema.fields[0].field_id == 1
-
-    # Should have text and label fields from IMDB
-    field_names = [f.name for f in schema.fields]
-    assert "text" in field_names
-    assert "label" in field_names
 
 
 def test_features_dict_to_features_object():

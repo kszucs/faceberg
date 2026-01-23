@@ -2,12 +2,14 @@
 
 from faceberg.bridge import (
     DatasetInfo,
+    FileInfo,
+    TableInfo,
     build_iceberg_schema_from_features,
-    infer_schema_from_dataset,
+    build_split_partition_spec,
 )
 from faceberg.catalog import FacebergCatalog, JsonCatalog
 from faceberg.config import CatalogConfig, DatasetConfig, FacebergConfig
-from faceberg.convert import FileInfo, IcebergMetadataWriter, TableInfo, build_split_partition_spec
+from faceberg.convert import IcebergMetadataWriter
 
 __all__ = [
     # Catalog
@@ -17,13 +19,12 @@ __all__ = [
     "CatalogConfig",
     "DatasetConfig",
     "FacebergConfig",
-    # Bridge (discovery + schema conversion)
+    # Bridge (discovery + schema conversion + TableInfo output)
     "DatasetInfo",
-    "build_iceberg_schema_from_features",
-    "infer_schema_from_dataset",
-    # Convert (TableInfo to Iceberg metadata)
     "FileInfo",
     "TableInfo",
-    "IcebergMetadataWriter",
+    "build_iceberg_schema_from_features",
     "build_split_partition_spec",
+    # Convert (Iceberg metadata writer)
+    "IcebergMetadataWriter",
 ]

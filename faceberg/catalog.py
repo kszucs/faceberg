@@ -20,7 +20,7 @@ from pyiceberg.table import CommitTableRequest, CommitTableResponse, Table
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.typedef import EMPTY_DICT, Identifier, Properties
 
-from faceberg.convert import TableInfo
+from faceberg.bridge import TableInfo
 
 
 class JsonCatalog(Catalog):

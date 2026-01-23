@@ -7,7 +7,6 @@ HuggingFace dataset files.
 
 import logging
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -30,100 +29,10 @@ from pyiceberg.table.snapshots import Operation, Snapshot, Summary
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
 from pyiceberg.transforms import IdentityTransform
 
+# Import FileInfo (created by bridge layer)
+from faceberg.bridge import FileInfo
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class FileInfo:
-    """Information about a data file in Iceberg table."""
-
-    path: str  # Full hf:// URI to the file
-    size_bytes: int  # File size in bytes
-    row_count: int  # Number of rows in the file
-    split: Optional[str] = None  # Split name (train, test, validation, etc.)
-
-
-@dataclass
-class TableInfo:
-    """Complete information needed to create an Iceberg table.
-
-    This class serves as a bridge between HuggingFace dataset discovery
-    and Iceberg table creation, containing all the metadata needed to
-    manifest a dataset as an Iceberg table.
-    """
-
-    # Table identity
-    namespace: str  # Iceberg namespace (e.g., "default")
-    table_name: str  # Table name (e.g., "squad_plain_text")
-
-    # Iceberg schema and partitioning
-    schema: Schema  # Iceberg schema with field IDs
-    partition_spec: PartitionSpec  # Partition specification
-
-    # Data files
-    files: List[FileInfo]  # List of data files with metadata
-
-    # Source metadata (for traceability)
-    source_repo: str  # HuggingFace repo ID
-    source_config: str  # Dataset configuration name
-
-    @property
-    def identifier(self) -> str:
-        """Get table identifier in 'namespace.table_name' format."""
-        return f"{self.namespace}.{self.table_name}"
-
-    @property
-    def total_rows(self) -> int:
-        """Get total row count across all files."""
-        return sum(f.row_count for f in self.files)
-
-    @property
-    def total_size(self) -> int:
-        """Get total size in bytes across all files."""
-        return sum(f.size_bytes for f in self.files)
-
-    def get_table_properties(self) -> Dict[str, str]:
-        """Get table properties for Iceberg metadata.
-
-        Returns:
-            Dictionary of table properties including source metadata
-        """
-        return {
-            "format-version": "2",
-            "write.parquet.compression-codec": "snappy",
-            "faceberg.source.repo": self.source_repo,
-            "faceberg.source.config": self.source_config,
-        }
-
-
-def build_split_partition_spec(schema: Schema) -> PartitionSpec:
-    """Build a partition spec that uses 'split' as a partition key.
-
-    This creates an identity partition on the split column, which means the split
-    value will be stored in metadata and used for partition pruning.
-
-    Args:
-        schema: Iceberg schema containing a 'split' field
-
-    Returns:
-        PartitionSpec with split as partition key
-
-    Raises:
-        ValueError: If schema doesn't contain a 'split' field
-    """
-    split_field = schema.find_field("split")
-    if split_field is None:
-        raise ValueError("Schema must contain a 'split' field to create split partition spec")
-
-    return PartitionSpec(
-        PartitionField(
-            source_id=split_field.field_id,
-            field_id=1000,  # Partition field IDs start at 1000
-            transform=IdentityTransform(),
-            name="split",
-        ),
-        spec_id=0,
-    )
 
 
 class IcebergMetadataWriter:

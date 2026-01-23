@@ -9,15 +9,107 @@ from typing import Dict, List, Optional
 
 from datasets import Features, get_dataset_config_names, get_dataset_split_names, load_dataset_builder
 from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
+from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema, assign_fresh_schema_ids
+from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import NestedField, StringType
 
-from faceberg.convert import FileInfo, TableInfo, build_split_partition_spec
-
 
 # =============================================================================
-# Schema Conversion Functions
+# Bridge Output Classes
 # =============================================================================
+
+
+@dataclass
+class FileInfo:
+    """Information about a data file in Iceberg table."""
+
+    path: str  # Full hf:// URI to the file
+    size_bytes: int  # File size in bytes
+    row_count: int  # Number of rows in the file
+    split: Optional[str] = None  # Split name (train, test, validation, etc.)
+
+
+@dataclass
+class TableInfo:
+    """Complete information needed to create an Iceberg table.
+
+    This class serves as the output of the bridge layer, containing all the
+    metadata needed to convert a HuggingFace dataset into an Iceberg table.
+    """
+
+    # Table identity
+    namespace: str  # Iceberg namespace (e.g., "default")
+    table_name: str  # Table name (e.g., "squad_plain_text")
+
+    # Iceberg schema and partitioning
+    schema: Schema  # Iceberg schema with field IDs
+    partition_spec: PartitionSpec  # Partition specification
+
+    # Data files
+    files: List[FileInfo]  # List of data files with metadata
+
+    # Source metadata (for traceability)
+    source_repo: str  # HuggingFace repo ID
+    source_config: str  # Dataset configuration name
+
+    @property
+    def identifier(self) -> str:
+        """Get table identifier in 'namespace.table_name' format."""
+        return f"{self.namespace}.{self.table_name}"
+
+    @property
+    def total_rows(self) -> int:
+        """Get total row count across all files."""
+        return sum(f.row_count for f in self.files)
+
+    @property
+    def total_size(self) -> int:
+        """Get total size in bytes across all files."""
+        return sum(f.size_bytes for f in self.files)
+
+    def get_table_properties(self) -> Dict[str, str]:
+        """Get table properties for Iceberg metadata.
+
+        Returns:
+            Dictionary of table properties including source metadata
+        """
+        return {
+            "format-version": "2",
+            "write.parquet.compression-codec": "snappy",
+            "faceberg.source.repo": self.source_repo,
+            "faceberg.source.config": self.source_config,
+        }
+
+
+def build_split_partition_spec(schema: Schema) -> PartitionSpec:
+    """Build a partition spec that uses 'split' as a partition key.
+
+    This creates an identity partition on the split column, which means the split
+    value will be stored in metadata and used for partition pruning.
+
+    Args:
+        schema: Iceberg schema containing a 'split' field
+
+    Returns:
+        PartitionSpec with split as partition key
+
+    Raises:
+        ValueError: If schema doesn't contain a 'split' field
+    """
+    split_field = schema.find_field("split")
+    if split_field is None:
+        raise ValueError("Schema must contain a 'split' field to create split partition spec")
+
+    return PartitionSpec(
+        PartitionField(
+            source_id=split_field.field_id,
+            field_id=1000,  # Partition field IDs start at 1000
+            transform=IdentityTransform(),
+            name="split",
+        ),
+        spec_id=0,
+    )
 
 
 def build_iceberg_schema_from_features(
@@ -66,33 +158,6 @@ def build_iceberg_schema_from_features(
         schema = assign_fresh_schema_ids(schema_with_split)
 
     return schema
-
-
-def infer_schema_from_dataset(
-    repo_id: str,
-    config_name: Optional[str] = None,
-    token: Optional[str] = None,
-    include_split_column: bool = True,
-) -> Schema:
-    """Infer Iceberg schema from a HuggingFace dataset.
-
-    Args:
-        repo_id: HuggingFace dataset repository ID
-        config_name: Dataset configuration name (optional)
-        token: HuggingFace API token (optional)
-        include_split_column: If True, adds a 'split' column to the schema
-
-    Returns:
-        Iceberg Schema with globally unique field IDs
-    """
-    # Load dataset builder to access features
-    builder = load_dataset_builder(repo_id, name=config_name, token=token)
-
-    # Get features from builder info
-    features = builder.info.features
-
-    # Convert to Iceberg schema
-    return build_iceberg_schema_from_features(features, include_split_column)
 
 
 # =============================================================================

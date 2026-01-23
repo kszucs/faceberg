@@ -53,7 +53,7 @@ table_infos = dataset_info.to_table_infos(
 
 ### 2. TableInfo (Bridge Output)
 
-**Location**: `faceberg/convert.py`
+**Location**: `faceberg/bridge.py`
 
 **Purpose**: Bridge between HuggingFace datasets and Apache Iceberg. Contains all metadata needed to create an Iceberg table.
 
@@ -83,7 +83,7 @@ print(f"Total rows: {table_info.total_rows:,}")
 
 ### 3. FileInfo (Data File Abstraction)
 
-**Location**: `faceberg/convert.py`
+**Location**: `faceberg/bridge.py`
 
 **Purpose**: Represents a single data file in an Iceberg table.
 
