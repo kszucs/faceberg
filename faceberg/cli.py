@@ -45,17 +45,10 @@ def init(ctx, config_file):
     Example:
         faceberg init faceberg.yml
     """
-    console.print("[bold blue]Initializing Faceberg catalog...[/bold blue]")
-
     try:
         config = FacebergConfig.from_yaml(config_file)
-
-        console.print(f"Catalog name: {config.catalog.name}")
-        console.print(f"Catalog location: {config.catalog.location}")
-        console.print(f"Datasets: {len(config.datasets)}")
-
-        console.print("[yellow]⚠️  Not implemented yet[/yellow]")
-
+        from faceberg.commands.init import init_catalog
+        init_catalog(config)
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
@@ -74,13 +67,17 @@ def create(ctx, table_name):
         faceberg create                    # Create all tables
         faceberg create default.dataset1   # Create specific table
     """
-    console.print("[bold blue]Creating Iceberg tables...[/bold blue]")
-    if table_name:
-        console.print(f"Table: {table_name}")
-    else:
-        console.print("Creating all tables from config")
-
-    console.print("[yellow]⚠️  Not implemented yet[/yellow]")
+    try:
+        config_path = ctx.obj["config_path"]
+        config = FacebergConfig.from_yaml(config_path)
+        from faceberg.commands.create import create_tables
+        create_tables(config, table_name)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        import traceback
+        if ctx.obj.get("verbose"):
+            traceback.print_exc()
+        sys.exit(1)
 
 
 @main.command()
