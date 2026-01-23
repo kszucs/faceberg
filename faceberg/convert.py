@@ -150,7 +150,8 @@ class IcebergMetadataWriter:
             # Partition dict maps from partition field position to the partition value
             if self.partition_spec != UNPARTITIONED_PARTITION_SPEC and file_info.split:
                 # Use position 0 for the first (and only) partition field
-                partition = {0: file_info.split}
+                # Convert split to string (it may be a NamedSplit object from HuggingFace)
+                partition = {0: str(file_info.split)}
             else:
                 partition = {}
 

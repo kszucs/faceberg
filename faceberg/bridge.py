@@ -72,13 +72,30 @@ class TableInfo:
         """Get table properties for Iceberg metadata.
 
         Returns:
-            Dictionary of table properties including source metadata
+            Dictionary of table properties including source metadata and name mapping
         """
+        # Create schema name mapping for Parquet files without embedded field IDs
+        # This maps Parquet column names to Iceberg field IDs
+        import json
+
+        def build_name_mapping(schema):
+            """Build name mapping from schema."""
+            fields = []
+            for field in schema.fields:
+                fields.append({
+                    "field-id": field.field_id,
+                    "names": [field.name],
+                })
+            return fields
+
+        name_mapping = build_name_mapping(self.schema)
+
         return {
             "format-version": "2",
             "write.parquet.compression-codec": "snappy",
             "faceberg.source.repo": self.source_repo,
             "faceberg.source.config": self.source_config,
+            "schema.name-mapping.default": json.dumps(name_mapping),
         }
 
 
@@ -143,11 +160,13 @@ def build_iceberg_schema_from_features(
         # Create split field (will get ID 1 after reassignment)
         # Note: Although the schema uses StringType, the actual Parquet data
         # will use dictionary encoding (int8 indices) for compression efficiency
+        # The split column is optional since it doesn't exist in the source Parquet files,
+        # it's derived from partition metadata
         split_field = NestedField(
             field_id=-1,  # Temporary ID, will be reassigned
             name="split",
             field_type=StringType(),
-            required=True,
+            required=False,
         )
         # Prepend split field to existing fields
         new_fields = [split_field] + list(schema.fields)
