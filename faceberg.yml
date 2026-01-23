@@ -1,0 +1,13 @@
+catalog:
+  name: my_catalog
+  location: .faceberg/
+
+datasets:
+  - name: dataset1
+    repo: kszucs/dataset1
+
+  - name: dataset2
+    repo: kszucs/dataset2
+
+  - name: dataset3
+    repo: kszucs/dataset3

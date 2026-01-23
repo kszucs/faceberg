@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "faceberg"
+version = "0.1.0"
+description = "Bridge HuggingFace datasets with Apache Iceberg"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Krisztian Szucs", email = "kszucs@users.noreply.github.com"},
+]
+keywords = ["iceberg", "huggingface", "datasets", "data-lake"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "pyiceberg>=0.6.0",
+    "huggingface_hub>=0.20.0",
+    "fsspec>=2023.1.0",
+    "click>=8.0.0",
+    "pyyaml>=6.0",
+    "rich>=13.0.0",  # For nice CLI output
+    "pyarrow>=21.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+faceberg = "faceberg.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kszucs/faceberg"
+Documentation = "https://github.com/kszucs/faceberg"
+Repository = "https://github.com/kszucs/faceberg"
+
+[tool.hatch.build.targets.wheel]
+packages = ["faceberg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
+ignore = []
+fix = true
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
