@@ -2,16 +2,20 @@ catalog:
   name: my_catalog
   location: .faceberg/
 
-datasets:
-  - name: dataset1
-    repo: kszucs/dataset1
-    configs:
-      - config1
-      - config2
+# Define tables organized by namespace
+# Each namespace contains one or more tables
+# Each table must specify a 'dataset' (HuggingFace repo)
+# The 'config' field defaults to 'default' if not specified
 
-  - name: dataset2
-    repo: kszucs/dataset2
-    # If configs not specified, uses default config
+namespace1:
+  table1:
+    dataset: org/repo1
+    config: config1
 
-  - name: dataset3
-    repo: kszucs/dataset3
+namespace2:
+  table2:
+    dataset: org/repo2
+    config: default
+  table3:
+    dataset: org/repo3
+    # config: default by default

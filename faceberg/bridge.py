@@ -449,3 +449,71 @@ class DatasetInfo:
             table_infos.append(table_info)
 
         return table_infos
+
+    def to_table_info(
+        self,
+        namespace: str,
+        table_name: str,
+        config: str,
+        token: Optional[str] = None,
+    ) -> TableInfo:
+        """Convert DatasetInfo to a single TableInfo for a specific config.
+
+        This method creates table metadata for a single HuggingFace dataset config
+        with an explicit table name, supporting the namespace-based configuration.
+
+        Args:
+            namespace: Iceberg namespace for the table
+            table_name: Explicit table name (no auto-generation)
+            config: Specific config to create table for
+            token: HuggingFace API token (optional)
+
+        Returns:
+            TableInfo object
+
+        Raises:
+            ValueError: If config not found in dataset
+        """
+        if config not in self.configs:
+            raise ValueError(
+                f"Config '{config}' not found in dataset {self.repo_id}. "
+                f"Available configs: {', '.join(self.configs)}"
+            )
+
+        # Load dataset builder to get features
+        builder = load_dataset_builder(self.repo_id, name=config, token=token)
+        features = builder.info.features
+
+        if not features:
+            raise ValueError(f"Dataset {self.repo_id} config {config} has no features")
+
+        # Build Iceberg schema with split column
+        schema = build_iceberg_schema_from_features(features, include_split_column=True)
+
+        # Build partition spec (partitioned by split)
+        partition_spec = build_split_partition_spec(schema)
+
+        # Collect file information
+        files = []
+        for split_name, file_paths in self.parquet_files[config].items():
+            for file_path in file_paths:
+                hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
+                files.append(
+                    FileInfo(
+                        path=hf_uri,
+                        size_bytes=0,  # Will be enriched later
+                        row_count=0,  # Will be enriched later
+                        split=split_name,
+                    )
+                )
+
+        # Create TableInfo with explicit naming
+        return TableInfo(
+            namespace=namespace,
+            table_name=table_name,  # Direct from config, no auto-generation
+            schema=schema,
+            partition_spec=partition_spec,
+            files=files,
+            source_repo=self.repo_id,
+            source_config=config,
+        )

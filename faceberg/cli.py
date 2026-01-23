@@ -10,7 +10,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from faceberg.catalog import FacebergCatalog
-from faceberg.config import FacebergConfig
+from faceberg.config import CatalogConfig
 
 console = Console()
 
@@ -38,17 +38,19 @@ def main(ctx, config, verbose):
 
 
 @main.command()
-@click.argument("config_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.pass_context
-def init(ctx, config_file):
-    """Initialize a new Faceberg catalog from config file.
+def init(ctx):
+    """Initialize catalog and create Iceberg tables from config.
 
-    Creates the catalog directory structure and initializes catalog.json.
+    Discovers configured datasets and creates corresponding Iceberg
+    metadata locally. This is a one-time setup operation.
 
     Example:
-        faceberg init faceberg.yml
+        faceberg init
+        faceberg init --config=my-config.yml
     """
-    config = FacebergConfig.from_yaml(config_file)
+    config_path = ctx.obj["config_path"]
+    config = CatalogConfig.from_yaml(config_path)
     catalog_location = Path(config.catalog.location)
 
     console.print(f"[bold blue]Initializing catalog:[/bold blue] {config.catalog.name}")
@@ -58,31 +60,48 @@ def init(ctx, config_file):
     catalog = FacebergCatalog.from_config(config)
     console.print(f"[green]✓[/green] Catalog initialized")
 
-    # Create default namespace
+    # Create all namespaces
     catalog.initialize()
-    console.print(f"[green]✓[/green] Created namespace: default")
+    for ns in config.namespaces:
+        console.print(f"[green]✓[/green] Created namespace: {ns.name}")
+
+    # Discover and create all tables
+    token = os.getenv("HF_TOKEN")
+    console.print(f"\n[bold blue]Discovering and creating tables...[/bold blue]")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Processing datasets...", total=None)
+
+        try:
+            tables = catalog.create_tables(token=token)
+            progress.update(task, description=f"✓ Created {len(tables)} tables")
+        except Exception as e:
+            progress.update(task, description=f"✗ Failed: {e}")
+            raise
 
     console.print(f"\n[bold green]Catalog ready![/bold green]")
-    console.print(f"Run [bold]faceberg create[/bold] to create tables for datasets")
 
 
 
 @main.command()
 @click.argument("table_name", required=False)
 @click.pass_context
-def create(ctx, table_name):
-    """Create Iceberg tables for datasets in config.
+def sync(ctx, table_name):
+    """Sync Iceberg tables with current HuggingFace dataset state.
 
-    If TABLE_NAME is provided, creates only that table.
-    Otherwise, creates all tables defined in config.
+    Discovers new data and creates new table snapshots. Use this to
+    update tables after datasets have changed on HuggingFace.
 
     Example:
-        faceberg create                    # Create all tables
-        faceberg create default.dataset1   # Create specific table
+        faceberg sync                      # Sync all tables
+        faceberg sync namespace1.table1    # Sync specific table
     """
-
     config_path = ctx.obj["config_path"]
-    config = FacebergConfig.from_yaml(config_path)
+    config = CatalogConfig.from_yaml(config_path)
 
     # Create catalog
     catalog = FacebergCatalog.from_config(config)
@@ -90,50 +109,29 @@ def create(ctx, table_name):
     # Get HF token
     token = os.getenv("HF_TOKEN")
 
-    # Create tables with progress
+    # Sync tables with progress
     if table_name:
-        console.print(f"\n[bold blue]Creating table:[/bold blue] {table_name}")
+        console.print(f"\n[bold blue]Syncing table:[/bold blue] {table_name}")
     else:
-        console.print(f"\n[bold blue]Creating tables for all datasets[/bold blue]")
+        console.print(f"\n[bold blue]Syncing all tables...[/bold blue]")
 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Discovering and creating tables...", total=None)
+        task = progress.add_task("Discovering and syncing tables...", total=None)
 
         try:
-            catalog.create_tables(
+            tables = catalog.create_tables(
                 token=token,
                 table_name=table_name,
             )
-            progress.update(task, description="✓ Done!")
-            console.print(f"\n[bold green]Done![/bold green] Run [bold]faceberg list[/bold] to see tables")
+            progress.update(task, description=f"✓ Synced {len(tables)} table(s)")
+            console.print(f"\n[bold green]Done![/bold green]")
         except Exception as e:
             progress.update(task, description=f"✗ Failed: {e}")
             raise
-
-
-@main.command()
-@click.argument("table_name", required=False)
-@click.pass_context
-def sync(ctx, table_name):
-    """Sync Iceberg metadata with current HF dataset state.
-
-    Discovers new Parquet files and updates table metadata.
-
-    Example:
-        faceberg sync                      # Sync all tables
-        faceberg sync default.dataset1     # Sync specific table
-    """
-    console.print("[bold blue]Syncing Iceberg tables...[/bold blue]")
-    if table_name:
-        console.print(f"Table: {table_name}")
-    else:
-        console.print("Syncing all tables")
-
-    console.print("[yellow]⚠️  Not implemented yet[/yellow]")
 
 
 @main.command("list")

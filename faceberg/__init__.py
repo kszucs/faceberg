@@ -8,7 +8,7 @@ from faceberg.bridge import (
     build_split_partition_spec,
 )
 from faceberg.catalog import FacebergCatalog, JsonCatalog
-from faceberg.config import CatalogConfig, DatasetConfig, FacebergConfig
+from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
 from faceberg.convert import IcebergMetadataWriter
 
 __all__ = [
@@ -17,8 +17,8 @@ __all__ = [
     "JsonCatalog",
     # Config
     "CatalogConfig",
-    "DatasetConfig",
-    "FacebergConfig",
+    "NamespaceConfig",
+    "TableConfig",
     # Bridge (discovery + schema conversion + TableInfo output)
     "DatasetInfo",
     "FileInfo",

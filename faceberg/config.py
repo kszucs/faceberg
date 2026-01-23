@@ -8,35 +8,36 @@ import yaml
 
 
 @dataclass
+class TableConfig:
+    """Table configuration within a namespace."""
+    name: str
+    dataset: str
+    config: str = "default"
+
+
+@dataclass
+class NamespaceConfig:
+    """Namespace configuration."""
+    name: str
+    tables: List[TableConfig]
+
+
+@dataclass
 class CatalogConfig:
     """Catalog configuration."""
     name: str
     location: str
-
-
-@dataclass
-class DatasetConfig:
-    """Dataset configuration."""
-    name: str
-    repo: str
-    configs: Optional[List[str]] = None  # If None, use all configs from dataset
-
-
-@dataclass
-class FacebergConfig:
-    """Top-level Faceberg configuration."""
-    catalog: CatalogConfig
-    datasets: List[DatasetConfig]
+    namespaces: List[NamespaceConfig]
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "FacebergConfig":
+    def from_yaml(cls, path: str | Path) -> "CatalogConfig":
         """Load configuration from YAML file.
 
         Args:
             path: Path to faceberg.yml file
 
         Returns:
-            Parsed FacebergConfig
+            Parsed CatalogConfig
 
         Raises:
             FileNotFoundError: If config file doesn't exist
@@ -62,37 +63,70 @@ class FacebergConfig:
         if "location" not in catalog_data:
             raise ValueError("Missing 'location' in catalog config")
 
-        catalog = CatalogConfig(
-            name=catalog_data["name"],
-            location=catalog_data["location"],
-        )
+        catalog_name = catalog_data["name"]
+        catalog_location = catalog_data["location"]
 
-        # Parse datasets config
-        if "datasets" not in data:
-            raise ValueError("Missing 'datasets' section in config")
+        # Parse namespaces config
+        namespaces = []
+        for key, value in data.items():
+            if key == "catalog":
+                continue  # Skip catalog section
 
-        if not isinstance(data["datasets"], list):
-            raise ValueError("'datasets' must be a list")
+            # Each remaining top-level key is a namespace
+            namespace_name = key
 
-        if not data["datasets"]:
-            raise ValueError("'datasets' list is empty")
+            # Validate namespace name
+            if not namespace_name:
+                raise ValueError("Namespace name cannot be empty")
 
-        datasets = []
-        for i, ds_data in enumerate(data["datasets"]):
-            if "name" not in ds_data:
-                raise ValueError(f"Missing 'name' in dataset {i}")
-            if "repo" not in ds_data:
-                raise ValueError(f"Missing 'repo' in dataset {i}")
+            # Check for reserved names
+            if namespace_name == "catalog":
+                raise ValueError("Cannot use 'catalog' as namespace name (reserved)")
 
-            datasets.append(
-                DatasetConfig(
-                    name=ds_data["name"],
-                    repo=ds_data["repo"],
-                    configs=ds_data.get("configs"),
+            # Validate namespace name format (alphanumeric, underscore, hyphen)
+            import re
+            if not re.match(r'^[a-zA-Z0-9_-]+$', namespace_name):
+                raise ValueError(
+                    f"Invalid namespace name '{namespace_name}'. "
+                    "Must contain only alphanumeric characters, underscores, or hyphens"
+                )
+
+            if not isinstance(value, dict):
+                raise ValueError(f"Namespace '{namespace_name}' must be a dict of tables")
+
+            # Parse tables in this namespace
+            tables = []
+            for table_name, table_data in value.items():
+                if not isinstance(table_data, dict):
+                    raise ValueError(
+                        f"Table '{namespace_name}.{table_name}' must be a dict with 'dataset' field"
+                    )
+
+                if "dataset" not in table_data:
+                    raise ValueError(f"Missing 'dataset' in {namespace_name}.{table_name}")
+
+                tables.append(
+                    TableConfig(
+                        name=table_name,
+                        dataset=table_data["dataset"],
+                        config=table_data.get("config", "default"),
+                    )
+                )
+
+            if not tables:
+                raise ValueError(f"Namespace '{namespace_name}' has no tables defined")
+
+            namespaces.append(
+                NamespaceConfig(
+                    name=namespace_name,
+                    tables=tables,
                 )
             )
 
-        return cls(catalog=catalog, datasets=datasets)
+        if not namespaces:
+            raise ValueError("No namespaces defined in config")
+
+        return cls(name=catalog_name, location=catalog_location, namespaces=namespaces)
 
     def to_yaml(self, path: str | Path) -> None:
         """Save configuration to YAML file.
@@ -104,18 +138,20 @@ class FacebergConfig:
 
         data = {
             "catalog": {
-                "name": self.catalog.name,
-                "location": self.catalog.location,
-            },
-            "datasets": [
-                {
-                    "name": ds.name,
-                    "repo": ds.repo,
-                    **({"configs": ds.configs} if ds.configs else {}),
-                }
-                for ds in self.datasets
-            ],
+                "name": self.name,
+                "location": self.location,
+            }
         }
+
+        # Add each namespace as a top-level key
+        for namespace in self.namespaces:
+            data[namespace.name] = {
+                table.name: {
+                    "dataset": table.dataset,
+                    "config": table.config,
+                }
+                for table in namespace.tables
+            }
 
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)

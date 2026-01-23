@@ -1,0 +1,17 @@
+catalog:
+  name: test_catalog
+  location: .faceberg/
+
+# Example configuration with test datasets
+default:
+  imdb_plain_text:
+    dataset: stanfordnlp/imdb
+    config: plain_text
+
+  imdb_unsupervised:
+    dataset: stanfordnlp/imdb
+    config: unsupervised
+
+  rotten_tomatoes:
+    dataset: rotten_tomatoes
+    config: default

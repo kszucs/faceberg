@@ -12,7 +12,7 @@ from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
 from faceberg.catalog import FacebergCatalog, JsonCatalog
-from faceberg.config import CatalogConfig, DatasetConfig, FacebergConfig
+from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
 
 
 @pytest.fixture
@@ -186,11 +186,17 @@ def faceberg_test_dir(tmp_path):
 
 @pytest.fixture
 def faceberg_config(faceberg_test_dir):
-    """Create test FacebergConfig."""
-    return FacebergConfig(
-        catalog=CatalogConfig(name="test_catalog", location=str(faceberg_test_dir)),
-        datasets=[
-            DatasetConfig(name="imdb", repo="stanfordnlp/imdb", configs=None),
+    """Create test CatalogConfig."""
+    return CatalogConfig(
+        name="test_catalog",
+        location=str(faceberg_test_dir),
+        namespaces=[
+            NamespaceConfig(
+                name="default",
+                tables=[
+                    TableConfig(name="imdb_plain_text", dataset="stanfordnlp/imdb", config="plain_text"),
+                ]
+            )
         ],
     )
 

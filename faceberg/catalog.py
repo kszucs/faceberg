@@ -3,7 +3,7 @@
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
 
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
 from pyiceberg.exceptions import (
@@ -21,6 +21,9 @@ from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.typedef import EMPTY_DICT, Identifier, Properties
 
 from faceberg.bridge import TableInfo
+
+if TYPE_CHECKING:
+    from faceberg.config import CatalogConfig
 
 
 class JsonCatalog(Catalog):
@@ -501,45 +504,49 @@ class FacebergCatalog(JsonCatalog):
     """Faceberg-specific catalog with dataset discovery and table creation.
 
     Extends JsonCatalog with methods for:
-    - Initializing catalog from FacebergConfig
+    - Initializing catalog from CatalogConfig
     - Discovering HuggingFace datasets
     - Creating Iceberg tables from datasets
     """
 
-    def __init__(self, name: str, warehouse: str, config: Optional["FacebergConfig"] = None, **properties: str):
+    def __init__(self, name: str, warehouse: str, config: Optional["CatalogConfig"] = None, **properties: str):
         """Initialize Faceberg catalog.
 
         Args:
             name: Catalog name
             warehouse: Path to catalog directory
-            config: Faceberg configuration (optional)
+            config: Catalog configuration (optional)
             **properties: Additional catalog properties
         """
         super().__init__(name, warehouse, **properties)
         self.config = config
 
     @classmethod
-    def from_config(cls, config: "FacebergConfig") -> "FacebergCatalog":
-        """Create catalog from Faceberg configuration.
+    def from_config(cls, config: "CatalogConfig") -> "FacebergCatalog":
+        """Create catalog from catalog configuration.
 
         Args:
-            config: Faceberg configuration
+            config: Catalog configuration
 
         Returns:
             FacebergCatalog instance
         """
         return cls(
-            name=config.catalog.name,
-            warehouse=str(config.catalog.location),
+            name=config.name,
+            warehouse=str(config.location),
             config=config,
         )
 
     def initialize(self) -> None:
-        """Initialize catalog with default namespace."""
-        try:
-            self.create_namespace("default")
-        except NamespaceAlreadyExistsError:
-            pass  # Namespace already exists, that's fine
+        """Initialize catalog with all namespaces from config."""
+        if self.config is None:
+            raise ValueError("No config set. Use FacebergCatalog.from_config() to create catalog with config.")
+
+        for namespace_config in self.config.namespaces:
+            try:
+                self.create_namespace(namespace_config.name)
+            except NamespaceAlreadyExistsError:
+                pass  # Namespace already exists, that's fine
 
     def create_tables(
         self,
@@ -548,7 +555,7 @@ class FacebergCatalog(JsonCatalog):
     ) -> List[Table]:
         """Create Iceberg tables for HuggingFace datasets in config.
 
-        Uses the datasets defined in the FacebergConfig to create Iceberg tables.
+        Uses the tables defined in the FacebergConfig namespaces to create Iceberg tables.
         This method discovers datasets, converts them to TableInfo objects,
         and then creates the Iceberg metadata in metadata-only mode.
 
@@ -567,56 +574,63 @@ class FacebergCatalog(JsonCatalog):
         if self.config is None:
             raise ValueError("No config set. Use FacebergCatalog.from_config() to create catalog with config.")
 
-        datasets = self.config.datasets
         created_tables = []
 
-        # Determine which datasets to process
+        # Determine which tables to process
         if table_name:
-            # Parse table name (format: namespace.dataset_config)
+            # Parse table name (format: namespace.table_name)
             parts = table_name.split(".")
             if len(parts) != 2:
                 raise ValueError(
                     f"Invalid table name: {table_name}. Expected format: namespace.table_name"
                 )
 
-            namespace, table = parts
-            # Extract dataset name and config from table name
-            if "_" in table:
-                dataset_name, config_name = table.rsplit("_", 1)
-            else:
-                dataset_name = table
-                config_name = "default"
+            target_namespace, target_table = parts
 
-            # Find matching dataset
-            dataset_configs = [ds for ds in datasets if ds.name == dataset_name]
-            if not dataset_configs:
-                raise ValueError(f"Dataset {dataset_name} not found in config")
+            # Find the specific table in config
+            table_config = None
+            namespace_name = None
+            for ns in self.config.namespaces:
+                if ns.name == target_namespace:
+                    for tbl in ns.tables:
+                        if tbl.name == target_table:
+                            table_config = tbl
+                            namespace_name = ns.name
+                            break
+                    break
 
-            datasets_to_process = [(dataset_configs[0], [config_name])]
+            if table_config is None:
+                raise ValueError(f"Table {table_name} not found in config")
+
+            tables_to_process = [(namespace_name, table_config)]
         else:
-            # Process all datasets
-            datasets_to_process = [(ds, ds.configs) for ds in datasets]
+            # Process all tables
+            tables_to_process = [
+                (ns.name, tbl)
+                for ns in self.config.namespaces
+                for tbl in ns.tables
+            ]
 
         # Create tables
-        for dataset_config, configs_filter in datasets_to_process:
-            # Discover dataset
+        for namespace, table_config in tables_to_process:
+            # Discover dataset (only for the specific config needed)
             dataset_info = DatasetInfo.discover(
-                repo_id=dataset_config.repo,
-                configs=configs_filter,
+                repo_id=table_config.dataset,
+                configs=[table_config.config],  # Only discover the specific config
                 token=token,
             )
 
-            # Convert to TableInfo objects
-            table_infos = dataset_info.to_table_infos(
-                namespace="default",
-                table_name_prefix=dataset_config.name,
+            # Convert to TableInfo using explicit namespace and table name
+            table_info = dataset_info.to_table_info(
+                namespace=namespace,
+                table_name=table_config.name,
+                config=table_config.config,
                 token=token,
             )
 
-            # Create table for each TableInfo
-            for table_info in table_infos:
-                table = self._create_table_from_table_info(table_info)
-                created_tables.append(table)
+            # Create table
+            table = self._create_table_from_table_info(table_info)
+            created_tables.append(table)
 
         return created_tables
 
