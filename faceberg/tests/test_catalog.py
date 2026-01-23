@@ -283,19 +283,17 @@ def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config)
     # Discover dataset
     dataset_info = DatasetInfo.discover(
         repo_id="stanfordnlp/imdb",
+        configs=["plain_text"],
         token=os.getenv("HF_TOKEN"),
     )
 
     # Convert to TableInfo
-    table_infos = dataset_info.to_table_infos(
+    table_info = dataset_info.to_table_info(
         namespace="default",
-        table_name_prefix="imdb",
+        table_name="imdb_plain_text",
+        config="plain_text",
         token=os.getenv("HF_TOKEN"),
     )
-
-    # Get the plain_text config table info
-    table_info = next((ti for ti in table_infos if ti.source_config == "plain_text"), None)
-    assert table_info is not None
 
     # Create table first time
     faceberg_catalog._create_table_from_table_info(table_info)
@@ -318,19 +316,17 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
     # Discover dataset
     dataset_info = DatasetInfo.discover(
         repo_id="stanfordnlp/imdb",
+        configs=["plain_text"],
         token=os.getenv("HF_TOKEN"),
     )
 
     # Convert to TableInfo
-    table_infos = dataset_info.to_table_infos(
+    table_info = dataset_info.to_table_info(
         namespace="default",
-        table_name_prefix="imdb",
+        table_name="imdb_plain_text",
+        config="plain_text",
         token=os.getenv("HF_TOKEN"),
     )
-
-    # Get the plain_text config table info
-    table_info = next((ti for ti in table_infos if ti.source_config == "plain_text"), None)
-    assert table_info is not None
 
     # Create table
     table = faceberg_catalog._create_table_from_table_info(table_info)

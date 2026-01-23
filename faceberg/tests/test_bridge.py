@@ -116,15 +116,12 @@ def test_to_table_infos():
     dataset_info = DatasetInfo.discover("stanfordnlp/imdb", configs=["plain_text"])
 
     # Convert to TableInfo
-    table_infos = dataset_info.to_table_infos(
+    table_info = dataset_info.to_table_info(
         namespace="default",
-        table_name_prefix="imdb",
+        table_name="imdb_plain_text",
+        config="plain_text",
     )
 
-    # Should have one TableInfo per config
-    assert len(table_infos) == 1
-
-    table_info = table_infos[0]
     assert table_info.namespace == "default"
     assert table_info.table_name == "imdb_plain_text"
     assert table_info.identifier == "default.imdb_plain_text"
