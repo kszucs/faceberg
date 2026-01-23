@@ -1,4 +1,4 @@
-"""Tests for schema conversion."""
+"""Tests for the bridge layer (dataset discovery, schema conversion, and TableInfo creation)."""
 
 import os
 
@@ -10,12 +10,154 @@ from pyiceberg.types import (
     IntegerType,
     ListType,
     LongType,
-    NestedField,
     StringType,
     StructType,
 )
 
-from faceberg.schema import build_iceberg_schema_from_features, infer_schema_from_dataset
+from faceberg.bridge import (
+    DatasetInfo,
+    build_iceberg_schema_from_features,
+    infer_schema_from_dataset,
+)
+
+
+def test_discover_public_dataset():
+    """Test discovering a public HuggingFace dataset."""
+    # Test with a known public dataset
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+
+    assert dataset_info.repo_id == "stanfordnlp/imdb"
+    assert len(dataset_info.configs) > 0
+    assert "plain_text" in dataset_info.configs
+
+    # Check splits
+    assert "plain_text" in dataset_info.splits
+    splits = dataset_info.splits["plain_text"]
+    assert "train" in splits
+    assert "test" in splits
+    assert "unsupervised" in splits
+
+    # Check Parquet files
+    assert "plain_text" in dataset_info.parquet_files
+    assert "train" in dataset_info.parquet_files["plain_text"]
+    train_files = dataset_info.parquet_files["plain_text"]["train"]
+    assert len(train_files) > 0
+    assert all(isinstance(f, str) for f in train_files)
+
+
+def test_discover_with_specific_config():
+    """Test discovering a dataset with a specific config."""
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", configs=["plain_text"])
+
+    assert dataset_info.configs == ["plain_text"]
+    assert "plain_text" in dataset_info.splits
+
+
+def test_discover_nonexistent_dataset():
+    """Test discovering a non-existent dataset raises ValueError."""
+    with pytest.raises(ValueError, match="not found or not accessible"):
+        DatasetInfo.discover("nonexistent/fake-dataset-12345")
+
+
+def test_discover_nonexistent_config():
+    """Test discovering a non-existent config raises ValueError."""
+    with pytest.raises(ValueError, match="Configs not found"):
+        DatasetInfo.discover("stanfordnlp/imdb", configs=["fake_config"])
+
+
+def test_get_parquet_files_for_table():
+    """Test getting Parquet files for a specific config."""
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+
+    files = dataset_info.get_parquet_files_for_table("plain_text")
+
+    assert len(files) > 0
+    assert all(f.startswith("hf://datasets/stanfordnlp/imdb/") for f in files)
+    assert all(f.endswith(".parquet") for f in files)
+
+
+def test_get_sample_parquet_file():
+    """Test getting a sample Parquet file."""
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+
+    sample = dataset_info.get_sample_parquet_file("plain_text")
+
+    assert sample.startswith("hf://datasets/stanfordnlp/imdb/")
+    assert sample.endswith(".parquet")
+
+
+def test_get_parquet_files_nonexistent_config():
+    """Test getting Parquet files for non-existent config raises ValueError."""
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+
+    with pytest.raises(ValueError, match="Config .* not found"):
+        dataset_info.get_parquet_files_for_table("fake_config")
+
+
+def test_extract_relative_path():
+    """Test path extraction from various formats."""
+    # Test with revision format
+    path1 = "repo@abc123/plain_text/train-00000.parquet"
+    result1 = DatasetInfo._extract_relative_path("repo", path1)
+    assert result1 == "plain_text/train-00000.parquet"
+
+    # Test with hf:// URI
+    path2 = "hf://datasets/repo/plain_text/train-00000.parquet"
+    result2 = DatasetInfo._extract_relative_path("repo", path2)
+    assert result2 == "plain_text/train-00000.parquet"
+
+    # Test with relative path
+    path3 = "plain_text/train-00000.parquet"
+    result3 = DatasetInfo._extract_relative_path("repo", path3)
+    assert result3 == "plain_text/train-00000.parquet"
+
+
+def test_to_table_infos():
+    """Test converting DatasetInfo to TableInfo objects."""
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", configs=["plain_text"])
+
+    # Convert to TableInfo
+    table_infos = dataset_info.to_table_infos(
+        namespace="default",
+        table_name_prefix="imdb",
+    )
+
+    # Should have one TableInfo per config
+    assert len(table_infos) == 1
+
+    table_info = table_infos[0]
+    assert table_info.namespace == "default"
+    assert table_info.table_name == "imdb_plain_text"
+    assert table_info.identifier == "default.imdb_plain_text"
+    assert table_info.source_repo == "stanfordnlp/imdb"
+    assert table_info.source_config == "plain_text"
+
+    # Check schema
+    assert table_info.schema is not None
+    assert len(table_info.schema.fields) > 0
+    # Should have split column as first field
+    assert table_info.schema.fields[0].name == "split"
+
+    # Check partition spec (should be partitioned by split)
+    assert table_info.partition_spec is not None
+    assert len(table_info.partition_spec.fields) == 1
+    assert table_info.partition_spec.fields[0].name == "split"
+
+    # Check files
+    assert len(table_info.files) > 0
+    for file_info in table_info.files:
+        assert file_info.path.startswith("hf://datasets/stanfordnlp/imdb/")
+        assert file_info.split in ["train", "test", "unsupervised"]
+
+    # Check properties
+    props = table_info.get_table_properties()
+    assert props["faceberg.source.repo"] == "stanfordnlp/imdb"
+    assert props["faceberg.source.config"] == "plain_text"
+
+
+# =============================================================================
+# Schema Conversion Tests
+# =============================================================================
 
 
 def test_build_schema_from_simple_features():
@@ -193,21 +335,29 @@ def test_features_dict_to_features_object():
 
 
 if __name__ == "__main__":
-    # Run basic tests
-    print("Testing simple features...")
+    # Run basic smoke test
+    print("Running basic discovery test...")
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+    print(f"✓ Discovered {len(dataset_info.configs)} config(s)")
+    print(f"✓ Found splits: {list(dataset_info.splits.keys())}")
+
+    files = dataset_info.get_parquet_files_for_table("plain_text")
+    print(f"✓ Found {len(files)} Parquet files")
+
+    sample = dataset_info.get_sample_parquet_file("plain_text")
+    print(f"✓ Sample file: {sample}")
+
+    print("\nRunning schema conversion tests...")
     test_build_schema_from_simple_features()
     print("✓ Simple features test passed")
 
-    print("Testing without split column...")
     test_build_schema_without_split_column()
     print("✓ No split column test passed")
 
-    print("Testing nested features...")
     test_build_schema_with_nested_features()
     print("✓ Nested features test passed")
 
-    print("Testing unique field IDs...")
     test_unique_field_ids()
     print("✓ Unique field IDs test passed")
 
-    print("\n✓ All basic tests passed!")
+    print("\n✓ All tests passed!")

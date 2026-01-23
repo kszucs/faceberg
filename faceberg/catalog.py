@@ -20,6 +20,8 @@ from pyiceberg.table import CommitTableRequest, CommitTableResponse, Table
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.typedef import EMPTY_DICT, Identifier, Properties
 
+from faceberg.convert import TableInfo
+
 
 class JsonCatalog(Catalog):
     """Simple JSON-backed Iceberg catalog.
@@ -543,24 +545,30 @@ class FacebergCatalog(JsonCatalog):
         self,
         token: Optional[str] = None,
         table_name: Optional[str] = None,
-    ) -> None:
+    ) -> List[Table]:
         """Create Iceberg tables for HuggingFace datasets in config.
 
         Uses the datasets defined in the FacebergConfig to create Iceberg tables.
+        This method discovers datasets, converts them to TableInfo objects,
+        and then creates the Iceberg metadata in metadata-only mode.
 
         Args:
             token: HuggingFace API token (optional, uses HF_TOKEN env var if not provided)
             table_name: Specific table to create (None for all), format: "namespace.table_name"
 
+        Returns:
+            List of created Table objects
+
         Raises:
             ValueError: If config is not set or if table_name is invalid
         """
-        from faceberg.discovery import DatasetInfo
+        from faceberg.bridge import DatasetInfo
 
         if self.config is None:
             raise ValueError("No config set. Use FacebergCatalog.from_config() to create catalog with config.")
 
         datasets = self.config.datasets
+        created_tables = []
 
         # Determine which datasets to process
         if table_name:
@@ -598,74 +606,68 @@ class FacebergCatalog(JsonCatalog):
                 token=token,
             )
 
-            # Create table for each config
-            for config_name in dataset_info.configs:
-                self._create_table_for_config(
-                    dataset_config=dataset_config,
-                    dataset_info=dataset_info,
-                    config_name=config_name,
-                    token=token,
-                )
+            # Convert to TableInfo objects
+            table_infos = dataset_info.to_table_infos(
+                namespace="default",
+                table_name_prefix=dataset_config.name,
+                token=token,
+            )
 
-    def _create_table_for_config(
-        self,
-        dataset_config: "DatasetConfig",
-        dataset_info: "DatasetInfo",
-        config_name: str,
-        token: Optional[str] = None,
-    ) -> Table:
-        """Create Iceberg table for a specific dataset config.
+            # Create table for each TableInfo
+            for table_info in table_infos:
+                table = self._create_table_from_table_info(table_info)
+                created_tables.append(table)
+
+        return created_tables
+
+    def _create_table_from_table_info(self, table_info: TableInfo) -> Table:
+        """Create Iceberg table from TableInfo using metadata-only mode.
+
+        This method creates an Iceberg table by:
+        1. Creating the table metadata directory
+        2. Using IcebergMetadataWriter to write Iceberg metadata files
+        3. Registering the table in the catalog
 
         Args:
-            dataset_config: Dataset configuration from faceberg.yml
-            dataset_info: Discovered dataset information
-            config_name: Configuration name
-            token: HuggingFace API token (optional)
+            table_info: TableInfo containing all metadata needed for table creation
 
         Returns:
-            Created table
+            Created Table object
 
         Raises:
             TableAlreadyExistsError: If table already exists
         """
-        from faceberg.schema import infer_schema_from_dataset
-
-        # Generate table identifier
-        table_id = f"default.{dataset_config.name}_{config_name}"
+        from faceberg.convert import IcebergMetadataWriter
 
         # Check if table already exists
-        if self.table_exists(table_id):
-            raise TableAlreadyExistsError(f"Table {table_id} already exists")
+        if self.table_exists(table_info.identifier):
+            raise TableAlreadyExistsError(f"Table {table_info.identifier} already exists")
 
-        # Infer schema from dataset features (more accurate than reading Parquet)
-        schema = infer_schema_from_dataset(
-            repo_id=dataset_info.repo_id,
-            config_name=config_name,
-            token=token,
-            include_split_column=True,
+        # Determine table location (metadata directory)
+        table_id_safe = table_info.identifier.replace(".", "_")
+        table_path = self.warehouse / "metadata" / table_id_safe
+        table_path.mkdir(parents=True, exist_ok=True)
+
+        # Create metadata writer
+        metadata_writer = IcebergMetadataWriter(
+            table_path=table_path,
+            schema=table_info.schema,
+            partition_spec=table_info.partition_spec,
         )
 
-        # Get all Parquet files
-        parquet_files = dataset_info.get_parquet_files_for_table(config_name)
+        # Generate table UUID
+        table_uuid = str(uuid.uuid4())
 
-        # Determine metadata and data locations
-        metadata_location = f"{self.warehouse}/metadata/default_{dataset_config.name}_{config_name}"
-        data_location = f"hf://datasets/{dataset_info.repo_id}"
-
-        # Create table
-        table = self.create_table(
-            identifier=table_id,
-            schema=schema,
-            location=metadata_location,
-            properties={
-                "write.data.path": data_location,
-                "faceberg.source.repo": dataset_info.repo_id,
-                "faceberg.source.config": config_name,
-            },
+        # Write Iceberg metadata files (manifest, manifest list, table metadata)
+        metadata_location = metadata_writer.create_metadata_from_files(
+            file_infos=table_info.files,
+            table_uuid=table_uuid,
+            properties=table_info.get_table_properties(),
         )
 
-        # Register existing Parquet files
-        if parquet_files:
-            table.add_files(file_paths=parquet_files)
+        # Register table in catalog
+        self._tables[table_info.identifier] = str(table_path)
+        self._save_catalog()
 
-        return table
+        # Load and return table
+        return self.load_table(table_info.identifier)
