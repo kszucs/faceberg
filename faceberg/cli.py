@@ -1,12 +1,15 @@
 """Command-line interface for Faceberg."""
 
+import os
 import sys
 from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from faceberg.catalog import FacebergCatalog
 from faceberg.config import FacebergConfig
 
 console = Console()
@@ -47,10 +50,26 @@ def init(ctx, config_file):
     """
     try:
         config = FacebergConfig.from_yaml(config_file)
-        from faceberg.commands.init import init_catalog
-        init_catalog(config)
+        catalog_location = Path(config.catalog.location)
+
+        console.print(f"[bold blue]Initializing catalog:[/bold blue] {config.catalog.name}")
+        console.print(f"[bold blue]Location:[/bold blue] {catalog_location}")
+
+        # Create catalog
+        catalog = FacebergCatalog.from_config(config)
+        console.print(f"[green]✓[/green] Catalog initialized")
+
+        # Create default namespace
+        catalog.initialize()
+        console.print(f"[green]✓[/green] Created namespace: default")
+
+        console.print(f"\n[bold green]Catalog ready![/bold green]")
+        console.print(f"Run [bold]faceberg create[/bold] to create tables for datasets")
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
+        if ctx.obj.get("verbose"):
+            import traceback
+            traceback.print_exc()
         sys.exit(1)
 
 
@@ -70,12 +89,41 @@ def create(ctx, table_name):
     try:
         config_path = ctx.obj["config_path"]
         config = FacebergConfig.from_yaml(config_path)
-        from faceberg.commands.create import create_tables
-        create_tables(config, table_name)
+
+        # Create catalog
+        catalog = FacebergCatalog.from_config(config)
+
+        # Get HF token
+        token = os.getenv("HF_TOKEN")
+
+        # Create tables with progress
+        if table_name:
+            console.print(f"\n[bold blue]Creating table:[/bold blue] {table_name}")
+        else:
+            console.print(f"\n[bold blue]Creating tables for all datasets[/bold blue]")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Discovering and creating tables...", total=None)
+
+            try:
+                catalog.create_tables(
+                    token=token,
+                    table_name=table_name,
+                )
+                progress.update(task, description="✓ Done!")
+                console.print(f"\n[bold green]Done![/bold green] Run [bold]faceberg list[/bold] to see tables")
+            except Exception as e:
+                progress.update(task, description=f"✗ Failed: {e}")
+                raise
+
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
-        import traceback
         if ctx.obj.get("verbose"):
+            import traceback
             traceback.print_exc()
         sys.exit(1)
 

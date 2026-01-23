@@ -4,35 +4,24 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from datasets import get_dataset_config_names, get_dataset_split_names, load_dataset_builder
-from huggingface_hub import HfFileSystem
 
 
 @dataclass
 class DatasetInfo:
     """Information about a HuggingFace dataset."""
+
     repo_id: str
     configs: List[str]
     splits: Dict[str, List[str]]  # config -> list of splits
     parquet_files: Dict[str, Dict[str, List[str]]]  # config -> split -> list of files
 
-
-class DatasetDiscovery:
-    """Discover Parquet files and metadata in HuggingFace datasets using the datasets library."""
-
-    def __init__(self, token: Optional[str] = None):
-        """Initialize dataset discovery.
-
-        Args:
-            token: HuggingFace API token (uses HF_TOKEN env var if not provided)
-        """
-        self.token = token
-        self.fs = HfFileSystem(token=token)
-
-    def discover_dataset(
-        self,
+    @classmethod
+    def discover(
+        cls,
         repo_id: str,
-        configs: Optional[List[str]] = None
-    ) -> DatasetInfo:
+        configs: Optional[List[str]] = None,
+        token: Optional[str] = None,
+    ) -> "DatasetInfo":
         """Discover Parquet files and structure in a HuggingFace dataset.
 
         Uses the datasets library to get proper metadata about configs and splits.
@@ -40,6 +29,7 @@ class DatasetDiscovery:
         Args:
             repo_id: HuggingFace dataset repository ID (e.g., "kszucs/dataset1")
             configs: List of configs to discover (if None, discovers all)
+            token: HuggingFace API token (uses HF_TOKEN env var if not provided)
 
         Returns:
             DatasetInfo with discovered structure
@@ -49,12 +39,11 @@ class DatasetDiscovery:
         """
         # Get all available configs
         try:
-            all_configs = get_dataset_config_names(repo_id, token=self.token)
+            all_configs = get_dataset_config_names(repo_id, token=token)
         except Exception as e:
             # If get_dataset_config_names fails, try with just the default config
             try:
-                # Try loading a builder to see if dataset exists
-                load_dataset_builder(repo_id, token=self.token)
+                load_dataset_builder(repo_id, token=token)
                 all_configs = ["default"]
             except Exception:
                 raise ValueError(f"Dataset {repo_id} not found or not accessible: {e}")
@@ -76,170 +65,127 @@ class DatasetDiscovery:
         parquet_files = {}
 
         for config_name in discovered_configs:
-            # Get splits for this config
-            try:
-                config_splits = get_dataset_split_names(
-                    repo_id,
-                    config_name=config_name,
-                    token=self.token
-                )
-            except Exception:
-                # If no splits metadata, try to discover files manually
-                config_splits = self._discover_splits_from_files(repo_id, config_name)
-
+            config_splits, config_files = cls._discover_config(repo_id, config_name, token)
             splits_dict[config_name] = config_splits
+            parquet_files[config_name] = config_files
 
-            # Get Parquet files for each split
-            parquet_files[config_name] = {}
-            for split in config_splits:
-                split_files = self._get_parquet_files_for_split(
-                    repo_id, config_name, split
-                )
-                parquet_files[config_name][split] = split_files
-
-        if not parquet_files or all(not config_files for config_files in parquet_files.values()):
+        if not parquet_files or all(not files for files in parquet_files.values()):
             raise ValueError(f"No Parquet files found in dataset {repo_id}")
 
-        return DatasetInfo(
+        return cls(
             repo_id=repo_id,
             configs=discovered_configs,
             splits=splits_dict,
             parquet_files=parquet_files,
         )
 
-    def _discover_splits_from_files(self, repo_id: str, config_name: str) -> List[str]:
-        """Discover splits by looking at file structure when metadata is unavailable.
+    @staticmethod
+    def _discover_config(
+        repo_id: str, config_name: str, token: Optional[str]
+    ) -> tuple[List[str], Dict[str, List[str]]]:
+        """Discover splits and files for a specific config.
 
         Args:
             repo_id: Dataset repository ID
             config_name: Configuration name
+            token: HuggingFace API token
 
         Returns:
-            List of split names
+            Tuple of (splits list, files dict mapping split -> file paths)
         """
-        splits = set()
-        split_names = {"train", "test", "validation", "val", "dev"}
-
-        # Look for common split patterns in file paths
         try:
-            all_files = self.fs.ls(f"datasets/{repo_id}", detail=False, recursive=True)
-            parquet_files = [f for f in all_files if f.endswith(".parquet")]
+            builder = load_dataset_builder(repo_id, name=config_name, token=token)
+            data_files = (
+                builder.config.data_files if hasattr(builder.config, "data_files") else None
+            )
 
-            for file_path in parquet_files:
-                # Check if any split name appears in the path
-                for split_name in split_names:
-                    if f"/{split_name}/" in file_path or f"-{split_name}" in file_path:
-                        splits.add(split_name)
-                        break
-                else:
-                    # If no split found, assume "default"
-                    splits.add("default")
+            if data_files and isinstance(data_files, dict):
+                # data_files is a dict: {split: [file_paths]}
+                splits = list(data_files.keys())
+                files = {
+                    split: [DatasetInfo._extract_relative_path(repo_id, path) for path in paths]
+                    for split, paths in data_files.items()
+                }
+                return splits, files
+
+            # Fallback: use get_dataset_split_names
+            splits = get_dataset_split_names(repo_id, config_name=config_name, token=token)
+            return splits, {split: [] for split in splits}
 
         except Exception:
-            splits.add("default")
+            # If builder fails, try get_dataset_split_names as fallback
+            try:
+                splits = get_dataset_split_names(repo_id, config_name=config_name, token=token)
+            except Exception:
+                splits = ["train"]  # Default fallback
 
-        return list(splits) if splits else ["default"]
+            return splits, {split: [] for split in splits}
 
-    def _get_parquet_files_for_split(
-        self, repo_id: str, config_name: str, split: str
-    ) -> List[str]:
-        """Get Parquet file paths for a specific config and split.
+    @staticmethod
+    def _extract_relative_path(repo_id: str, file_path: str) -> str:
+        """Extract relative path from various file path formats.
 
         Args:
             repo_id: Dataset repository ID
-            config_name: Configuration name
-            split: Split name
+            file_path: File path in various formats
 
         Returns:
-            List of relative file paths (not hf:// URIs)
+            Relative path suitable for hf:// URIs
         """
-        parquet_files = []
+        if not isinstance(file_path, str):
+            return str(file_path)
 
-        # Common patterns for Parquet files
-        patterns = [
-            f"data/{split}/*.parquet",
-            f"data/{config_name}/{split}/*.parquet",
-            f"{config_name}/{split}/*.parquet",
-            f"{split}/*.parquet",
-            f"data/{split}-*.parquet",
-            f"{split}-*.parquet",
-            f"*-{split}-*.parquet",
-        ]
+        # Format from datasets library: {repo_id}@{revision}/{relative_path}
+        if "@" in file_path and "/" in file_path:
+            parts = file_path.split("@", 1)
+            if len(parts) > 1:
+                revision_and_path = parts[1]
+                if "/" in revision_and_path:
+                    return revision_and_path.split("/", 1)[1]
 
-        # If config is default, also try without config prefix
-        if config_name == "default":
-            patterns.extend([
-                f"data/*.parquet",
-                f"*.parquet",
-            ])
+        # Remove hf://datasets/{repo_id}/ prefix
+        if file_path.startswith(f"hf://datasets/{repo_id}/"):
+            return file_path.replace(f"hf://datasets/{repo_id}/", "")
 
-        for pattern in patterns:
-            try:
-                files = self.fs.glob(f"datasets/{repo_id}/{pattern}")
-                if files:
-                    # Convert to relative paths
-                    rel_files = [
-                        f.replace(f"datasets/{repo_id}/", "")
-                        for f in files
-                    ]
-                    parquet_files.extend(rel_files)
-            except Exception:
-                continue
+        # Extract path after repo_id from hf:// URI
+        if file_path.startswith("hf://"):
+            path_parts = file_path.split("/")
+            if len(path_parts) > 3:  # hf://datasets/{repo_id}/...
+                return "/".join(path_parts[3:])
 
-        # Filter to ensure we only get files matching the split
-        if parquet_files and split != "default":
-            # Only keep files that have the split name in them
-            parquet_files = [
-                f for f in parquet_files
-                if split in f.lower()
-            ]
+        # Already a relative path
+        return file_path
 
-        # Remove duplicates
-        parquet_files = list(set(parquet_files))
-
-        return sorted(parquet_files)
-
-    def get_parquet_files_for_table(
-        self,
-        dataset_info: DatasetInfo,
-        config: str,
-    ) -> List[str]:
+    def get_parquet_files_for_table(self, config: str) -> List[str]:
         """Get all Parquet files for a specific config across all splits.
 
         Args:
-            dataset_info: Dataset information
             config: Configuration name
 
         Returns:
             List of hf:// URIs for all Parquet files in this config
         """
-        if config not in dataset_info.parquet_files:
+        if config not in self.parquet_files:
             raise ValueError(f"Config {config} not found in dataset")
 
         files = []
-        for split, split_files in dataset_info.parquet_files[config].items():
+        for split_files in self.parquet_files[config].values():
             for file_path in split_files:
-                # Convert to hf:// URI
-                hf_uri = f"hf://datasets/{dataset_info.repo_id}/{file_path}"
+                hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
                 files.append(hf_uri)
 
         return files
 
-    def get_sample_parquet_file(
-        self,
-        dataset_info: DatasetInfo,
-        config: str,
-    ) -> str:
+    def get_sample_parquet_file(self, config: str) -> str:
         """Get a sample Parquet file for schema inference.
 
         Args:
-            dataset_info: Dataset information
             config: Configuration name
 
         Returns:
             hf:// URI to a sample Parquet file
         """
-        files = self.get_parquet_files_for_table(dataset_info, config)
+        files = self.get_parquet_files_for_table(config)
         if not files:
             raise ValueError(f"No Parquet files found for config {config}")
         return files[0]

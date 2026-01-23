@@ -493,3 +493,179 @@ class JsonCatalog(Catalog):
     ) -> Any:
         """Create table transaction (not implemented)."""
         raise NotImplementedError("Table transactions not yet supported")
+
+
+class FacebergCatalog(JsonCatalog):
+    """Faceberg-specific catalog with dataset discovery and table creation.
+
+    Extends JsonCatalog with methods for:
+    - Initializing catalog from FacebergConfig
+    - Discovering HuggingFace datasets
+    - Creating Iceberg tables from datasets
+    """
+
+    def __init__(self, name: str, warehouse: str, config: Optional["FacebergConfig"] = None, **properties: str):
+        """Initialize Faceberg catalog.
+
+        Args:
+            name: Catalog name
+            warehouse: Path to catalog directory
+            config: Faceberg configuration (optional)
+            **properties: Additional catalog properties
+        """
+        super().__init__(name, warehouse, **properties)
+        self.config = config
+
+    @classmethod
+    def from_config(cls, config: "FacebergConfig") -> "FacebergCatalog":
+        """Create catalog from Faceberg configuration.
+
+        Args:
+            config: Faceberg configuration
+
+        Returns:
+            FacebergCatalog instance
+        """
+        return cls(
+            name=config.catalog.name,
+            warehouse=str(config.catalog.location),
+            config=config,
+        )
+
+    def initialize(self) -> None:
+        """Initialize catalog with default namespace."""
+        try:
+            self.create_namespace("default")
+        except NamespaceAlreadyExistsError:
+            pass  # Namespace already exists, that's fine
+
+    def create_tables(
+        self,
+        token: Optional[str] = None,
+        table_name: Optional[str] = None,
+    ) -> None:
+        """Create Iceberg tables for HuggingFace datasets in config.
+
+        Uses the datasets defined in the FacebergConfig to create Iceberg tables.
+
+        Args:
+            token: HuggingFace API token (optional, uses HF_TOKEN env var if not provided)
+            table_name: Specific table to create (None for all), format: "namespace.table_name"
+
+        Raises:
+            ValueError: If config is not set or if table_name is invalid
+        """
+        from faceberg.discovery import DatasetInfo
+
+        if self.config is None:
+            raise ValueError("No config set. Use FacebergCatalog.from_config() to create catalog with config.")
+
+        datasets = self.config.datasets
+
+        # Determine which datasets to process
+        if table_name:
+            # Parse table name (format: namespace.dataset_config)
+            parts = table_name.split(".")
+            if len(parts) != 2:
+                raise ValueError(
+                    f"Invalid table name: {table_name}. Expected format: namespace.table_name"
+                )
+
+            namespace, table = parts
+            # Extract dataset name and config from table name
+            if "_" in table:
+                dataset_name, config_name = table.rsplit("_", 1)
+            else:
+                dataset_name = table
+                config_name = "default"
+
+            # Find matching dataset
+            dataset_configs = [ds for ds in datasets if ds.name == dataset_name]
+            if not dataset_configs:
+                raise ValueError(f"Dataset {dataset_name} not found in config")
+
+            datasets_to_process = [(dataset_configs[0], [config_name])]
+        else:
+            # Process all datasets
+            datasets_to_process = [(ds, ds.configs) for ds in datasets]
+
+        # Create tables
+        for dataset_config, configs_filter in datasets_to_process:
+            # Discover dataset
+            dataset_info = DatasetInfo.discover(
+                repo_id=dataset_config.repo,
+                configs=configs_filter,
+                token=token,
+            )
+
+            # Create table for each config
+            for config_name in dataset_info.configs:
+                self._create_table_for_config(
+                    dataset_config=dataset_config,
+                    dataset_info=dataset_info,
+                    config_name=config_name,
+                    token=token,
+                )
+
+    def _create_table_for_config(
+        self,
+        dataset_config: "DatasetConfig",
+        dataset_info: "DatasetInfo",
+        config_name: str,
+        token: Optional[str] = None,
+    ) -> Table:
+        """Create Iceberg table for a specific dataset config.
+
+        Args:
+            dataset_config: Dataset configuration from faceberg.yml
+            dataset_info: Discovered dataset information
+            config_name: Configuration name
+            token: HuggingFace API token (optional)
+
+        Returns:
+            Created table
+
+        Raises:
+            TableAlreadyExistsError: If table already exists
+        """
+        from faceberg.schema import infer_schema_from_dataset
+
+        # Generate table identifier
+        table_id = f"default.{dataset_config.name}_{config_name}"
+
+        # Check if table already exists
+        if self.table_exists(table_id):
+            raise TableAlreadyExistsError(f"Table {table_id} already exists")
+
+        # Infer schema from dataset features (more accurate than reading Parquet)
+        schema = infer_schema_from_dataset(
+            repo_id=dataset_info.repo_id,
+            config_name=config_name,
+            token=token,
+            include_split_column=True,
+        )
+
+        # Get all Parquet files
+        parquet_files = dataset_info.get_parquet_files_for_table(config_name)
+
+        # Determine metadata and data locations
+        metadata_location = f"{self.warehouse}/metadata/default_{dataset_config.name}_{config_name}"
+        data_location = f"hf://datasets/{dataset_info.repo_id}"
+
+        # Create table
+        table = self.create_table(
+            identifier=table_id,
+            schema=schema,
+            location=metadata_location,
+            properties={
+                "write.data.path": data_location,
+                "faceberg.source.repo": dataset_info.repo_id,
+                "faceberg.source.config": config_name,
+            },
+        )
+
+        # Register existing Parquet files
+        if parquet_files:
+            table.add_files(file_paths=parquet_files)
+
+        return table
