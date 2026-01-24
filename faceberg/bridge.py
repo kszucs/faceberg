@@ -4,10 +4,14 @@ This module discovers HuggingFace datasets and converts them to TableInfo object
 that contain all the Iceberg metadata needed for table creation.
 """
 
+import json
+import os
+import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from datasets import Features, get_dataset_config_names, get_dataset_split_names, load_dataset_builder
+from datasets.inspect import get_dataset_config_info
 from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema, assign_fresh_schema_ids
@@ -52,6 +56,7 @@ class TableInfo:
     # Source metadata (for traceability)
     source_repo: str  # HuggingFace repo ID
     source_config: str  # Dataset configuration name
+    source_revision: Optional[str] = None  # Git revision/SHA of the dataset
 
     @property
     def identifier(self) -> str:
@@ -76,8 +81,6 @@ class TableInfo:
         """
         # Create schema name mapping for Parquet files without embedded field IDs
         # This maps Parquet column names to Iceberg field IDs
-        import json
-
         def build_name_mapping(schema):
             """Build name mapping from schema."""
             fields = []
@@ -90,13 +93,19 @@ class TableInfo:
 
         name_mapping = build_name_mapping(self.schema)
 
-        return {
+        properties = {
             "format-version": "2",
             "write.parquet.compression-codec": "snappy",
-            "faceberg.source.repo": self.source_repo,
-            "faceberg.source.config": self.source_config,
+            "huggingface.dataset.repo": self.source_repo,
+            "huggingface.dataset.config": self.source_config,
             "schema.name-mapping.default": json.dumps(name_mapping),
         }
+
+        # Add revision if available
+        if self.source_revision:
+            properties["huggingface.dataset.revision"] = self.source_revision
+
+        return properties
 
 
 def build_split_partition_spec(schema: Schema) -> PartitionSpec:
@@ -180,6 +189,44 @@ def build_iceberg_schema_from_features(
 
 
 # =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def load_dataset_builder_safe(
+    repo_id: str,
+    config_name: Optional[str] = None,
+    token: Optional[str] = None,
+):
+    """Load dataset builder while avoiding picking up local files.
+
+    Changes to a temporary directory before loading to ensure the datasets
+    library doesn't pick up local files in the current directory.
+
+    Args:
+        repo_id: HuggingFace dataset repository ID
+        config_name: Optional configuration name
+        token: Optional HuggingFace API token
+
+    Returns:
+        Dataset builder object
+
+    Raises:
+        Exception: If loading fails
+    """
+    original_cwd = os.getcwd()
+
+    try:
+        # Change to a temporary directory to avoid dataset library picking up local files
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.chdir(tmpdir)
+            return load_dataset_builder(repo_id, name=config_name, token=token)
+    finally:
+        # Always restore the original directory
+        os.chdir(original_cwd)
+
+
+# =============================================================================
 # Dataset Discovery and Bridging
 # =============================================================================
 
@@ -198,6 +245,7 @@ class DatasetInfo:
     configs: List[str]
     splits: Dict[str, List[str]]  # config -> list of splits
     parquet_files: Dict[str, Dict[str, List[str]]]  # config -> split -> list of files
+    revision: Optional[str] = None  # Git revision/SHA of the dataset
 
     @classmethod
     def discover(
@@ -222,15 +270,7 @@ class DatasetInfo:
             ValueError: If dataset not found or has errors
         """
         # Get all available configs
-        try:
-            all_configs = get_dataset_config_names(repo_id, token=token)
-        except Exception as e:
-            # If get_dataset_config_names fails, try with just the default config
-            try:
-                load_dataset_builder(repo_id, token=token)
-                all_configs = ["default"]
-            except Exception:
-                raise ValueError(f"Dataset {repo_id} not found or not accessible: {e}")
+        all_configs = get_dataset_config_names(repo_id, token=token)
 
         # Filter to requested configs
         if configs:
@@ -247,11 +287,14 @@ class DatasetInfo:
         # Discover splits and files for each config
         splits_dict = {}
         parquet_files = {}
+        revision = None
 
         for config_name in discovered_configs:
-            config_splits, config_files = cls._discover_config(repo_id, config_name, token)
+            config_splits, config_files, config_revision = cls._discover_config(repo_id, config_name, token)
             splits_dict[config_name] = config_splits
             parquet_files[config_name] = config_files
+            if config_revision and not revision:
+                revision = config_revision
 
         if not parquet_files or all(not files for files in parquet_files.values()):
             raise ValueError(f"No Parquet files found in dataset {repo_id}")
@@ -261,13 +304,16 @@ class DatasetInfo:
             configs=discovered_configs,
             splits=splits_dict,
             parquet_files=parquet_files,
+            revision=revision,
         )
 
     @staticmethod
     def _discover_config(
         repo_id: str, config_name: str, token: Optional[str]
-    ) -> tuple[List[str], Dict[str, List[str]]]:
+    ) -> tuple[List[str], Dict[str, List[str]], Optional[str]]:
         """Discover splits and files for a specific config.
+
+        Uses the datasets library's official inspection utilities for robust discovery.
 
         Args:
             repo_id: Dataset repository ID
@@ -275,35 +321,58 @@ class DatasetInfo:
             token: HuggingFace API token
 
         Returns:
-            Tuple of (splits list, files dict mapping split -> file paths)
+            Tuple of (splits list, files dict mapping split -> file paths, revision)
+
+        Raises:
+            Exception: If builder cannot be loaded or splits cannot be determined
         """
-        try:
-            builder = load_dataset_builder(repo_id, name=config_name, token=token)
-            data_files = (
-                builder.config.data_files if hasattr(builder.config, "data_files") else None
-            )
+        builder = load_dataset_builder_safe(repo_id, config_name=config_name, token=token)
 
-            if data_files and isinstance(data_files, dict):
-                # data_files is a dict: {split: [file_paths]}
+        # Get splits from builder.info.splits if available, otherwise from data_files
+        splits = []
+        if builder.info.splits:
+            splits = list(builder.info.splits.keys())
+
+        # Get data files for parquet file paths
+        data_files = (
+            builder.config.data_files if hasattr(builder.config, "data_files") else None
+        )
+
+        if data_files and isinstance(data_files, dict):
+            # Use splits from data_files if not found in builder.info
+            if not splits:
                 splits = list(data_files.keys())
-                files = {
-                    split: [DatasetInfo._extract_relative_path(repo_id, path) for path in paths]
-                    for split, paths in data_files.items()
-                }
-                return splits, files
 
-            # Fallback: use get_dataset_split_names
-            splits = get_dataset_split_names(repo_id, config_name=config_name, token=token)
-            return splits, {split: [] for split in splits}
+            # Extract file paths and revision
+            files = {}
+            revision = None
 
-        except Exception:
-            # If builder fails, try get_dataset_split_names as fallback
-            try:
-                splits = get_dataset_split_names(repo_id, config_name=config_name, token=token)
-            except Exception:
-                splits = ["train"]  # Default fallback
+            for split, paths in data_files.items():
+                # Only include remote files (hf:// URLs)
+                remote_paths = []
+                for path in paths:
+                    if isinstance(path, str) and (path.startswith("hf://") or "@" in path):
+                        # Extract revision from path (format: repo_id@revision/path)
+                        if not revision and "@" in path:
+                            parts = path.split("@", 1)
+                            if len(parts) > 1 and "/" in parts[1]:
+                                revision = parts[1].split("/")[0]
 
-            return splits, {split: [] for split in splits}
+                        remote_paths.append(DatasetInfo._extract_relative_path(repo_id, path))
+
+                if remote_paths:
+                    files[split] = remote_paths
+
+            if files:
+                return splits, files, revision
+
+        # Fallback: if no data_files but we have splits from info
+        if splits:
+            return splits, {split: [] for split in splits}, None
+
+        # Final fallback: use get_dataset_split_names
+        splits = get_dataset_split_names(repo_id, config_name=config_name, token=token)
+        return splits, {split: [] for split in splits}, None
 
     @staticmethod
     def _extract_relative_path(repo_id: str, file_path: str) -> str:
@@ -404,12 +473,16 @@ class DatasetInfo:
                 f"Available configs: {', '.join(self.configs)}"
             )
 
-        # Load dataset builder to get features
-        builder = load_dataset_builder(self.repo_id, name=config, token=token)
+        # Get features from dataset builder
+        builder = load_dataset_builder_safe(self.repo_id, config_name=config, token=token)
         features = builder.info.features
 
+        # Features must be available from builder
         if not features:
-            raise ValueError(f"Dataset {self.repo_id} config {config} has no features")
+            raise ValueError(
+                f"Dataset {self.repo_id} config {config} has no features available. "
+                "Features must be provided by the dataset builder."
+            )
 
         # Build Iceberg schema with split column
         schema = build_iceberg_schema_from_features(features, include_split_column=True)
@@ -440,4 +513,5 @@ class DatasetInfo:
             files=files,
             source_repo=self.repo_id,
             source_config=config,
+            source_revision=self.revision,
         )

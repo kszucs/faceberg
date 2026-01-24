@@ -16,6 +16,7 @@ from pyiceberg.types import (
 
 from faceberg.bridge import (
     DatasetInfo,
+    load_dataset_builder_safe,
     build_iceberg_schema_from_features,
 )
 
@@ -147,8 +148,8 @@ def test_to_table_infos():
 
     # Check properties
     props = table_info.get_table_properties()
-    assert props["faceberg.source.repo"] == "stanfordnlp/imdb"
-    assert props["faceberg.source.config"] == "plain_text"
+    assert props["huggingface.dataset.repo"] == "stanfordnlp/imdb"
+    assert props["huggingface.dataset.config"] == "plain_text"
 
 
 # =============================================================================
@@ -300,6 +301,71 @@ def test_features_dict_to_features_object():
     field_names = [f.name for f in schema.fields]
     assert "id" in field_names
     assert "text" in field_names
+
+
+def test_load_dataset_builder_safe():
+    """Test that the safe builder loader works and avoids local files."""
+    # Test with a known public dataset
+    builder = load_dataset_builder_safe("stanfordnlp/imdb", config_name="plain_text")
+
+    assert builder is not None
+    assert builder.info is not None
+    assert builder.info.features is not None
+
+
+def test_load_dataset_builder_safe_nonexistent():
+    """Test that safe builder loader raises error for non-existent dataset."""
+    with pytest.raises(Exception):
+        load_dataset_builder_safe("nonexistent/fake-dataset-12345")
+
+
+def test_to_table_info_without_features():
+    """Test that to_table_info raises error if features are not available."""
+    # Create a mock DatasetInfo with empty parquet_files
+    dataset_info = DatasetInfo(
+        repo_id="fake/dataset",
+        configs=["default"],
+        splits={"default": ["train"]},
+        parquet_files={"default": {"train": []}},
+        revision=None,
+    )
+
+    # Mock scenario: dataset doesn't exist or has no features
+    # load_dataset_builder_safe will raise an exception
+    with pytest.raises(Exception):
+        dataset_info.to_table_info(
+            namespace="default",
+            table_name="test_table",
+            config="default",
+        )
+
+
+def test_table_properties_use_huggingface_prefix():
+    """Test that table properties use huggingface.dataset.* prefix."""
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", configs=["plain_text"])
+    table_info = dataset_info.to_table_info(
+        namespace="default",
+        table_name="imdb_plain_text",
+        config="plain_text",
+    )
+
+    props = table_info.get_table_properties()
+
+    # Check that properties use huggingface.dataset prefix
+    assert "huggingface.dataset.repo" in props
+    assert "huggingface.dataset.config" in props
+    assert props["huggingface.dataset.repo"] == "stanfordnlp/imdb"
+    assert props["huggingface.dataset.config"] == "plain_text"
+
+    # Check that revision is included if available
+    if table_info.source_revision:
+        assert "huggingface.dataset.revision" in props
+        assert props["huggingface.dataset.revision"] == table_info.source_revision
+
+    # Verify old prefix is not used
+    assert "faceberg.source.repo" not in props
+    assert "faceberg.source.config" not in props
+    assert "faceberg.source.revision" not in props
 
 
 if __name__ == "__main__":

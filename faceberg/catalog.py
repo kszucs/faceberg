@@ -554,23 +554,22 @@ class FacebergCatalog(JsonCatalog):
             except NamespaceAlreadyExistsError:
                 pass  # Namespace already exists, that's fine
 
-    def create_tables(
+    def sync(
         self,
         token: Optional[str] = None,
         table_name: Optional[str] = None,
     ) -> List[Table]:
-        """Create Iceberg tables for HuggingFace datasets in config.
+        """Sync Iceberg tables with HuggingFace datasets in config.
 
-        Uses the tables defined in the FacebergConfig namespaces to create Iceberg tables.
-        This method discovers datasets, converts them to TableInfo objects,
-        and then creates the Iceberg metadata in metadata-only mode.
+        Discovers datasets and either creates new tables or updates existing ones
+        with new snapshots if the dataset revision has changed.
 
         Args:
             token: HuggingFace API token (optional, uses HF_TOKEN env var if not provided)
-            table_name: Specific table to create (None for all), format: "namespace.table_name"
+            table_name: Specific table to sync (None for all), format: "namespace.table_name"
 
         Returns:
-            List of created Table objects
+            List of synced Table objects (created or updated)
 
         Raises:
             ValueError: If config is not set or if table_name is invalid
@@ -634,11 +633,43 @@ class FacebergCatalog(JsonCatalog):
                 token=token,
             )
 
-            # Create table
-            table = self._create_table_from_table_info(table_info)
-            created_tables.append(table)
+            # Sync table (create new or update existing)
+            table = self._sync_table(table_info, token=token)
+            if table is not None:
+                created_tables.append(table)
 
         return created_tables
+
+    def _sync_table(self, table_info: TableInfo, token: Optional[str] = None) -> Optional[Table]:
+        """Sync a table by creating it or checking if it needs updates.
+
+        Args:
+            table_info: TableInfo containing all metadata needed for table creation/update
+            token: HuggingFace API token (optional, for future use)
+
+        Returns:
+            Table object (created), or None if no sync needed
+        """
+        # Check if table already exists
+        if self.table_exists(table_info.identifier):
+            # Table exists - check if we need to update it
+            table = self.load_table(table_info.identifier)
+
+            # Get the current revision from table properties
+            current_revision = table.properties.get("faceberg.source.revision")
+            new_revision = table_info.source_revision
+
+            # If revisions match, no sync needed
+            if current_revision == new_revision and new_revision is not None:
+                return None
+
+            # TODO: Revision changed - implement snapshot update in future
+            # For now, we skip tables with different revisions
+            # In the future, this should call _update_table_snapshot
+            return None
+
+        # Table doesn't exist - create it
+        return self._create_table_from_table_info(table_info)
 
     def _create_table_from_table_info(self, table_info: TableInfo) -> Table:
         """Create Iceberg table from TableInfo using metadata-only mode.
