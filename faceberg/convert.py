@@ -10,8 +10,10 @@ import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 import pyarrow.parquet as pq
+from huggingface_hub import get_hf_file_metadata, hf_hub_url
 from pyiceberg.io.pyarrow import PyArrowFileIO
 from pyiceberg.manifest import (
     DataFile,
@@ -96,6 +98,31 @@ class IcebergMetadataWriter:
         # Step 3: Write metadata files
         return self._write_metadata_files(data_files, table_uuid, properties or {})
 
+    def _get_hf_file_size(self, file_path: str) -> int:
+        """Get the actual file size from HuggingFace Hub.
+
+        Args:
+            file_path: HuggingFace file path in format hf://datasets/repo_id/path/to/file
+
+        Returns:
+            File size in bytes, or 0 if unable to determine
+        """
+        try:
+            # Parse hf:// URL - format is hf://datasets/org/repo/path/to/file
+            if file_path.startswith("hf://datasets/"):
+                # Split into repo_id (org/repo) and filename (path/to/file)
+                remaining = file_path[len("hf://datasets/"):]
+                parts = remaining.split("/")
+                if len(parts) >= 3:
+                    repo_id = f"{parts[0]}/{parts[1]}"  # org/repo
+                    filename = "/".join(parts[2:])  # path/to/file
+                    url = hf_hub_url(repo_id=repo_id, filename=filename, repo_type="dataset")
+                    metadata = get_hf_file_metadata(url)
+                    return metadata.size
+        except Exception as e:
+            logger.warning(f"Could not get file size from HuggingFace for {file_path}: {e}")
+        return 0
+
     def _read_file_metadata(self, file_infos: List[FileInfo]) -> List[FileInfo]:
         """Read metadata from HuggingFace Hub files without downloading.
 
@@ -113,11 +140,11 @@ class IcebergMetadataWriter:
                 metadata = pq.read_metadata(file_info.path)
                 row_count = metadata.num_rows
 
-                # Use provided size if available, otherwise read from metadata
+                # Use provided size if available, otherwise get actual size from HuggingFace
                 file_size = file_info.size_bytes
                 if file_size == 0:
-                    # Try to get file size (this might still be 0 for some filesystems)
-                    file_size = metadata.serialized_size
+                    # Get the actual file size from HuggingFace Hub
+                    file_size = self._get_hf_file_size(file_info.path)
 
                 enriched.append(
                     FileInfo(
