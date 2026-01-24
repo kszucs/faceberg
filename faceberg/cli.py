@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from faceberg.catalog import FacebergCatalog
+from faceberg.catalog import LocalCatalog
 from faceberg.config import CatalogConfig
 
 console = Console()
@@ -42,25 +42,25 @@ def sync(ctx, table_name):
     """Sync Iceberg tables with HuggingFace datasets from config.
 
     Discovers datasets and creates/updates Iceberg tables. For new tables,
-    creates initial metadata. For existing tables, checks if dataset revision
-    has changed and skips if already up-to-date.
-
-    On first run, this initializes the catalog and creates all namespaces.
+    creates initial metadata and namespaces on-demand. For existing tables,
+    checks if dataset revision has changed and skips if already up-to-date.
 
     Example:
         faceberg sync                      # Sync all tables
         faceberg sync namespace1.table1    # Sync specific table
     """
     config_path = ctx.obj["config_path"]
+
+    # Load config and create catalog
     config = CatalogConfig.from_yaml(config_path)
-    catalog_location = Path(config.location)
+    catalog = LocalCatalog(
+        name=config.name,
+        location=config.location,
+        config=config,
+    )
 
-    console.print(f"[bold blue]Catalog:[/bold blue] {config.name}")
-    console.print(f"[bold blue]Location:[/bold blue] {catalog_location}")
-
-    # Create catalog and initialize namespaces
-    catalog = FacebergCatalog.from_config(config)
-    catalog.initialize()
+    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.name}")
+    console.print(f"[bold blue]Location:[/bold blue] {catalog.catalog_dir}")
 
     # Get HF token
     token = os.getenv("HF_TOKEN")

@@ -7,14 +7,15 @@ from faceberg.bridge import (
     build_iceberg_schema_from_features,
     build_split_partition_spec,
 )
-from faceberg.catalog import FacebergCatalog, JsonCatalog
+from faceberg.catalog import FacebergCatalog, LocalCatalog, RemoteCatalog
 from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
 from faceberg.convert import IcebergMetadataWriter
 
 __all__ = [
     # Catalog
     "FacebergCatalog",
-    "JsonCatalog",
+    "LocalCatalog",
+    "RemoteCatalog",
     # Config
     "CatalogConfig",
     "NamespaceConfig",

@@ -1,4 +1,4 @@
-"""Tests for JsonCatalog and FacebergCatalog implementations."""
+"""Tests for FacebergCatalog implementation."""
 
 import json
 
@@ -7,7 +7,7 @@ from pyiceberg.exceptions import TableAlreadyExistsError
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
-from faceberg.catalog import FacebergCatalog, JsonCatalog
+from faceberg.catalog import LocalCatalog
 from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
 
 
@@ -23,9 +23,18 @@ def test_dir(tmp_path):
 @pytest.fixture
 def catalog(test_dir):
     """Create a test catalog."""
-    return JsonCatalog(
+    from faceberg.config import CatalogConfig
+
+    # Create minimal config for testing basic catalog functionality
+    minimal_config = CatalogConfig(
         name="test_catalog",
-        warehouse=str(test_dir),
+        location=str(test_dir),
+        namespaces={},
+    )
+    return LocalCatalog(
+        name="test_catalog",
+        location=str(test_dir),
+        config=minimal_config,
     )
 
 
@@ -40,21 +49,27 @@ def test_schema():
 
 def test_create_catalog(test_dir):
     """Test catalog creation."""
-    catalog = JsonCatalog(name="test", warehouse=str(test_dir))
+    from faceberg.config import CatalogConfig
+
+    minimal_config = CatalogConfig(
+        name="test",
+        location=str(test_dir),
+        namespaces={},
+    )
+    catalog = LocalCatalog(name="test", location=str(test_dir), config=minimal_config)
 
     assert catalog.name == "test"
-    assert catalog.warehouse == test_dir
+    assert catalog.catalog_dir == test_dir
     assert test_dir.exists()
-    assert (test_dir / "catalog.json").exists()
+    # Note: catalog.json is created after first operation, not at init
 
 
 def test_create_namespace(catalog):
     """Test namespace creation."""
     catalog.create_namespace("default")
 
-    # Namespace directory should exist at warehouse root
-    ns_dir = catalog.warehouse / "default"
-    assert ns_dir.exists()
+    # Note: Namespace directories are implicit in JSON catalog (from table names)
+    # Empty namespaces don't create physical directories until tables are added
 
 
 def test_list_namespaces_empty(catalog):
@@ -140,13 +155,22 @@ def test_rename_table(catalog, test_schema):
 
 def test_catalog_persistence(test_dir, test_schema):
     """Test that catalog persists across instances."""
+    from faceberg.config import CatalogConfig
+
+    minimal_config = CatalogConfig(
+        name="test",
+        location=str(test_dir),
+        namespaces={},
+    )
+
     # Create catalog and table
-    catalog1 = JsonCatalog("test", str(test_dir))
+    catalog1 = LocalCatalog("test", str(test_dir), config=minimal_config)
     catalog1.create_namespace("default")
     catalog1.create_table("default.test_table", test_schema)
+    # Changes are automatically persisted via context manager
 
     # Create new catalog instance
-    catalog2 = JsonCatalog("test", str(test_dir))
+    catalog2 = LocalCatalog("test", str(test_dir), config=minimal_config)
 
     # Table should still exist
     assert catalog2.table_exists("default.test_table")
@@ -159,7 +183,7 @@ def test_catalog_json_format(catalog, test_schema):
     catalog.create_namespace("default")
     catalog.create_table("default.test_table", test_schema)
 
-    catalog_file = catalog.warehouse / "catalog.json"
+    catalog_file = catalog.catalog_dir / "catalog.json"
     assert catalog_file.exists()
 
     with open(catalog_file) as f:
@@ -200,38 +224,62 @@ def faceberg_config(faceberg_test_dir):
 
 
 @pytest.fixture
-def faceberg_catalog(faceberg_config):
-    """Create test FacebergCatalog."""
-    return FacebergCatalog.from_config(faceberg_config)
+def faceberg_config_file(tmp_path, faceberg_test_dir):
+    """Create test config YAML file."""
+    config_file = tmp_path / "test_faceberg.yml"
+    config_content = f"""catalog:
+  name: test_catalog
+  location: {faceberg_test_dir}
+
+default:
+  imdb_plain_text:
+    dataset: stanfordnlp/imdb
+    config: plain_text
+"""
+    config_file.write_text(config_content)
+    return config_file
 
 
-def test_faceberg_from_config(faceberg_config, faceberg_test_dir):
-    """Test creating FacebergCatalog from config."""
-    catalog = FacebergCatalog.from_config(faceberg_config)
+@pytest.fixture
+def faceberg_catalog(faceberg_config_file):
+    """Create test LocalCatalog for Faceberg tests."""
+    config = CatalogConfig.from_yaml(faceberg_config_file)
+    return LocalCatalog(
+        name=config.name,
+        location=config.location,
+        config=config,
+    )
+
+
+def test_faceberg_from_local(faceberg_config_file, faceberg_test_dir):
+    """Test creating LocalCatalog from local config file."""
+    config = CatalogConfig.from_yaml(faceberg_config_file)
+    catalog = LocalCatalog(
+        name=config.name,
+        location=config.location,
+        config=config,
+    )
 
     assert catalog.name == "test_catalog"
-    assert catalog.warehouse == faceberg_test_dir
+    assert catalog.catalog_dir == faceberg_test_dir
 
 
-def test_faceberg_initialize(faceberg_catalog):
-    """Test initializing FacebergCatalog doesn't raise."""
-    # Initialize should not raise even if namespace doesn't exist yet
-    # (namespace is created implicitly when first table is created)
-    faceberg_catalog.initialize()
+def test_faceberg_lazy_namespace_creation(faceberg_catalog):
+    """Test that namespaces are created on-demand when tables are created."""
+    # Namespace should not exist yet
+    assert ("default",) not in faceberg_catalog.list_namespaces()
 
+    # Sync will create namespace on-demand
+    synced_tables = faceberg_catalog.sync(token=None, table_name=None)
 
-def test_faceberg_initialize_idempotent(faceberg_catalog):
-    """Test FacebergCatalog initialize can be called multiple times."""
-    faceberg_catalog.initialize()
-    faceberg_catalog.initialize()  # Should not raise
+    # Namespace should now exist
+    assert ("default",) in faceberg_catalog.list_namespaces()
+    assert len(synced_tables) > 0
 
 
 def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config):
     """Test creating tables from datasets in FacebergCatalog."""
-    # Initialize catalog
-    faceberg_catalog.initialize()
-
-    # Sync tables (token=None works for public datasets)
+    # Sync tables (token=None works for public datasets, namespaces created on-demand)
     synced_tables = faceberg_catalog.sync(
         token=None,
         table_name=None,
@@ -251,9 +299,7 @@ def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config)
 
 def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
     """Test creating a specific table in FacebergCatalog."""
-    faceberg_catalog.initialize()
-
-    # Sync specific table (token=None works for public datasets)
+    # Sync specific table (token=None works for public datasets, namespace created on-demand)
     synced_tables = faceberg_catalog.sync(
         token=None,
         table_name="default.imdb_plain_text",
@@ -269,8 +315,6 @@ def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
 def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config):
     """Test creating a table that already exists raises error in FacebergCatalog."""
     from faceberg.bridge import DatasetInfo
-
-    faceberg_catalog.initialize()
 
     # Discover dataset (token=None works for public datasets)
     dataset_info = DatasetInfo.discover(
@@ -299,9 +343,7 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
     """Test creating a table for a specific config in FacebergCatalog."""
     from faceberg.bridge import DatasetInfo
 
-    faceberg_catalog.initialize()
-
-    # Discover dataset (token=None works for public datasets)
+    # Discover dataset (token=None works for public datasets, namespace created on-demand)
     dataset_info = DatasetInfo.discover(
         repo_id="stanfordnlp/imdb",
         configs=["plain_text"],
