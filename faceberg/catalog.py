@@ -16,11 +16,14 @@ from pyiceberg.exceptions import (
 from pyiceberg.io import load_file_io
 from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionSpec
 from pyiceberg.schema import Schema
+from pyiceberg.serializers import FromInputFile
 from pyiceberg.table import CommitTableRequest, CommitTableResponse, Table
+from pyiceberg.table.metadata import new_table_metadata
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.typedef import EMPTY_DICT, Identifier, Properties
 
-from faceberg.bridge import TableInfo
+from faceberg.bridge import DatasetInfo, TableInfo
+from faceberg.convert import IcebergMetadataWriter
 
 if TYPE_CHECKING:
     from faceberg.config import CatalogConfig
@@ -265,8 +268,6 @@ class JsonCatalog(Catalog):
         location_path.mkdir(parents=True, exist_ok=True)
 
         # Create table metadata
-        from pyiceberg.table.metadata import new_table_metadata
-
         metadata = new_table_metadata(
             schema=schema,
             partition_spec=partition_spec,
@@ -331,8 +332,6 @@ class JsonCatalog(Catalog):
 
         # Load FileIO and metadata
         io = load_file_io(properties=self.properties, location=metadata_location)
-
-        from pyiceberg.serializers import FromInputFile
 
         metadata_file = io.new_input(str(metadata_path))
         metadata = FromInputFile.table_metadata(metadata_file)
@@ -574,8 +573,6 @@ class FacebergCatalog(JsonCatalog):
         Raises:
             ValueError: If config is not set or if table_name is invalid
         """
-        from faceberg.bridge import DatasetInfo
-
         if self.config is None:
             raise ValueError("No config set. Use FacebergCatalog.from_config() to create catalog with config.")
 
@@ -634,18 +631,17 @@ class FacebergCatalog(JsonCatalog):
             )
 
             # Sync table (create new or update existing)
-            table = self._sync_table(table_info, token=token)
+            table = self._sync_table(table_info)
             if table is not None:
                 created_tables.append(table)
 
         return created_tables
 
-    def _sync_table(self, table_info: TableInfo, token: Optional[str] = None) -> Optional[Table]:
+    def _sync_table(self, table_info: TableInfo) -> Optional[Table]:
         """Sync a table by creating it or checking if it needs updates.
 
         Args:
             table_info: TableInfo containing all metadata needed for table creation/update
-            token: HuggingFace API token (optional, for future use)
 
         Returns:
             Table object (created), or None if no sync needed
@@ -656,22 +652,20 @@ class FacebergCatalog(JsonCatalog):
             table = self.load_table(table_info.identifier)
 
             # Get the current revision from table properties
-            current_revision = table.properties.get("faceberg.source.revision")
+            current_revision = table.properties.get("huggingface.dataset.revision")
             new_revision = table_info.source_revision
 
             # If revisions match, no sync needed
             if current_revision == new_revision and new_revision is not None:
                 return None
 
-            # TODO: Revision changed - implement snapshot update in future
-            # For now, we skip tables with different revisions
-            # In the future, this should call _update_table_snapshot
-            return None
+            # Revision changed - update the table snapshot
+            return self._update_table(table_info)
 
         # Table doesn't exist - create it
-        return self._create_table_from_table_info(table_info)
+        return self._create_table(table_info)
 
-    def _create_table_from_table_info(self, table_info: TableInfo) -> Table:
+    def _create_table(self, table_info: TableInfo) -> Table:
         """Create Iceberg table from TableInfo using metadata-only mode.
 
         This method creates an Iceberg table by:
@@ -688,8 +682,6 @@ class FacebergCatalog(JsonCatalog):
         Raises:
             TableAlreadyExistsError: If table already exists
         """
-        from faceberg.convert import IcebergMetadataWriter
-
         # Check if table already exists
         if self.table_exists(table_info.identifier):
             raise TableAlreadyExistsError(f"Table {table_info.identifier} already exists")
@@ -720,4 +712,34 @@ class FacebergCatalog(JsonCatalog):
         self._save_catalog()
 
         # Load and return table
+        return self.load_table(table_info.identifier)
+
+    def _update_table(self, table_info: TableInfo) -> Table:
+        """Update existing table with a new snapshot for the updated dataset revision.
+
+        Args:
+            table_info: TableInfo with updated revision and file information
+
+        Returns:
+            Updated Table object
+        """
+        # Load existing table to get current metadata
+        table = self.load_table(table_info.identifier)
+        table_path = self._get_metadata_location(table_info.identifier)
+
+        # Create metadata writer
+        metadata_writer = IcebergMetadataWriter(
+            table_path=table_path,
+            schema=table_info.schema,
+            partition_spec=table_info.partition_spec,
+        )
+
+        # Append new snapshot with updated files
+        metadata_writer.append_snapshot_from_files(
+            file_infos=table_info.files,
+            current_metadata=table.metadata,
+            properties=table_info.get_table_properties(),
+        )
+
+        # Reload and return table
         return self.load_table(table_info.identifier)

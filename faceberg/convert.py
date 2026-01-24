@@ -6,6 +6,7 @@ HuggingFace dataset files.
 """
 
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -401,4 +402,178 @@ class IcebergMetadataWriter:
             f.write("1")
 
         logger.info(f"Wrote metadata to {metadata_file}")
+        return metadata_file
+
+    def append_snapshot_from_files(
+        self,
+        file_infos: List[FileInfo],
+        current_metadata: TableMetadataV2,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> Path:
+        """Append a new snapshot to existing table metadata.
+
+        This method creates a new snapshot with updated files and writes
+        the new metadata version.
+
+        Args:
+            file_infos: List of FileInfo objects describing new data files
+            current_metadata: Current TableMetadataV2 object
+            properties: Optional updated table properties
+
+        Returns:
+            Path to the new metadata file
+        """
+        logger.info(f"Appending snapshot with {len(file_infos)} files")
+
+        # Enrich file metadata
+        enriched_files = self._read_file_metadata(file_infos)
+
+        # Create DataFile entries
+        data_files = self._create_data_files(enriched_files)
+
+        # Calculate next IDs
+        next_snapshot_id = max(snap.snapshot_id for snap in current_metadata.snapshots) + 1
+        next_sequence_number = current_metadata.last_sequence_number + 1
+
+        # Write manifest
+        manifest_file = self._write_manifest_with_ids(
+            data_files, next_snapshot_id, next_sequence_number
+        )
+
+        # Create snapshot
+        snapshot = self._create_snapshot_with_ids(
+            data_files, next_snapshot_id, next_sequence_number
+        )
+
+        # Write manifest list
+        self._write_manifest_list(snapshot, [manifest_file])
+
+        # Merge properties
+        merged_properties = {**current_metadata.properties}
+        if properties:
+            merged_properties.update(properties)
+
+        # Create updated metadata
+        updated_metadata = TableMetadataV2(  # type: ignore[call-arg]
+            location=current_metadata.location,
+            table_uuid=current_metadata.table_uuid,
+            last_updated_ms=int(time.time() * 1000),
+            last_column_id=current_metadata.last_column_id,
+            schemas=current_metadata.schemas,
+            current_schema_id=current_metadata.current_schema_id,
+            partition_specs=current_metadata.partition_specs,
+            default_spec_id=current_metadata.default_spec_id,
+            last_partition_id=current_metadata.last_partition_id,
+            properties=merged_properties,
+            current_snapshot_id=snapshot.snapshot_id,
+            snapshots=list(current_metadata.snapshots) + [snapshot],
+            snapshot_log=current_metadata.snapshot_log,
+            metadata_log=current_metadata.metadata_log,
+            sort_orders=current_metadata.sort_orders,
+            default_sort_order_id=current_metadata.default_sort_order_id,
+            refs={
+                "main": SnapshotRef(  # type: ignore[call-arg]
+                    snapshot_id=snapshot.snapshot_id,
+                    type=SnapshotRefType.BRANCH,
+                )
+            },
+            format_version=2,
+            last_sequence_number=next_sequence_number,
+        )
+
+        # Write new metadata file
+        return self._write_metadata_version(updated_metadata, next_sequence_number)
+
+    def _write_manifest_with_ids(
+        self, data_files: List[DataFile], snapshot_id: int, sequence_number: int
+    ):
+        """Write manifest file with specific IDs.
+
+        Args:
+            data_files: List of DataFile objects
+            snapshot_id: Snapshot ID
+            sequence_number: Sequence number
+
+        Returns:
+            ManifestFile object
+        """
+        manifest_path = self.metadata_dir / f"{uuid.uuid4()}.avro"
+        output_file = self.file_io.new_output(str(manifest_path))
+
+        with write_manifest(
+            format_version=2,
+            spec=self.partition_spec,
+            schema=self.schema,
+            output_file=output_file,
+            snapshot_id=snapshot_id,
+            avro_compression="deflate",
+        ) as writer:
+            for data_file in data_files:
+                entry = ManifestEntry.from_args(
+                    status=ManifestEntryStatus.ADDED,
+                    snapshot_id=snapshot_id,
+                    sequence_number=sequence_number,
+                    file_sequence_number=sequence_number,
+                    data_file=data_file,
+                )
+                writer.add_entry(entry)
+
+            return writer.to_manifest_file()
+
+    def _create_snapshot_with_ids(
+        self, data_files: List[DataFile], snapshot_id: int, sequence_number: int
+    ) -> Snapshot:
+        """Create snapshot with specific IDs.
+
+        Args:
+            data_files: List of DataFile objects
+            snapshot_id: Snapshot ID
+            sequence_number: Sequence number
+
+        Returns:
+            Snapshot object
+        """
+        total_records = sum(df.record_count for df in data_files)
+
+        return Snapshot(  # type: ignore[call-arg]
+            snapshot_id=snapshot_id,
+            parent_snapshot_id=snapshot_id - 1,
+            sequence_number=sequence_number,
+            timestamp_ms=int(uuid.uuid4().time_low),
+            manifest_list=str(
+                self.metadata_dir / f"snap-{snapshot_id}-{sequence_number}-{uuid.uuid4()}.avro"
+            ),
+            summary=Summary(
+                operation=Operation.APPEND,
+                **{
+                    "added-data-files": str(len(data_files)),
+                    "added-records": str(total_records),
+                    "total-data-files": str(len(data_files)),
+                    "total-records": str(total_records),
+                },
+            ),
+            schema_id=self.schema.schema_id,
+        )
+
+    def _write_metadata_version(self, metadata: TableMetadataV2, version: int) -> Path:
+        """Write a specific metadata version.
+
+        Args:
+            metadata: TableMetadataV2 object
+            version: Version number
+
+        Returns:
+            Path to the metadata file
+        """
+        # Write metadata file
+        metadata_file = self.metadata_dir / f"v{version}.metadata.json"
+        with open(metadata_file, "w") as f:
+            f.write(metadata.model_dump_json(indent=2))
+
+        # Update version hint
+        version_hint_file = self.metadata_dir / "version-hint.text"
+        with open(version_hint_file, "w") as f:
+            f.write(str(version))
+
+        logger.info(f"Wrote metadata version {version} to {metadata_file}")
         return metadata_file
