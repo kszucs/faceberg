@@ -7,7 +7,7 @@ from faceberg.bridge import (
     build_iceberg_schema_from_features,
     build_split_partition_spec,
 )
-from faceberg.catalog import FacebergCatalog, LocalCatalog, RemoteCatalog
+from faceberg.catalog import FacebergCatalog, HfFileIO, LocalCatalog, RemoteCatalog
 from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
 from faceberg.convert import IcebergMetadataWriter
 
@@ -28,4 +28,6 @@ __all__ = [
     "build_split_partition_spec",
     # Convert (Iceberg metadata writer)
     "IcebergMetadataWriter",
+    # IO (FileIO implementations)
+    "HfFileIO",
 ]

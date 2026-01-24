@@ -6,29 +6,6 @@ from faceberg.catalog import LocalCatalog
 from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
 
 
-# Workaround for HfFileSystem threading issue
-# HfFileSystem has a cache that can include exceptions that can't be deep copied
-# when used in multi-threaded contexts. We disable instance caching to avoid this.
-def _patch_hffilesystem():
-    """Patch HfFileSystem to disable instance caching for thread safety."""
-    try:
-        from huggingface_hub import HfFileSystem
-
-        original_call = HfFileSystem.__call__
-
-        def patched_call(cls, *args, **kwargs):
-            # Disable instance caching to avoid deep copy issues with cached exceptions
-            kwargs['skip_instance_cache'] = True
-            return original_call(*args, **kwargs)
-
-        HfFileSystem.__call__ = classmethod(patched_call)
-    except ImportError:
-        pass  # HuggingFace not installed
-
-
-_patch_hffilesystem()
-
-
 @pytest.fixture(scope="session")
 def synced_catalog_dir(tmp_path_factory):
     """Create temp directory for synced catalog (session-scoped)."""
@@ -86,15 +63,6 @@ def catalog(synced_catalog):
     """Provide catalog instance (function-scoped wrapper).
 
     This is a function-scoped fixture that provides access to the session-scoped
-    synced catalog. The catalog has built-in hf:// protocol support.
+    synced catalog. The catalog has built-in hf:// protocol support via HfFileIO.
     """
-    # Clear HfFileSystem cache before each test to avoid threading issues
-    # The cache can contain exceptions that can't be deep copied
-    try:
-        from huggingface_hub import HfFileSystem
-
-        HfFileSystem._cache.clear()
-    except (ImportError, AttributeError):
-        pass  # HuggingFace not installed or cache structure changed
-
     return synced_catalog

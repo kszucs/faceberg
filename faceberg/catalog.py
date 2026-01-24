@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
+from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
     NamespaceNotEmptyError,
@@ -32,6 +33,72 @@ from faceberg.convert import IcebergMetadataWriter
 
 if TYPE_CHECKING:
     import pyarrow as pa
+
+
+# =============================================================================
+# Custom FileIO for HuggingFace Hub Support
+# =============================================================================
+
+
+def _hf_with_skip_cache(properties: Properties):
+    """Create HfFileSystem with instance caching disabled.
+
+    This avoids deepcopy issues when PyIceberg uses threading. HfFileSystem's cache
+    can contain HfHubHTTPError exceptions that fail to deepcopy due to missing
+    'response' parameter in their __init__.
+
+    Args:
+        properties: FileIO properties that may contain hf.endpoint and hf.token
+
+    Returns:
+        HfFileSystem instance with skip_instance_cache=True
+    """
+    from huggingface_hub import HfFileSystem
+
+    return HfFileSystem(
+        endpoint=properties.get("hf.endpoint"),
+        token=properties.get("hf.token"),
+        skip_instance_cache=True,  # Critical: prevents deepcopy issues
+    )
+
+
+class HfFileIO(FsspecFileIO):
+    """Custom FileIO with HuggingFace Hub support and proper caching behavior.
+
+    This FileIO implementation extends FsspecFileIO and overrides the HuggingFace
+    filesystem factory to use skip_instance_cache=True. This eliminates the need
+    for monkey patching HfFileSystem at the module level.
+
+    The skip_instance_cache flag prevents HfFileSystem from caching instances in
+    a way that causes deepcopy issues when PyIceberg's threading tries to copy
+    filesystem instances across threads.
+
+    Example:
+        ```python
+        from faceberg.catalog import HfFileIO
+
+        io = HfFileIO(properties={
+            "hf.endpoint": "https://huggingface.co",
+            "hf.token": "hf_...",
+        })
+        ```
+    """
+
+    def __init__(self, properties: Properties):
+        """Initialize HfFileIO with custom HuggingFace filesystem factory.
+
+        Args:
+            properties: FileIO properties (hf.endpoint, hf.token, etc.)
+        """
+        super().__init__(properties=properties)
+
+        # Override the HuggingFace filesystem factory with our custom version
+        self._scheme_to_fs["hf"] = _hf_with_skip_cache
+
+
+# =============================================================================
+# Catalog Implementations
+# =============================================================================
 
 
 class LocalCatalog(Catalog):
@@ -65,12 +132,10 @@ class LocalCatalog(Catalog):
         # Set default properties for HuggingFace hf:// protocol support
         # These can be overridden by user-provided properties
         default_properties = {
-            "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
+            # Use custom HfFileIO that creates HfFileSystem with skip_instance_cache=True
+            # This avoids deepcopy issues without needing monkey patching or single-threaded mode
+            "py-io-impl": "faceberg.catalog.HfFileIO",
             "hf.endpoint": os.environ.get("HF_ENDPOINT", "https://huggingface.co"),
-            # Disable fsspec caching to avoid threading issues with HfFileSystem
-            "fsspec.cache_type": "none",
-            # Use single worker to avoid threading issues with HfFileSystem
-            "max-workers": "1",
         }
 
         # Merge default properties with user properties (user properties take precedence)
