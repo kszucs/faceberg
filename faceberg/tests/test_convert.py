@@ -304,7 +304,9 @@ class TestFileSizeRegression:
         # Typical metadata.serialized_size values (footer size)
         serialized_sizes = [18853, 10532, 11971, 9938, 19011]
 
-        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata:
+        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata, patch.object(
+            metadata_writer, "_get_hf_file_size"
+        ) as mock_get_size:
 
             def get_metadata_side_effect(path):
                 idx = int(path.split("train-")[1].split("-of")[0])
@@ -323,6 +325,12 @@ class TestFileSizeRegression:
                 return mock_metadata
 
             mock_read_metadata.side_effect = get_metadata_side_effect
+            # Mock the file size to return calculated size (compressed + footer + 8)
+            mock_get_size.side_effect = lambda path: (
+                compressed_sizes[int(path.split("train-")[1].split("-of")[0])]
+                + serialized_sizes[int(path.split("train-")[1].split("-of")[0])]
+                + 8
+            )
 
             enriched = metadata_writer._read_file_metadata(file_infos)
 

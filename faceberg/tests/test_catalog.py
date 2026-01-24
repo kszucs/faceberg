@@ -1,7 +1,6 @@
 """Tests for JsonCatalog and FacebergCatalog implementations."""
 
 import json
-import os
 
 import pytest
 from pyiceberg.exceptions import TableAlreadyExistsError
@@ -229,20 +228,19 @@ def test_faceberg_initialize_idempotent(faceberg_catalog):
 
 def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config):
     """Test creating tables from datasets in FacebergCatalog."""
-    # Skip if no HF_TOKEN (e.g., in CI)
-    if not os.getenv("HF_TOKEN"):
-        pytest.skip("HF_TOKEN not set")
-
     # Initialize catalog
     faceberg_catalog.initialize()
 
-    # Create tables
-    faceberg_catalog.create_tables(
-        token=os.getenv("HF_TOKEN"),
+    # Sync tables (token=None works for public datasets)
+    synced_tables = faceberg_catalog.sync(
+        token=None,
         table_name=None,
     )
 
-    # Verify table was created
+    # Verify tables were created
+    assert len(synced_tables) > 0
+
+    # Verify table was created in catalog
     tables = faceberg_catalog.list_tables("default")
     assert len(tables) > 0
 
@@ -253,17 +251,16 @@ def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config)
 
 def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
     """Test creating a specific table in FacebergCatalog."""
-    # Skip if no HF_TOKEN
-    if not os.getenv("HF_TOKEN"):
-        pytest.skip("HF_TOKEN not set")
-
     faceberg_catalog.initialize()
 
-    # Create specific table
-    faceberg_catalog.create_tables(
-        token=os.getenv("HF_TOKEN"),
+    # Sync specific table (token=None works for public datasets)
+    synced_tables = faceberg_catalog.sync(
+        token=None,
         table_name="default.imdb_plain_text",
     )
+
+    # Verify table was synced
+    assert len(synced_tables) == 1
 
     # Verify table exists
     assert faceberg_catalog.table_exists("default.imdb_plain_text")
@@ -271,19 +268,15 @@ def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
 
 def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config):
     """Test creating a table that already exists raises error in FacebergCatalog."""
-    # Skip if no HF_TOKEN
-    if not os.getenv("HF_TOKEN"):
-        pytest.skip("HF_TOKEN not set")
-
     from faceberg.bridge import DatasetInfo
 
     faceberg_catalog.initialize()
 
-    # Discover dataset
+    # Discover dataset (token=None works for public datasets)
     dataset_info = DatasetInfo.discover(
         repo_id="stanfordnlp/imdb",
         configs=["plain_text"],
-        token=os.getenv("HF_TOKEN"),
+        token=None,
     )
 
     # Convert to TableInfo
@@ -291,32 +284,28 @@ def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config)
         namespace="default",
         table_name="imdb_plain_text",
         config="plain_text",
-        token=os.getenv("HF_TOKEN"),
+        token=None,
     )
 
     # Create table first time
-    faceberg_catalog._create_table_from_table_info(table_info)
+    faceberg_catalog._create_table(table_info)
 
     # Try to create again - should raise
     with pytest.raises(TableAlreadyExistsError):
-        faceberg_catalog._create_table_from_table_info(table_info)
+        faceberg_catalog._create_table(table_info)
 
 
 def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
     """Test creating a table for a specific config in FacebergCatalog."""
-    # Skip if no HF_TOKEN
-    if not os.getenv("HF_TOKEN"):
-        pytest.skip("HF_TOKEN not set")
-
     from faceberg.bridge import DatasetInfo
 
     faceberg_catalog.initialize()
 
-    # Discover dataset
+    # Discover dataset (token=None works for public datasets)
     dataset_info = DatasetInfo.discover(
         repo_id="stanfordnlp/imdb",
         configs=["plain_text"],
-        token=os.getenv("HF_TOKEN"),
+        token=None,
     )
 
     # Convert to TableInfo
@@ -324,11 +313,11 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
         namespace="default",
         table_name="imdb_plain_text",
         config="plain_text",
-        token=os.getenv("HF_TOKEN"),
+        token=None,
     )
 
     # Create table
-    table = faceberg_catalog._create_table_from_table_info(table_info)
+    table = faceberg_catalog._create_table(table_info)
 
     # Verify table
     assert table is not None
@@ -337,10 +326,10 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
 
     # Verify table properties
     props = table.properties
-    assert "faceberg.source.repo" in props
-    assert props["faceberg.source.repo"] == "stanfordnlp/imdb"
-    assert "faceberg.source.config" in props
-    assert props["faceberg.source.config"] == "plain_text"
+    assert "huggingface.dataset.repo" in props
+    assert props["huggingface.dataset.repo"] == "stanfordnlp/imdb"
+    assert "huggingface.dataset.config" in props
+    assert props["huggingface.dataset.config"] == "plain_text"
 
 
 def test_faceberg_invalid_table_name_format(faceberg_catalog, faceberg_config):
