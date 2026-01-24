@@ -21,7 +21,8 @@ from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema, assign_fresh_schema_ids
 from pyiceberg.transforms import IdentityTransform
-from pyiceberg.types import NestedField, StringType
+from pyiceberg.types import ListType, MapType, NestedField, StringType, StructType
+
 
 # =============================================================================
 # Bridge Output Classes
@@ -84,17 +85,6 @@ class TableInfo:
             Dictionary of table properties including source metadata and name mapping
         """
         # Create schema name mapping for Parquet files without embedded field IDs
-        # This maps Parquet column names to Iceberg field IDs
-        def build_name_mapping(schema):
-            """Build name mapping from schema."""
-            fields = []
-            for field in schema.fields:
-                fields.append({
-                    "field-id": field.field_id,
-                    "names": [field.name],
-                })
-            return fields
-
         name_mapping = build_name_mapping(self.schema)
 
         properties = {
@@ -110,6 +100,105 @@ class TableInfo:
             properties["huggingface.dataset.revision"] = self.source_revision
 
         return properties
+
+
+# =============================================================================
+# Schema Name Mapping Helpers
+# =============================================================================
+
+
+def build_field_mapping(field: NestedField) -> Dict[str, any]:
+    """Build name mapping for a single field, recursively handling nested types.
+
+    Args:
+        field: Iceberg NestedField to create mapping for
+
+    Returns:
+        Dictionary containing field-id, names, and optionally nested fields
+    """
+    mapping = {
+        "field-id": field.field_id,
+        "names": [field.name],
+    }
+
+    # Handle nested types
+    if isinstance(field.field_type, StructType):
+        # Recursively map nested struct fields
+        nested_fields = []
+        for nested_field in field.field_type.fields:
+            nested_fields.append(build_field_mapping(nested_field))
+        if nested_fields:
+            mapping["fields"] = nested_fields
+    elif isinstance(field.field_type, ListType):
+        # Create mapping for the list element
+        element_mapping = {
+            "field-id": field.field_type.element_id,
+            "names": ["element"],
+        }
+        # If element is a struct, recursively map its fields
+        if isinstance(field.field_type.element_type, StructType):
+            element_fields = []
+            for nested_field in field.field_type.element_type.fields:
+                element_fields.append(build_field_mapping(nested_field))
+            if element_fields:
+                element_mapping["fields"] = element_fields
+        mapping["fields"] = [element_mapping]
+    elif isinstance(field.field_type, MapType):
+        # Create mappings for key and value
+        map_fields = []
+
+        # Map the key
+        key_mapping = {
+            "field-id": field.field_type.key_id,
+            "names": ["key"],
+        }
+        if isinstance(field.field_type.key_type, StructType):
+            key_fields = []
+            for nested_field in field.field_type.key_type.fields:
+                key_fields.append(build_field_mapping(nested_field))
+            if key_fields:
+                key_mapping["fields"] = key_fields
+        map_fields.append(key_mapping)
+
+        # Map the value
+        value_mapping = {
+            "field-id": field.field_type.value_id,
+            "names": ["value"],
+        }
+        if isinstance(field.field_type.value_type, StructType):
+            value_fields = []
+            for nested_field in field.field_type.value_type.fields:
+                value_fields.append(build_field_mapping(nested_field))
+            if value_fields:
+                value_mapping["fields"] = value_fields
+        map_fields.append(value_mapping)
+
+        mapping["fields"] = map_fields
+
+    return mapping
+
+
+def build_name_mapping(schema: Schema) -> List[Dict[str, any]]:
+    """Build Iceberg name mapping from schema, recursively handling nested fields.
+
+    Name mapping is used to map Parquet column names to Iceberg field IDs for
+    files that don't have embedded field IDs.
+
+    Args:
+        schema: Iceberg schema to create mapping for
+
+    Returns:
+        List of field mappings with field-id, names, and nested fields
+    """
+    fields = []
+    for field in schema.fields:
+        fields.append(build_field_mapping(field))
+    return fields
+
+
+# ============================================================================
+# Schema and Partition Spec Builders
+# ============================================================================
 
 
 def build_split_partition_spec(schema: Schema) -> PartitionSpec:
@@ -193,7 +282,7 @@ def build_iceberg_schema_from_features(
 
 
 # =============================================================================
-# Helper Functions
+# Datasets Helper Functions
 # =============================================================================
 
 

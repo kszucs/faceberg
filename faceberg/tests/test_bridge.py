@@ -367,6 +367,214 @@ def test_table_properties_use_huggingface_prefix():
     assert "faceberg.source.revision" not in props
 
 
+def test_table_info_name_mapping_with_nested_structs():
+    """Test that name mapping includes nested struct fields."""
+    import json
+
+    from faceberg.bridge import TableInfo
+    from pyiceberg.types import IntegerType, ListType, NestedField, StringType, StructType
+
+    # Create a schema with nested structs
+    schema = Schema(
+        NestedField(field_id=1, name="id", field_type=StringType(), required=False),
+        NestedField(
+            field_id=2,
+            name="metadata",
+            field_type=StructType(
+                NestedField(field_id=3, name="author", field_type=StringType(), required=False),
+                NestedField(field_id=4, name="year", field_type=IntegerType(), required=False),
+            ),
+            required=False,
+        ),
+    )
+
+    from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC
+
+    table_info = TableInfo(
+        namespace="test",
+        table_name="table",
+        schema=schema,
+        partition_spec=UNPARTITIONED_PARTITION_SPEC,
+        files=[],
+        source_repo="test/repo",
+        source_config="default",
+        source_revision="abc123",
+    )
+
+    properties = table_info.get_table_properties()
+    name_mapping = json.loads(properties["schema.name-mapping.default"])
+
+    # Check top-level fields
+    assert len(name_mapping) == 2
+    assert name_mapping[0]["field-id"] == 1
+    assert name_mapping[0]["names"] == ["id"]
+
+    # Check nested struct field
+    metadata_mapping = name_mapping[1]
+    assert metadata_mapping["field-id"] == 2
+    assert metadata_mapping["names"] == ["metadata"]
+    assert "fields" in metadata_mapping
+    assert len(metadata_mapping["fields"]) == 2
+
+    # Check nested struct's child fields
+    assert metadata_mapping["fields"][0]["field-id"] == 3
+    assert metadata_mapping["fields"][0]["names"] == ["author"]
+    assert metadata_mapping["fields"][1]["field-id"] == 4
+    assert metadata_mapping["fields"][1]["names"] == ["year"]
+
+
+def test_table_info_name_mapping_with_lists():
+    """Test that name mapping includes list element mappings."""
+    import json
+
+    from faceberg.bridge import TableInfo
+    from pyiceberg.types import ListType, NestedField, StringType, StructType
+
+    # Create a schema with list of strings and list of structs
+    schema = Schema(
+        NestedField(field_id=1, name="id", field_type=StringType(), required=False),
+        NestedField(
+            field_id=2,
+            name="tags",
+            field_type=ListType(element_id=3, element_type=StringType(), element_required=False),
+            required=False,
+        ),
+        NestedField(
+            field_id=4,
+            name="items",
+            field_type=ListType(
+                element_id=5,
+                element_type=StructType(
+                    NestedField(field_id=6, name="name", field_type=StringType(), required=False),
+                    NestedField(
+                        field_id=7, name="value", field_type=StringType(), required=False
+                    ),
+                ),
+                element_required=False,
+            ),
+            required=False,
+        ),
+    )
+
+    from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC
+
+    table_info = TableInfo(
+        namespace="test",
+        table_name="table",
+        schema=schema,
+        partition_spec=UNPARTITIONED_PARTITION_SPEC,
+        files=[],
+        source_repo="test/repo",
+        source_config="default",
+        source_revision="abc123",
+    )
+
+    properties = table_info.get_table_properties()
+    name_mapping = json.loads(properties["schema.name-mapping.default"])
+
+    # Check list of strings (tags)
+    tags_mapping = name_mapping[1]
+    assert tags_mapping["field-id"] == 2
+    assert tags_mapping["names"] == ["tags"]
+    assert "fields" in tags_mapping
+    assert len(tags_mapping["fields"]) == 1
+
+    # Check element mapping for simple list
+    element_mapping = tags_mapping["fields"][0]
+    assert element_mapping["field-id"] == 3
+    assert element_mapping["names"] == ["element"]
+
+    # Check list of structs (items)
+    items_mapping = name_mapping[2]
+    assert items_mapping["field-id"] == 4
+    assert items_mapping["names"] == ["items"]
+    assert "fields" in items_mapping
+
+    # Check element mapping for list of structs
+    items_element = items_mapping["fields"][0]
+    assert items_element["field-id"] == 5
+    assert items_element["names"] == ["element"]
+    assert "fields" in items_element
+
+    # Check struct fields within list element
+    assert len(items_element["fields"]) == 2
+    assert items_element["fields"][0]["field-id"] == 6
+    assert items_element["fields"][0]["names"] == ["name"]
+    assert items_element["fields"][1]["field-id"] == 7
+    assert items_element["fields"][1]["names"] == ["value"]
+
+
+def test_table_info_name_mapping_with_maps():
+    """Test that name mapping includes map key and value mappings."""
+    import json
+
+    from faceberg.bridge import TableInfo
+    from pyiceberg.types import IntegerType, MapType, NestedField, StringType, StructType
+
+    # Create a schema with a map
+    schema = Schema(
+        NestedField(field_id=1, name="id", field_type=StringType(), required=False),
+        NestedField(
+            field_id=2,
+            name="metadata",
+            field_type=MapType(
+                key_id=3,
+                key_type=StringType(),
+                value_id=4,
+                value_type=StructType(
+                    NestedField(
+                        field_id=5, name="count", field_type=IntegerType(), required=False
+                    ),
+                    NestedField(field_id=6, name="name", field_type=StringType(), required=False),
+                ),
+                value_required=False,
+            ),
+            required=False,
+        ),
+    )
+
+    from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC
+
+    table_info = TableInfo(
+        namespace="test",
+        table_name="table",
+        schema=schema,
+        partition_spec=UNPARTITIONED_PARTITION_SPEC,
+        files=[],
+        source_repo="test/repo",
+        source_config="default",
+        source_revision="abc123",
+    )
+
+    properties = table_info.get_table_properties()
+    name_mapping = json.loads(properties["schema.name-mapping.default"])
+
+    # Check map field
+    metadata_mapping = name_mapping[1]
+    assert metadata_mapping["field-id"] == 2
+    assert metadata_mapping["names"] == ["metadata"]
+    assert "fields" in metadata_mapping
+    assert len(metadata_mapping["fields"]) == 2
+
+    # Check key mapping
+    key_mapping = metadata_mapping["fields"][0]
+    assert key_mapping["field-id"] == 3
+    assert key_mapping["names"] == ["key"]
+
+    # Check value mapping
+    value_mapping = metadata_mapping["fields"][1]
+    assert value_mapping["field-id"] == 4
+    assert value_mapping["names"] == ["value"]
+    assert "fields" in value_mapping
+
+    # Check struct fields within map value
+    assert len(value_mapping["fields"]) == 2
+    assert value_mapping["fields"][0]["field-id"] == 5
+    assert value_mapping["fields"][0]["names"] == ["count"]
+    assert value_mapping["fields"][1]["field-id"] == 6
+    assert value_mapping["fields"][1]["names"] == ["name"]
+
+
 if __name__ == "__main__":
     # Run basic smoke test
     print("Running basic discovery test...")
