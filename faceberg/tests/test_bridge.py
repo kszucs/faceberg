@@ -93,22 +93,28 @@ def test_get_parquet_files_nonexistent_config():
         dataset_info.get_parquet_files_for_table("fake_config")
 
 
-def test_extract_relative_path():
-    """Test path extraction from various formats."""
+def test_resolve_hf_path():
+    """Test path resolution using HfFileSystem API."""
+    from huggingface_hub import HfFileSystem
+
+    from faceberg.bridge import resolve_hf_path
+
+    fs = HfFileSystem()
+
     # Test with revision format
-    path1 = "repo@abc123/plain_text/train-00000.parquet"
-    result1 = DatasetInfo._extract_relative_path("repo", path1)
-    assert result1 == "plain_text/train-00000.parquet"
+    path1 = "squad@7b6d24c/plain_text/train-v1.1.parquet"
+    result1 = resolve_hf_path(fs, path1)
+    assert result1 == "plain_text/train-v1.1.parquet"
 
     # Test with hf:// URI
-    path2 = "hf://datasets/repo/plain_text/train-00000.parquet"
-    result2 = DatasetInfo._extract_relative_path("repo", path2)
-    assert result2 == "plain_text/train-00000.parquet"
+    path2 = "hf://datasets/squad/plain_text/train-v1.1.parquet"
+    result2 = resolve_hf_path(fs, path2)
+    assert result2 == "plain_text/train-v1.1.parquet"
 
-    # Test with relative path
-    path3 = "plain_text/train-00000.parquet"
-    result3 = DatasetInfo._extract_relative_path("repo", path3)
-    assert result3 == "plain_text/train-00000.parquet"
+    # Test with relative path (should return as-is)
+    path3 = "plain_text/train-v1.1.parquet"
+    result3 = resolve_hf_path(fs, path3)
+    assert result3 == "plain_text/train-v1.1.parquet"
 
 
 def test_to_table_infos():

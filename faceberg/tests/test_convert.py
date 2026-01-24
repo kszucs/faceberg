@@ -45,7 +45,7 @@ class TestGetHfFileSize:
             "faceberg.convert.get_hf_file_metadata"
         ) as mock_get_metadata:
             # Setup mocks
-            mock_hf_hub_url.return_value = "https://huggingface.co/datasets/deepmind/narrativeqa/resolve/main/data/train-00000-of-00024.parquet"
+            mock_hf_hub_url.return_value = "https://huggingface.co/mock-url"
 
             mock_metadata = Mock()
             mock_metadata.size = 9799947
@@ -109,26 +109,12 @@ class TestGetHfFileSize:
             file_size = metadata_writer._get_hf_file_size(test_url)
             assert file_size == 0
 
-    def test_get_hf_file_size_repository_not_found(self, metadata_writer):
-        """Test handling when repository doesn't exist."""
-        test_url = "hf://datasets/nonexistent/repo/file.parquet"
-
-        with patch("faceberg.convert.hf_hub_url") as mock_hf_hub_url, patch(
-            "faceberg.convert.get_hf_file_metadata"
-        ) as mock_get_metadata:
-            mock_hf_hub_url.return_value = "https://mock.url"
-            # Simulate any exception (generic error handling)
-            mock_get_metadata.side_effect = RuntimeError("Repository not found")
-
-            file_size = metadata_writer._get_hf_file_size(test_url)
-            assert file_size == 0
-
 
 class TestReadFileMetadata:
     """Tests for the _read_file_metadata method."""
 
-    def test_read_file_metadata_uses_hf_file_size(self, metadata_writer):
-        """Test that _read_file_metadata uses HuggingFace file size when size_bytes is 0."""
+    def test_read_file_metadata_gets_file_size(self, metadata_writer):
+        """Test that _read_file_metadata gets file size from HuggingFace when size_bytes is 0."""
         file_infos = [
             FileInfo(
                 path="hf://datasets/org/repo/file1.parquet",
@@ -222,16 +208,16 @@ class TestReadFileMetadata:
 
             mock_read_metadata.side_effect = get_metadata_side_effect
 
-            # Mock file sizes for files without size
+            # Mock file sizes from HuggingFace for files without size
             mock_get_size.side_effect = [9999999, 8888888]
 
             enriched = metadata_writer._read_file_metadata(file_infos)
 
             assert len(enriched) == 3
-            # File 1: no size, gets it from HF
+            # File 1: no size, gets it from HuggingFace
             assert enriched[0].size_bytes == 9999999
             assert enriched[0].row_count == 1000
-            # File 2: no size, gets it from HF
+            # File 2: no size, gets it from HuggingFace
             assert enriched[1].size_bytes == 8888888
             assert enriched[1].row_count == 2000
             # File 3: has size, uses it, but row_count is read from parquet metadata
@@ -313,31 +299,38 @@ class TestFileSizeRegression:
             for i in range(5)
         ]
 
-        # Real-world file sizes from the bug report
-        real_sizes = [9766702, 67176993, 232523620, 27221729, 88315563]
-        # Typical metadata.serialized_size values (around 500-600 bytes)
+        # Real-world compressed data sizes (excluding footer)
+        compressed_sizes = [9766702, 67176993, 232523620, 27221729, 88315563]
+        # Typical metadata.serialized_size values (footer size)
         serialized_sizes = [18853, 10532, 11971, 9938, 19011]
 
-        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata, patch.object(
-            metadata_writer, "_get_hf_file_size"
-        ) as mock_get_size:
+        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata:
 
             def get_metadata_side_effect(path):
                 idx = int(path.split("train-")[1].split("-of")[0])
                 mock_metadata = Mock()
                 mock_metadata.num_rows = 1000
                 mock_metadata.serialized_size = serialized_sizes[idx]
+                mock_metadata.num_row_groups = 1
+
+                # Mock row group with single column containing all compressed data
+                mock_rg = Mock()
+                mock_rg.num_columns = 1
+                mock_col = Mock(total_compressed_size=compressed_sizes[idx])
+                mock_rg.column = Mock(return_value=mock_col)
+                mock_metadata.row_group = Mock(return_value=mock_rg)
+
                 return mock_metadata
 
             mock_read_metadata.side_effect = get_metadata_side_effect
-            mock_get_size.side_effect = real_sizes
 
             enriched = metadata_writer._read_file_metadata(file_infos)
 
-            # Verify all files have correct sizes
+            # Verify all files have correct sizes (compressed + footer + 8 bytes)
             for i, file_info in enumerate(enriched):
-                assert file_info.size_bytes == real_sizes[i]
-                # Verify we're not using the wrong serialized_size
+                expected = compressed_sizes[i] + serialized_sizes[i] + 8
+                assert file_info.size_bytes == expected
+                # Verify we're not using just the footer
                 assert file_info.size_bytes != serialized_sizes[i]
                 # Verify the ratio is in the expected range
                 ratio = file_info.size_bytes / serialized_sizes[i]

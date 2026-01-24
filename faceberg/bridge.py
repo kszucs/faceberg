@@ -13,10 +13,10 @@ from typing import Dict, List, Optional
 from datasets import (
     Features,
     get_dataset_config_names,
-    get_dataset_split_names,
     load_dataset_builder,
 )
 from datasets.exceptions import DatasetNotFoundError
+from huggingface_hub import HfApi, HfFileSystem
 from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema, assign_fresh_schema_ids
@@ -286,6 +286,38 @@ def build_iceberg_schema_from_features(
 # =============================================================================
 
 
+def resolve_hf_path(fs: HfFileSystem, file_path: str) -> str:
+    """Resolve HuggingFace file path to relative path using official API.
+
+    Uses HfFileSystem.resolve_path to properly parse file paths from the datasets
+    library, which can come in various formats.
+
+    Args:
+        fs: HfFileSystem instance for path resolution
+        file_path: File path in various formats (hf://, repo@revision/path, etc.)
+
+    Returns:
+        Relative path suitable for hf:// URIs
+
+    Raises:
+        Exception: If path cannot be resolved
+    """
+    # Handle hf:// URIs
+    if file_path.startswith("hf://"):
+        resolved = fs.resolve_path(file_path)
+        return resolved.path_in_repo
+
+    # Handle format from datasets library: {repo_id}@{revision}/{relative_path}
+    if "@" in file_path and "/" in file_path:
+        # Convert to datasets/repo_id@revision/path format for resolve_path
+        datasets_path = f"datasets/{file_path}"
+        resolved = fs.resolve_path(datasets_path)
+        return resolved.path_in_repo
+
+    # Already a relative path
+    return file_path
+
+
 def load_dataset_builder_safe(
     repo_id: str,
     config_name: Optional[str] = None,
@@ -422,9 +454,14 @@ class DatasetInfo:
             Tuple of (splits list, files dict mapping split -> file paths, revision)
 
         Raises:
-            Exception: If builder cannot be loaded or splits cannot be determined
+            ValueError: If no data files found or builder cannot be loaded
         """
         builder = load_dataset_builder_safe(repo_id, config_name=config_name, token=token)
+
+        # Get dataset revision using official HuggingFace Hub API
+        api = HfApi()
+        dataset_info = api.dataset_info(repo_id, token=token)
+        revision = dataset_info.sha
 
         # Get splits from builder.info.splits if available, otherwise from data_files
         splits = []
@@ -436,76 +473,22 @@ class DatasetInfo:
             builder.config.data_files if hasattr(builder.config, "data_files") else None
         )
 
-        if data_files and isinstance(data_files, dict):
-            # Use splits from data_files if not found in builder.info
-            if not splits:
-                splits = list(data_files.keys())
+        if not data_files or not isinstance(data_files, dict):
+            raise ValueError(
+                f"No data files found for dataset {repo_id} config {config_name}. "
+                "Cannot create Iceberg table without source data files."
+            )
 
-            # Extract file paths and revision
-            files = {}
-            revision = None
+        # Use splits from data_files if not found in builder.info
+        if not splits:
+            splits = list(data_files.keys())
 
-            for split, paths in data_files.items():
-                # Only include remote files (hf:// URLs)
-                remote_paths = []
-                for path in paths:
-                    if isinstance(path, str) and (path.startswith("hf://") or "@" in path):
-                        # Extract revision from path (format: repo_id@revision/path)
-                        if not revision and "@" in path:
-                            parts = path.split("@", 1)
-                            if len(parts) > 1 and "/" in parts[1]:
-                                revision = parts[1].split("/")[0]
+        # Resolve all file paths using HfFileSystem
+        fs = HfFileSystem(token=token)
+        files = {split: [resolve_hf_path(fs, path) for path in paths]
+                 for split, paths in data_files.items()}
 
-                        remote_paths.append(DatasetInfo._extract_relative_path(repo_id, path))
-
-                if remote_paths:
-                    files[split] = remote_paths
-
-            if files:
-                return splits, files, revision
-
-        # Fallback: if no data_files but we have splits from info
-        if splits:
-            return splits, {split: [] for split in splits}, None
-
-        # Final fallback: use get_dataset_split_names
-        splits = get_dataset_split_names(repo_id, config_name=config_name, token=token)
-        return splits, {split: [] for split in splits}, None
-
-    @staticmethod
-    def _extract_relative_path(repo_id: str, file_path: str) -> str:
-        """Extract relative path from various file path formats.
-
-        Args:
-            repo_id: Dataset repository ID
-            file_path: File path in various formats
-
-        Returns:
-            Relative path suitable for hf:// URIs
-        """
-        if not isinstance(file_path, str):
-            return str(file_path)
-
-        # Format from datasets library: {repo_id}@{revision}/{relative_path}
-        if "@" in file_path and "/" in file_path:
-            parts = file_path.split("@", 1)
-            if len(parts) > 1:
-                revision_and_path = parts[1]
-                if "/" in revision_and_path:
-                    return revision_and_path.split("/", 1)[1]
-
-        # Remove hf://datasets/{repo_id}/ prefix
-        if file_path.startswith(f"hf://datasets/{repo_id}/"):
-            return file_path.replace(f"hf://datasets/{repo_id}/", "")
-
-        # Extract path after repo_id from hf:// URI
-        if file_path.startswith("hf://"):
-            path_parts = file_path.split("/")
-            if len(path_parts) > 3:  # hf://datasets/{repo_id}/...
-                return "/".join(path_parts[3:])
-
-        # Already a relative path
-        return file_path
+        return splits, files, revision
 
     def get_parquet_files_for_table(self, config: str) -> List[str]:
         """Get all Parquet files for a specific config across all splits.

@@ -10,7 +10,6 @@ import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
 import pyarrow.parquet as pq
 from huggingface_hub import get_hf_file_metadata, hf_hub_url
@@ -101,6 +100,10 @@ class IcebergMetadataWriter:
     def _get_hf_file_size(self, file_path: str) -> int:
         """Get the actual file size from HuggingFace Hub.
 
+        This queries the HuggingFace API to get the exact file size. While we could
+        calculate an approximate size from Parquet metadata, the calculation is not
+        exact enough for DuckDB's iceberg_scan which needs precise file sizes.
+
         Args:
             file_path: HuggingFace file path in format hf://datasets/repo_id/path/to/file
 
@@ -111,7 +114,7 @@ class IcebergMetadataWriter:
             # Parse hf:// URL - format is hf://datasets/org/repo/path/to/file
             if file_path.startswith("hf://datasets/"):
                 # Split into repo_id (org/repo) and filename (path/to/file)
-                remaining = file_path[len("hf://datasets/"):]
+                remaining = file_path[len("hf://datasets/") :]
                 parts = remaining.split("/")
                 if len(parts) >= 3:
                     repo_id = f"{parts[0]}/{parts[1]}"  # org/repo
@@ -140,10 +143,10 @@ class IcebergMetadataWriter:
                 metadata = pq.read_metadata(file_info.path)
                 row_count = metadata.num_rows
 
-                # Use provided size if available, otherwise get actual size from HuggingFace
+                # Use provided size if available, otherwise get from HuggingFace API
                 file_size = file_info.size_bytes
                 if file_size == 0:
-                    # Get the actual file size from HuggingFace Hub
+                    # Get exact file size from HuggingFace Hub API
                     file_size = self._get_hf_file_size(file_info.path)
 
                 enriched.append(
