@@ -1,6 +1,7 @@
 """Faceberg catalog implementation with HuggingFace Hub support."""
 
 import json
+import os
 import shutil
 import tempfile
 import uuid
@@ -52,21 +53,31 @@ class LocalCatalog(Catalog):
 
     def __init__(
         self,
-        name: str,
-        location: str,
-        config: Optional[CatalogConfig] = None,
+        config: CatalogConfig,
         **properties: str,
     ):
         """Initialize local catalog.
 
         Args:
-            name: Catalog name
-            location: Catalog directory for final storage (e.g., ".faceberg/")
-            config: Catalog configuration (optional, for dataset sync)
+            config: Catalog configuration (contains name, location, and dataset mappings)
             **properties: Additional catalog properties
         """
-        super().__init__(name, **properties)
-        self.catalog_dir = Path(location)
+        # Set default properties for HuggingFace hf:// protocol support
+        # These can be overridden by user-provided properties
+        default_properties = {
+            "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
+            "hf.endpoint": os.environ.get("HF_ENDPOINT", "https://huggingface.co"),
+            # Disable fsspec caching to avoid threading issues with HfFileSystem
+            "fsspec.cache_type": "none",
+            # Use single worker to avoid threading issues with HfFileSystem
+            "max-workers": "1",
+        }
+
+        # Merge default properties with user properties (user properties take precedence)
+        merged_properties = {**default_properties, **properties}
+
+        super().__init__(config.name, **merged_properties)
+        self.catalog_dir = Path(config.location)
         self.config = config
 
         # Temporary staging attributes (set within context manager)
@@ -94,17 +105,10 @@ class LocalCatalog(Catalog):
             with open(catalog_file) as f:
                 data = json.load(f)
 
-            # Handle legacy format (flat dict)
-            if "type" not in data:
-                self._catalog = data
-                # Set default uri for legacy catalogs
-                path_str = self.catalog_dir.absolute().as_posix()
-                self.uri = f"file:///{path_str.lstrip('/')}"
-            else:
-                # New format with metadata - assert type matches
-                assert data["type"] == "local", f"Expected catalog type 'local', got '{data['type']}'"
-                self._catalog = data.get("tables", {})
-                self.uri = data["uri"]
+            # Assert type matches
+            assert data["type"] == "local", f"Expected catalog type 'local', got '{data['type']}'"
+            self._catalog = data.get("tables", {})
+            self.uri = data["uri"]
         else:
             self._catalog = {}
             path_str = self.catalog_dir.absolute().as_posix()
@@ -281,34 +285,6 @@ class LocalCatalog(Catalog):
             return identifier
         return ".".join(identifier)
 
-    def _get_metadata_location(self, identifier: Union[str, Identifier]) -> Path:
-        """Get metadata directory path for table in staging.
-
-        Args:
-            identifier: Table identifier
-
-        Returns:
-            Path to table metadata directory
-
-        Must be called within _staging() context.
-        """
-        if self._staging_dir is None:
-            raise RuntimeError("_get_metadata_location() must be called within _staging() context")
-
-        table_id = self._identifier_to_str(identifier)
-        # Split into namespace and table name
-        parts = table_id.split(".")
-        if len(parts) < 2:
-            raise ValueError(
-                f"Invalid table identifier: {table_id}. "
-                "Expected format: namespace.table_name"
-            )
-
-        # Construct path as namespace/table_name
-        namespace = parts[0]
-        table_name = ".".join(parts[1:])  # Handle multi-part table names
-        return self._staging_dir / namespace / table_name
-
     # =========================================================================
     # Iceberg Catalog Interface (implementation of pyiceberg.catalog.Catalog)
     # =========================================================================
@@ -459,51 +435,46 @@ class LocalCatalog(Catalog):
             # Convert schema if needed
             schema = self._convert_schema_if_needed(schema)
 
-            # Determine table location path for writing
+            # Parse identifier
+            namespace, table_name = table_id.split(".", 1)
+
+            # Determine table directory path
             if location is None:
-                location_path = self._get_metadata_location(identifier)
+                table_path = self._staging_dir / namespace / table_name
             else:
-                location_path = Path(location)
+                table_path = Path(location)
 
-            # Ensure location directory exists
-            location_path.mkdir(parents=True, exist_ok=True)
+            # Ensure table directory exists
+            table_path.mkdir(parents=True, exist_ok=True)
 
-            # Calculate base URI for table metadata
-            from faceberg.convert import _join_uri
-
-            table_id = self._identifier_to_str(identifier)
-            parts = table_id.split(".")
-            namespace = parts[0]
-            table_name = ".".join(parts[1:])
-
-            # Use catalog's uri + table path
-            base_uri = _join_uri(self.uri, namespace, table_name)
+            # Create table URI for metadata
+            table_uri = f"{self.uri.rstrip('/')}/{namespace}/{table_name}"
 
             # Create table metadata with URI location
             metadata = new_table_metadata(
                 schema=schema,
                 partition_spec=partition_spec,
                 sort_order=sort_order,
-                location=base_uri,
+                location=table_uri,
                 properties=properties,
             )
 
             # Write metadata file
-            metadata_path = (
-                location_path / "metadata" / f"v{metadata.last_sequence_number}.metadata.json"
+            metadata_file_path = (
+                table_path / "metadata" / f"v{metadata.last_sequence_number}.metadata.json"
             )
-            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(metadata_path, "w") as f:
+            with open(metadata_file_path, "w") as f:
                 f.write(metadata.model_dump_json(indent=2))
 
             # Write version hint
-            version_hint_path = location_path / "metadata" / "version-hint.text"
+            version_hint_path = table_path / "metadata" / "version-hint.text"
             with open(version_hint_path, "w") as f:
                 f.write(str(metadata.last_sequence_number))
 
             # Register in catalog with metadata file path (relative to staging_dir)
-            rel_path = metadata_path.relative_to(self._staging_dir)
+            rel_path = metadata_file_path.relative_to(self._staging_dir)
             self._catalog[table_id] = str(rel_path)
 
         # Load and return table (after staging context exits and persists)
@@ -534,25 +505,10 @@ class LocalCatalog(Catalog):
         if not metadata_path.is_absolute():
             metadata_path = self.catalog_dir / metadata_path
 
-        # Check if metadata_location points to a metadata file or directory (backward compatibility)
-        if metadata_path.suffix == ".json":
-            # New format: direct path to metadata file
-            if not metadata_path.exists():
-                raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_path}")
-            table_location = str(metadata_path.parent.parent)
-        else:
-            # Old format: directory path, read version hint
-            table_location = metadata_location
-            version_hint_path = metadata_path / "metadata" / "version-hint.text"
-            if not version_hint_path.exists():
-                raise NoSuchTableError(f"Table {table_id} metadata not found")
-
-            with open(version_hint_path) as f:
-                version = f.read().strip()
-
-            metadata_path = metadata_path / "metadata" / f"v{version}.metadata.json"
-            if not metadata_path.exists():
-                raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_path}")
+        # Direct path to metadata file
+        if not metadata_path.exists():
+            raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_path}")
+        table_location = str(metadata_path.parent.parent)
 
         # Load FileIO and metadata
         io = load_file_io(properties=self.properties, location=table_location)
@@ -793,11 +749,10 @@ class LocalCatalog(Catalog):
         Raises:
             ValueError: If config is not set or table_name is invalid
         """
-        # Validate config is provided
+        # Validate config is provided (should always be true since it's required in __init__)
         if self.config is None:
             raise ValueError(
-                "No config set. Use LocalCatalog.from_local() or "
-                "RemoteCatalog.from_hub() to create catalog with config."
+                "No config set. Catalog requires a CatalogConfig to be provided at initialization."
             )
 
         created_tables = []
@@ -917,28 +872,23 @@ class LocalCatalog(Catalog):
             if table_info.identifier in self._catalog:
                 raise TableAlreadyExistsError(f"Table {table_info.identifier} already exists")
 
-            # Determine table location using the same logic as _get_metadata_location
-            table_path = self._get_metadata_location(table_info.identifier)
-            table_path.mkdir(parents=True, exist_ok=True)
-
-            # Calculate base URI for table metadata
-            # Convert identifier to path components
-            from faceberg.convert import _join_uri
-
+            # Parse identifier and create paths
             table_id = self._identifier_to_str(table_info.identifier)
-            parts = table_id.split(".")
-            namespace = parts[0]
-            table_name = ".".join(parts[1:])
+            namespace, table_name = table_id.split(".", 1)
 
-            # Use catalog's uri + table path
-            base_uri = _join_uri(self.uri, namespace, table_name)
+            # Create local metadata directory
+            metadata_path = self._staging_dir / namespace / table_name
+            metadata_path.mkdir(parents=True, exist_ok=True)
+
+            # Create table URI for metadata
+            table_uri = f"{self.uri.rstrip('/')}/{namespace}/{table_name}"
 
             # Create metadata writer
             metadata_writer = IcebergMetadataWriter(
-                table_path=table_path,
+                table_path=metadata_path,
                 schema=table_info.schema,
                 partition_spec=table_info.partition_spec,
-                base_uri=base_uri,
+                base_uri=table_uri,
             )
 
             # Generate table UUID
@@ -971,25 +921,23 @@ class LocalCatalog(Catalog):
         table = self.load_table(table_info.identifier)
 
         with self._staging():
-            table_path = self._get_metadata_location(table_info.identifier)
-
-            # Calculate base URI for table metadata
-            from faceberg.convert import _join_uri
-
+            # Parse identifier and create paths
             table_id = self._identifier_to_str(table_info.identifier)
-            parts = table_id.split(".")
-            namespace = parts[0]
-            table_name = ".".join(parts[1:])
+            namespace, table_name = table_id.split(".", 1)
 
-            # Use catalog's uri + table path
-            base_uri = _join_uri(self.uri, namespace, table_name)
+            # Create local metadata directory
+            metadata_path = self._staging_dir / namespace / table_name
+            metadata_path.mkdir(parents=True, exist_ok=True)
+
+            # Create table URI for metadata
+            table_uri = f"{self.uri.rstrip('/')}/{namespace}/{table_name}"
 
             # Create metadata writer
             metadata_writer = IcebergMetadataWriter(
-                table_path=table_path,
+                table_path=metadata_path,
                 schema=table_info.schema,
                 partition_spec=table_info.partition_spec,
-                base_uri=base_uri,
+                base_uri=table_uri,
             )
 
             # Append new snapshot with updated files
@@ -1022,25 +970,21 @@ class RemoteCatalog(LocalCatalog):
 
     def __init__(
         self,
-        name: str,
-        location: str,
-        config: Optional[CatalogConfig] = None,
-        hf_repo_id: Optional[str] = None,
+        config: CatalogConfig,
+        hf_repo_id: str,
         hf_token: Optional[str] = None,
         **properties: str,
     ):
         """Initialize remote catalog.
 
         Args:
-            name: Catalog name
-            location: Path to local cache directory (e.g., "~/.faceberg/cache/repo_id")
-            config: Catalog configuration (optional, for dataset sync)
+            config: Catalog configuration (contains name, location, and dataset mappings)
             hf_repo_id: HuggingFace repository ID for hub syncing
             hf_token: HuggingFace authentication token
             **properties: Additional catalog properties
         """
         # Call parent init (which sets up catalog_dir, etc.)
-        super().__init__(name, location, config, **properties)
+        super().__init__(config, **properties)
 
         # Hub-specific attributes
         self.hf_repo_id = hf_repo_id
@@ -1069,15 +1013,10 @@ class RemoteCatalog(LocalCatalog):
         with open(local_path) as f:
             data = json.load(f)
 
-        # Handle both legacy and new formats
-        if "type" not in data:
-            self._catalog = data
-            self.uri = f"hf://datasets/{self.hf_repo_id}"
-        else:
-            # New format with metadata - assert type matches
-            assert data["type"] == "remote", f"Expected catalog type 'remote', got '{data['type']}'"
-            self._catalog = data.get("tables", {})
-            self.uri = data["uri"]
+        # Assert type matches
+        assert data["type"] == "remote", f"Expected catalog type 'remote', got '{data['type']}'"
+        self._catalog = data.get("tables", {})
+        self.uri = data["uri"]
 
         # Extract revision from cached path structure (contains commit hash in path)
         # Path format: .../snapshots/{commit_hash}/catalog.json

@@ -38,35 +38,6 @@ from faceberg.bridge import FileInfo
 logger = logging.getLogger(__name__)
 
 
-def _join_uri(*paths: str) -> str:
-    """Join URI or path components using forward slashes.
-
-    Args:
-        paths: Path components to join (first can be a URI with scheme)
-
-    Returns:
-        Combined path/URI with forward slashes
-
-    Examples:
-        >>> _join_uri("file:///tmp/catalog", "metadata", "file.avro")
-        'file:///tmp/catalog/metadata/file.avro'
-        >>> _join_uri("hf://datasets/org/repo", "namespace", "table")
-        'hf://datasets/org/repo/namespace/table'
-        >>> _join_uri("/tmp/catalog", "namespace", "table")
-        '/tmp/catalog/namespace/table'
-    """
-    # Start with first path (may be a URI)
-    result = paths[0].rstrip("/")
-
-    # Join remaining paths
-    for path in paths[1:]:
-        path = path.strip("/")
-        if path:
-            result = f"{result}/{path}"
-
-    return result
-
-
 class IcebergMetadataWriter:
     """Writes Iceberg metadata files in metadata-only mode.
 
@@ -286,7 +257,7 @@ class IcebergMetadataWriter:
         """
         manifest_filename = f"{uuid.uuid4()}.avro"
         manifest_write_path = self.metadata_dir / manifest_filename
-        manifest_uri = _join_uri(self.base_uri, "metadata", manifest_filename)
+        manifest_uri = f"{self.base_uri.rstrip('/')}/metadata/{manifest_filename}"
         output_file = self.file_io.new_output(str(manifest_write_path))
 
         with write_manifest(
@@ -344,7 +315,7 @@ class IcebergMetadataWriter:
             parent_snapshot_id=None,
             sequence_number=INITIAL_SEQUENCE_NUMBER,
             timestamp_ms=1,
-            manifest_list=_join_uri(self.base_uri, "metadata", manifest_filename),
+            manifest_list=f"{self.base_uri.rstrip('/')}/metadata/{manifest_filename}",
             summary=Summary(
                 operation=Operation.APPEND,
                 **{
@@ -589,7 +560,7 @@ class IcebergMetadataWriter:
         """
         manifest_filename = f"{uuid.uuid4()}.avro"
         manifest_write_path = self.metadata_dir / manifest_filename
-        manifest_uri = _join_uri(self.base_uri, "metadata", manifest_filename)
+        manifest_uri = f"{self.base_uri.rstrip('/')}/metadata/{manifest_filename}"
         output_file = self.file_io.new_output(str(manifest_write_path))
 
         with write_manifest(
@@ -652,7 +623,7 @@ class IcebergMetadataWriter:
             parent_snapshot_id=snapshot_id - 1,
             sequence_number=sequence_number,
             timestamp_ms=int(uuid.uuid4().time_low),
-            manifest_list=_join_uri(self.base_uri, "metadata", manifest_filename),
+            manifest_list=f"{self.base_uri.rstrip('/')}/metadata/{manifest_filename}",
             summary=Summary(
                 operation=Operation.APPEND,
                 **{

@@ -35,13 +35,9 @@ def catalog(test_dir):
     minimal_config = CatalogConfig(
         name="test_catalog",
         location=str(test_dir),
-        namespaces={},
+        namespaces=[],
     )
-    return LocalCatalog(
-        name="test_catalog",
-        location=str(test_dir),
-        config=minimal_config,
-    )
+    return LocalCatalog(config=minimal_config)
 
 
 @pytest.fixture
@@ -60,9 +56,9 @@ def test_create_catalog(test_dir):
     minimal_config = CatalogConfig(
         name="test",
         location=str(test_dir),
-        namespaces={},
+        namespaces=[],
     )
-    catalog = LocalCatalog(name="test", location=str(test_dir), config=minimal_config)
+    catalog = LocalCatalog(config=minimal_config)
 
     assert catalog.name == "test"
     assert catalog.catalog_dir == test_dir
@@ -166,17 +162,17 @@ def test_catalog_persistence(test_dir, test_schema):
     minimal_config = CatalogConfig(
         name="test",
         location=str(test_dir),
-        namespaces={},
+        namespaces=[],
     )
 
     # Create catalog and table
-    catalog1 = LocalCatalog("test", str(test_dir), config=minimal_config)
+    catalog1 = LocalCatalog(config=minimal_config)
     catalog1.create_namespace("default")
     catalog1.create_table("default.test_table", test_schema)
     # Changes are automatically persisted via context manager
 
     # Create new catalog instance
-    catalog2 = LocalCatalog("test", str(test_dir), config=minimal_config)
+    catalog2 = LocalCatalog(config=minimal_config)
 
     # Table should still exist
     assert catalog2.table_exists("default.test_table")
@@ -256,21 +252,13 @@ default:
 def faceberg_catalog(faceberg_config_file):
     """Create test LocalCatalog for Faceberg tests."""
     config = CatalogConfig.from_yaml(faceberg_config_file)
-    return LocalCatalog(
-        name=config.name,
-        location=config.location,
-        config=config,
-    )
+    return LocalCatalog(config=config)
 
 
 def test_faceberg_from_local(faceberg_config_file, faceberg_test_dir):
     """Test creating LocalCatalog from local config file."""
     config = CatalogConfig.from_yaml(faceberg_config_file)
-    catalog = LocalCatalog(
-        name=config.name,
-        location=config.location,
-        config=config,
-    )
+    catalog = LocalCatalog(config=config)
 
     assert catalog.name == "test_catalog"
     assert catalog.catalog_dir == faceberg_test_dir
@@ -532,12 +520,6 @@ def test_identifier_to_str_with_string(catalog):
     assert result == "namespace.table"
 
 
-def test_get_metadata_location_outside_staging_context(catalog):
-    """Test that _get_metadata_location raises error outside staging context."""
-    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
-        catalog._get_metadata_location("default.test_table")
-
-
 def test_save_catalog_outside_staging_context(catalog):
     """Test that _save_catalog raises error outside staging context."""
     with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
@@ -554,13 +536,6 @@ def test_persist_changes_outside_staging_context(catalog):
     """Test that _persist_changes raises error outside staging context."""
     with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
         catalog._persist_changes()
-
-
-def test_invalid_table_identifier_format(catalog):
-    """Test that invalid table identifier raises error."""
-    with pytest.raises(ValueError, match="Invalid table identifier"):
-        with catalog._staging():
-            catalog._get_metadata_location("invalid_no_dot")
 
 
 def test_load_table_not_found(catalog):

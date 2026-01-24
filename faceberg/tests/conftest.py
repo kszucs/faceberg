@@ -1,7 +1,5 @@
 """Shared pytest fixtures for catalog tests."""
 
-import os
-
 import pytest
 
 from faceberg.catalog import LocalCatalog
@@ -71,21 +69,8 @@ def synced_catalog(synced_catalog_dir):
         ],
     )
 
-    # Create catalog instance with FsspecFileIO to support hf:// URIs
-    catalog = LocalCatalog(
-        name=config.name,
-        location=config.location,
-        config=config,
-        # Enable FsspecFileIO for hf:// protocol support
-        **{
-            "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
-            "hf.endpoint": os.environ.get("HF_ENDPOINT", "https://huggingface.co"),
-            # Disable fsspec caching to avoid threading issues
-            "fsspec.cache_type": "none",
-            # Use single worker to avoid threading issues with HfFileSystem
-            "max-workers": "1",
-        },
-    )
+    # Create catalog instance (hf:// protocol support is built-in)
+    catalog = LocalCatalog(config=config)
 
     # Sync all tables (token=None works for public datasets)
     synced_tables = catalog.sync(token=None, table_name=None)
@@ -101,7 +86,7 @@ def catalog(synced_catalog):
     """Provide catalog instance (function-scoped wrapper).
 
     This is a function-scoped fixture that provides access to the session-scoped
-    synced catalog. The catalog is configured with FsspecFileIO to support hf:// URIs.
+    synced catalog. The catalog has built-in hf:// protocol support.
     """
     # Clear HfFileSystem cache before each test to avoid threading issues
     # The cache can contain exceptions that can't be deep copied

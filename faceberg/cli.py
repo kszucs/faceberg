@@ -53,11 +53,7 @@ def sync(ctx, table_name):
 
     # Load config and create catalog
     config = CatalogConfig.from_yaml(config_path)
-    catalog = LocalCatalog(
-        name=config.name,
-        location=config.location,
-        config=config,
-    )
+    catalog = LocalCatalog(config=config)
 
     console.print(f"[bold blue]Catalog:[/bold blue] {catalog.name}")
     console.print(f"[bold blue]Location:[/bold blue] {catalog.catalog_dir}")
