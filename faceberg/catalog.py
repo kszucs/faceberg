@@ -1046,9 +1046,6 @@ class RemoteCatalog(LocalCatalog):
         # Update loaded revision to the new commit
         self._loaded_revision = commit_info.commit_url.split("/")[-1]
 
-        # Also save to local cache using parent implementation
-        super()._persist_changes()
-
 
 # Alias for main API
 FacebergCatalog = LocalCatalog

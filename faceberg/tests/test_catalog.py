@@ -3,7 +3,13 @@
 import json
 
 import pytest
-from pyiceberg.exceptions import TableAlreadyExistsError
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete
+from pyiceberg.exceptions import (
+    NamespaceAlreadyExistsError,
+    NamespaceNotEmptyError,
+    NoSuchTableError,
+    TableAlreadyExistsError,
+)
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
@@ -391,3 +397,282 @@ def test_faceberg_dataset_not_found_in_config(faceberg_catalog):
             token=None,
             table_name="default.nonexistent_default",
         )
+
+
+# =============================================================================
+# Additional LocalCatalog Tests for Better Coverage
+# =============================================================================
+
+
+def test_drop_namespace(catalog, test_schema):
+    """Test dropping an empty namespace."""
+    catalog.create_namespace("test_ns")
+    catalog.drop_namespace("test_ns")
+
+    # Namespace should not appear in list
+    assert ("test_ns",) not in catalog.list_namespaces()
+
+
+def test_drop_namespace_not_empty(catalog, test_schema):
+    """Test that dropping a non-empty namespace raises error."""
+    catalog.create_namespace("test_ns")
+    catalog.create_table("test_ns.table1", test_schema)
+
+    with pytest.raises(NamespaceNotEmptyError):
+        catalog.drop_namespace("test_ns")
+
+
+def test_load_namespace_properties(catalog):
+    """Test loading namespace properties."""
+    catalog.create_namespace("test_ns")
+    props = catalog.load_namespace_properties("test_ns")
+
+    # Currently returns empty dict
+    assert props == {}
+
+
+def test_update_namespace_properties(catalog):
+    """Test updating namespace properties."""
+    catalog.create_namespace("test_ns")
+    summary = catalog.update_namespace_properties(
+        "test_ns",
+        removals={"old_prop"},
+        updates={"new_prop": "value"}
+    )
+
+    # Currently returns empty summary
+    assert summary.removed == []
+    assert summary.updated == []
+    assert summary.missing == []
+
+
+def test_register_table(catalog, test_schema):
+    """Test registering an existing table."""
+    # Create a table first
+    catalog.create_namespace("default")
+    table = catalog.create_table("default.source_table", test_schema)
+
+    # Get the metadata location
+    metadata_location = table.metadata_location
+
+    # Register it under a different name
+    registered_table = catalog.register_table("default.registered_table", metadata_location)
+
+    assert registered_table.metadata_location == metadata_location
+    assert catalog.table_exists("default.registered_table")
+
+
+def test_register_table_already_exists(catalog, test_schema):
+    """Test that registering a table that already exists raises error."""
+    catalog.create_namespace("default")
+    table = catalog.create_table("default.test_table", test_schema)
+
+    with pytest.raises(TableAlreadyExistsError):
+        catalog.register_table("default.test_table", table.metadata_location)
+
+
+def test_purge_table(catalog, test_schema):
+    """Test purging a table."""
+    catalog.create_namespace("default")
+    catalog.create_table("default.test_table", test_schema)
+
+    # Purge should remove the table
+    catalog.purge_table("default.test_table")
+
+    assert not catalog.table_exists("default.test_table")
+
+
+def test_view_operations(catalog):
+    """Test that view operations are not supported."""
+    # view_exists should return False
+    assert not catalog.view_exists("default.test_view")
+
+    # list_views should return empty list
+    assert catalog.list_views("default") == []
+
+    # drop_view should raise NotImplementedError
+    with pytest.raises(NotImplementedError):
+        catalog.drop_view("default.test_view")
+
+
+def test_create_table_transaction_not_implemented(catalog, test_schema):
+    """Test that table transactions are not yet implemented."""
+    with pytest.raises(NotImplementedError):
+        catalog.create_table_transaction("default.test_table", test_schema)
+
+
+def test_commit_table_not_implemented(catalog):
+    """Test that commit_table is not yet implemented."""
+    from unittest.mock import MagicMock
+    from pyiceberg.table import CommitTableRequest
+
+    # Use a mock request - we just need to test that NotImplementedError is raised
+    mock_request = MagicMock(spec=CommitTableRequest)
+
+    with pytest.raises(NotImplementedError):
+        catalog.commit_table(mock_request)
+
+
+def test_identifier_to_str_with_tuple(catalog):
+    """Test converting tuple identifier to string."""
+    result = catalog._identifier_to_str(("namespace", "table"))
+    assert result == "namespace.table"
+
+
+def test_identifier_to_str_with_string(catalog):
+    """Test that string identifiers pass through unchanged."""
+    result = catalog._identifier_to_str("namespace.table")
+    assert result == "namespace.table"
+
+
+def test_get_metadata_location_outside_staging_context(catalog):
+    """Test that _get_metadata_location raises error outside staging context."""
+    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
+        catalog._get_metadata_location("default.test_table")
+
+
+def test_save_catalog_outside_staging_context(catalog):
+    """Test that _save_catalog raises error outside staging context."""
+    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
+        catalog._save_catalog()
+
+
+def test_gather_changes_outside_staging_context(catalog):
+    """Test that _gather_changes raises error outside staging context."""
+    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
+        catalog._gather_changes()
+
+
+def test_persist_changes_outside_staging_context(catalog):
+    """Test that _persist_changes raises error outside staging context."""
+    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
+        catalog._persist_changes()
+
+
+def test_invalid_table_identifier_format(catalog):
+    """Test that invalid table identifier raises error."""
+    with pytest.raises(ValueError, match="Invalid table identifier"):
+        with catalog._staging():
+            catalog._get_metadata_location("invalid_no_dot")
+
+
+def test_load_table_not_found(catalog):
+    """Test loading non-existent table raises error."""
+    with pytest.raises(NoSuchTableError):
+        catalog.load_table("default.nonexistent")
+
+
+def test_load_table_metadata_file_not_found(catalog, test_schema, test_dir):
+    """Test error when metadata file is missing."""
+    catalog.create_namespace("default")
+    catalog.create_table("default.test_table", test_schema)
+
+    # Manually corrupt the catalog to point to non-existent file
+    catalog_file = catalog.catalog_dir / "catalog.json"
+    with open(catalog_file) as f:
+        data = json.load(f)
+
+    # Point to non-existent metadata file
+    data["default.test_table"] = "default/test_table/metadata/nonexistent.metadata.json"
+
+    with open(catalog_file, "w") as f:
+        json.dump(data, f)
+
+    # Should raise NoSuchTableError
+    with pytest.raises(NoSuchTableError, match="metadata file not found"):
+        catalog.load_table("default.test_table")
+
+
+def test_create_namespace_already_exists(catalog, test_schema):
+    """Test creating namespace that already exists (has tables)."""
+    catalog.create_namespace("test_ns")
+    catalog.create_table("test_ns.table1", test_schema)
+
+    with pytest.raises(NamespaceAlreadyExistsError):
+        catalog.create_namespace("test_ns")
+
+
+def test_drop_table_not_found(catalog):
+    """Test dropping non-existent table raises error."""
+    with pytest.raises(NoSuchTableError):
+        catalog.drop_table("default.nonexistent")
+
+
+def test_rename_table_source_not_found(catalog):
+    """Test renaming non-existent table raises error."""
+    with pytest.raises(NoSuchTableError):
+        catalog.rename_table("default.nonexistent", "default.new_name")
+
+
+def test_rename_table_destination_exists(catalog, test_schema):
+    """Test that renaming to existing table name raises error."""
+    catalog.create_namespace("default")
+    catalog.create_table("default.table1", test_schema)
+    catalog.create_table("default.table2", test_schema)
+
+    with pytest.raises(TableAlreadyExistsError):
+        catalog.rename_table("default.table1", "default.table2")
+
+
+def test_list_namespaces_with_multi_level(catalog, test_schema):
+    """Test listing namespaces with hierarchical names."""
+    catalog.create_namespace("ns1")
+    catalog.create_table("ns1.table1", test_schema)
+
+    namespaces = catalog.list_namespaces()
+    assert ("ns1",) in namespaces
+
+
+def test_staging_context_cleanup_on_error(catalog, test_schema):
+    """Test that staging context cleans up even on error."""
+    catalog.create_namespace("default")
+
+    try:
+        with catalog._staging():
+            # Try to create duplicate table (will fail)
+            catalog._catalog["default.test_table"] = "some/path"
+            raise ValueError("Simulated error")
+    except ValueError:
+        pass
+
+    # Staging should be cleaned up
+    assert catalog._staging_dir is None
+    assert catalog._catalog is None
+    assert catalog._old_catalog is None
+
+
+def test_gather_changes_with_new_and_deleted_tables(catalog, test_schema):
+    """Test _gather_changes detects both additions and deletions."""
+    catalog.create_namespace("default")
+    catalog.create_table("default.table1", test_schema)
+    catalog.create_table("default.table2", test_schema)
+
+    # Now drop table1 and add table3
+    with catalog._staging():
+        # Simulate old catalog having table1 and table2
+        catalog._old_catalog = {"default.table1": "path1", "default.table2": "path2"}
+        # New catalog has table2 and table3
+        catalog._catalog = {"default.table2": "path2", "default.table3": "path3"}
+
+        # Create dummy metadata file for table3 in staging
+        table3_path = catalog._staging_dir / "default" / "table3" / "metadata"
+        table3_path.mkdir(parents=True, exist_ok=True)
+        metadata_file = table3_path / "v0.metadata.json"
+        metadata_file.write_text('{"test": "data"}')
+
+        # Save catalog to staging
+        catalog._save_catalog()
+
+        # Gather changes
+        changes = catalog._gather_changes()
+
+        # Should have:
+        # 1. catalog.json (Add)
+        # 2. table3 metadata file (Add)
+        # 3. table1 directory (Delete)
+        add_ops = [op for op in changes if isinstance(op, CommitOperationAdd)]
+        delete_ops = [op for op in changes if isinstance(op, CommitOperationDelete)]
+
+        assert len(add_ops) >= 2  # catalog.json + table3 metadata
+        assert len(delete_ops) == 1  # table1 deleted
+        assert delete_ops[0].path_in_repo == "default/table1/"
