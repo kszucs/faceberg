@@ -20,6 +20,7 @@ from pyiceberg.manifest import (
     FileFormat,
     ManifestEntry,
     ManifestEntryStatus,
+    ManifestFile,
     write_manifest,
     write_manifest_list,
 )
@@ -37,6 +38,35 @@ from faceberg.bridge import FileInfo
 logger = logging.getLogger(__name__)
 
 
+def _join_uri(*paths: str) -> str:
+    """Join URI or path components using forward slashes.
+
+    Args:
+        paths: Path components to join (first can be a URI with scheme)
+
+    Returns:
+        Combined path/URI with forward slashes
+
+    Examples:
+        >>> _join_uri("file:///tmp/catalog", "metadata", "file.avro")
+        'file:///tmp/catalog/metadata/file.avro'
+        >>> _join_uri("hf://datasets/org/repo", "namespace", "table")
+        'hf://datasets/org/repo/namespace/table'
+        >>> _join_uri("/tmp/catalog", "namespace", "table")
+        '/tmp/catalog/namespace/table'
+    """
+    # Start with first path (may be a URI)
+    result = paths[0].rstrip("/")
+
+    # Join remaining paths
+    for path in paths[1:]:
+        path = path.strip("/")
+        if path:
+            result = f"{result}/{path}"
+
+    return result
+
+
 class IcebergMetadataWriter:
     """Writes Iceberg metadata files in metadata-only mode.
 
@@ -49,13 +79,16 @@ class IcebergMetadataWriter:
         table_path: Path,
         schema: Schema,
         partition_spec: PartitionSpec = UNPARTITIONED_PARTITION_SPEC,
+        base_uri: str = None,
     ):
         """Initialize metadata writer.
 
         Args:
-            table_path: Base path for the table
+            table_path: Local directory for physically writing files (staging directory)
             schema: Iceberg schema
             partition_spec: Partition specification
+            base_uri: Base URI for paths stored in metadata
+                     (e.g., "file:///path/to/catalog" or "hf://datasets/org/repo")
         """
         self.table_path = table_path
         self.schema = schema
@@ -63,6 +96,9 @@ class IcebergMetadataWriter:
         self.metadata_dir = table_path / "metadata"
         self.metadata_dir.mkdir(parents=True, exist_ok=True)
         self.file_io = PyArrowFileIO()
+
+        # Store base URI for metadata references
+        self.base_uri = base_uri.rstrip("/")
 
     def create_metadata_from_files(
         self,
@@ -248,8 +284,10 @@ class IcebergMetadataWriter:
         Returns:
             ManifestFile object
         """
-        manifest_path = self.metadata_dir / f"{uuid.uuid4()}.avro"
-        output_file = self.file_io.new_output(str(manifest_path))
+        manifest_filename = f"{uuid.uuid4()}.avro"
+        manifest_write_path = self.metadata_dir / manifest_filename
+        manifest_uri = _join_uri(self.base_uri, "metadata", manifest_filename)
+        output_file = self.file_io.new_output(str(manifest_write_path))
 
         with write_manifest(
             format_version=2,
@@ -269,7 +307,26 @@ class IcebergMetadataWriter:
                 )
                 writer.add_entry(entry)
 
-            return writer.to_manifest_file()
+            original_manifest = writer.to_manifest_file()
+
+            # Create a new ManifestFile with URI path for metadata references
+            return ManifestFile.from_args(
+                manifest_path=manifest_uri,
+                manifest_length=original_manifest.manifest_length,
+                partition_spec_id=original_manifest.partition_spec_id,
+                content=original_manifest.content,
+                sequence_number=original_manifest.sequence_number,
+                min_sequence_number=original_manifest.min_sequence_number,
+                added_snapshot_id=original_manifest.added_snapshot_id,
+                added_files_count=original_manifest.added_files_count,
+                existing_files_count=original_manifest.existing_files_count,
+                deleted_files_count=original_manifest.deleted_files_count,
+                added_rows_count=original_manifest.added_rows_count,
+                existing_rows_count=original_manifest.existing_rows_count,
+                deleted_rows_count=original_manifest.deleted_rows_count,
+                partitions=original_manifest.partitions,
+                key_metadata=original_manifest.key_metadata,
+            )
 
     def _create_snapshot(self, data_files: List[DataFile]) -> Snapshot:
         """Create snapshot object.
@@ -281,12 +338,13 @@ class IcebergMetadataWriter:
             Snapshot object
         """
         total_records = sum(df.record_count for df in data_files)
+        manifest_filename = f"snap-1-1-{uuid.uuid4()}.avro"
         return Snapshot(  # type: ignore[call-arg]
             snapshot_id=1,
             parent_snapshot_id=None,
             sequence_number=INITIAL_SEQUENCE_NUMBER,
             timestamp_ms=1,
-            manifest_list=str(self.metadata_dir / f"snap-1-1-{uuid.uuid4()}.avro"),
+            manifest_list=_join_uri(self.base_uri, "metadata", manifest_filename),
             summary=Summary(
                 operation=Operation.APPEND,
                 **{
@@ -306,8 +364,10 @@ class IcebergMetadataWriter:
             snapshot: Snapshot object
             manifest_files: List of manifest files
         """
-        manifest_list_path = Path(snapshot.manifest_list)
-        manifest_list_output = self.file_io.new_output(str(manifest_list_path))
+        # Get filename from the snapshot's manifest_list path and write to staging directory
+        manifest_list_filename = Path(snapshot.manifest_list).name
+        manifest_list_write_path = self.metadata_dir / manifest_list_filename
+        manifest_list_output = self.file_io.new_output(str(manifest_list_write_path))
 
         with write_manifest_list(
             format_version=2,
@@ -340,7 +400,7 @@ class IcebergMetadataWriter:
             schema=self.schema,
             partition_spec=self.partition_spec,
             sort_order=UNSORTED_SORT_ORDER,
-            location=str(self.table_path),
+            location=self.base_uri,
             properties=properties,
             table_uuid=uuid.UUID(table_uuid),
         )
@@ -527,8 +587,10 @@ class IcebergMetadataWriter:
         Returns:
             ManifestFile object
         """
-        manifest_path = self.metadata_dir / f"{uuid.uuid4()}.avro"
-        output_file = self.file_io.new_output(str(manifest_path))
+        manifest_filename = f"{uuid.uuid4()}.avro"
+        manifest_write_path = self.metadata_dir / manifest_filename
+        manifest_uri = _join_uri(self.base_uri, "metadata", manifest_filename)
+        output_file = self.file_io.new_output(str(manifest_write_path))
 
         with write_manifest(
             format_version=2,
@@ -548,7 +610,26 @@ class IcebergMetadataWriter:
                 )
                 writer.add_entry(entry)
 
-            return writer.to_manifest_file()
+            original_manifest = writer.to_manifest_file()
+
+            # Create a new ManifestFile with URI path for metadata references
+            return ManifestFile.from_args(
+                manifest_path=manifest_uri,
+                manifest_length=original_manifest.manifest_length,
+                partition_spec_id=original_manifest.partition_spec_id,
+                content=original_manifest.content,
+                sequence_number=original_manifest.sequence_number,
+                min_sequence_number=original_manifest.min_sequence_number,
+                added_snapshot_id=original_manifest.added_snapshot_id,
+                added_files_count=original_manifest.added_files_count,
+                existing_files_count=original_manifest.existing_files_count,
+                deleted_files_count=original_manifest.deleted_files_count,
+                added_rows_count=original_manifest.added_rows_count,
+                existing_rows_count=original_manifest.existing_rows_count,
+                deleted_rows_count=original_manifest.deleted_rows_count,
+                partitions=original_manifest.partitions,
+                key_metadata=original_manifest.key_metadata,
+            )
 
     def _create_snapshot_with_ids(
         self, data_files: List[DataFile], snapshot_id: int, sequence_number: int
@@ -565,14 +646,13 @@ class IcebergMetadataWriter:
         """
         total_records = sum(df.record_count for df in data_files)
 
+        manifest_filename = f"snap-{snapshot_id}-{sequence_number}-{uuid.uuid4()}.avro"
         return Snapshot(  # type: ignore[call-arg]
             snapshot_id=snapshot_id,
             parent_snapshot_id=snapshot_id - 1,
             sequence_number=sequence_number,
             timestamp_ms=int(uuid.uuid4().time_low),
-            manifest_list=str(
-                self.metadata_dir / f"snap-{snapshot_id}-{sequence_number}-{uuid.uuid4()}.avro"
-            ),
+            manifest_list=_join_uri(self.base_uri, "metadata", manifest_filename),
             summary=Summary(
                 operation=Operation.APPEND,
                 **{

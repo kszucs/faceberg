@@ -377,8 +377,9 @@ def test_table_info_name_mapping_with_nested_structs():
     """Test that name mapping includes nested struct fields."""
     import json
 
+    from pyiceberg.types import IntegerType, NestedField, StringType, StructType
+
     from faceberg.bridge import TableInfo
-    from pyiceberg.types import IntegerType, ListType, NestedField, StringType, StructType
 
     # Create a schema with nested structs
     schema = Schema(
@@ -433,8 +434,9 @@ def test_table_info_name_mapping_with_lists():
     """Test that name mapping includes list element mappings."""
     import json
 
-    from faceberg.bridge import TableInfo
     from pyiceberg.types import ListType, NestedField, StringType, StructType
+
+    from faceberg.bridge import TableInfo
 
     # Create a schema with list of strings and list of structs
     schema = Schema(
@@ -514,8 +516,9 @@ def test_table_info_name_mapping_with_maps():
     """Test that name mapping includes map key and value mappings."""
     import json
 
-    from faceberg.bridge import TableInfo
     from pyiceberg.types import IntegerType, MapType, NestedField, StringType, StructType
+
+    from faceberg.bridge import TableInfo
 
     # Create a schema with a map
     schema = Schema(

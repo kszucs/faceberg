@@ -1,11 +1,10 @@
 """Tests for the convert module (Iceberg metadata generation)."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 from pyiceberg.schema import Schema
-from pyiceberg.types import IntegerType, NestedField, StringType, StructType
+from pyiceberg.types import IntegerType, NestedField, StringType
 
 from faceberg.bridge import FileInfo
 from faceberg.convert import IcebergMetadataWriter
@@ -31,7 +30,12 @@ def simple_schema():
 @pytest.fixture
 def metadata_writer(temp_table_path, simple_schema):
     """Create a metadata writer instance for testing."""
-    return IcebergMetadataWriter(table_path=temp_table_path, schema=simple_schema)
+    # Construct file:// URI for the temp path
+    path_str = temp_table_path.absolute().as_posix()
+    base_uri = f"file:///{path_str.lstrip('/')}"
+    return IcebergMetadataWriter(
+        table_path=temp_table_path, schema=simple_schema, base_uri=base_uri
+    )
 
 
 class TestGetHfFileSize:

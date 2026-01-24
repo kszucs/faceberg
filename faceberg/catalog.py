@@ -1,7 +1,6 @@
 """Faceberg catalog implementation with HuggingFace Hub support."""
 
 import json
-import os
 import shutil
 import tempfile
 import uuid
@@ -9,7 +8,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
-import yaml
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
 from pyiceberg.exceptions import (
@@ -94,9 +92,24 @@ class LocalCatalog(Catalog):
         catalog_file = self.catalog_dir / "catalog.json"
         if catalog_file.exists():
             with open(catalog_file) as f:
-                self._catalog = json.load(f)
+                data = json.load(f)
+
+            # Handle legacy format (flat dict)
+            if "type" not in data:
+                self._catalog = data
+                # Set default uri for legacy catalogs
+                path_str = self.catalog_dir.absolute().as_posix()
+                self.uri = f"file:///{path_str.lstrip('/')}"
+            else:
+                # New format with metadata - assert type matches
+                assert data["type"] == "local", f"Expected catalog type 'local', got '{data['type']}'"
+                self._catalog = data.get("tables", {})
+                self.uri = data["uri"]
         else:
             self._catalog = {}
+            path_str = self.catalog_dir.absolute().as_posix()
+            self.uri = f"file:///{path_str.lstrip('/')}"
+
         return self._catalog
 
     def _save_catalog(self) -> None:
@@ -109,8 +122,16 @@ class LocalCatalog(Catalog):
             raise RuntimeError("_save_catalog() must be called within _staging() context")
 
         catalog_file = self._staging_dir / "catalog.json"
+
+        # Save in new format with metadata
+        data = {
+            "type": "local",
+            "uri": self.uri,
+            "tables": self._catalog,
+        }
+
         with open(catalog_file, "w") as f:
-            json.dump(self._catalog, f, indent=2, sort_keys=True)
+            json.dump(data, f, indent=2, sort_keys=True)
 
     def _gather_changes(self) -> List[Union[CommitOperationAdd, CommitOperationDelete]]:
         """Gather changes between old and new catalog state.
@@ -438,20 +459,32 @@ class LocalCatalog(Catalog):
             # Convert schema if needed
             schema = self._convert_schema_if_needed(schema)
 
-            # Determine table location
+            # Determine table location path for writing
             if location is None:
-                location = str(self._get_metadata_location(identifier))
+                location_path = self._get_metadata_location(identifier)
+            else:
+                location_path = Path(location)
 
             # Ensure location directory exists
-            location_path = Path(location)
             location_path.mkdir(parents=True, exist_ok=True)
 
-            # Create table metadata
+            # Calculate base URI for table metadata
+            from faceberg.convert import _join_uri
+
+            table_id = self._identifier_to_str(identifier)
+            parts = table_id.split(".")
+            namespace = parts[0]
+            table_name = ".".join(parts[1:])
+
+            # Use catalog's uri + table path
+            base_uri = _join_uri(self.uri, namespace, table_name)
+
+            # Create table metadata with URI location
             metadata = new_table_metadata(
                 schema=schema,
                 partition_spec=partition_spec,
                 sort_order=sort_order,
-                location=location,
+                location=base_uri,
                 properties=properties,
             )
 
@@ -888,11 +921,24 @@ class LocalCatalog(Catalog):
             table_path = self._get_metadata_location(table_info.identifier)
             table_path.mkdir(parents=True, exist_ok=True)
 
+            # Calculate base URI for table metadata
+            # Convert identifier to path components
+            from faceberg.convert import _join_uri
+
+            table_id = self._identifier_to_str(table_info.identifier)
+            parts = table_id.split(".")
+            namespace = parts[0]
+            table_name = ".".join(parts[1:])
+
+            # Use catalog's uri + table path
+            base_uri = _join_uri(self.uri, namespace, table_name)
+
             # Create metadata writer
             metadata_writer = IcebergMetadataWriter(
                 table_path=table_path,
                 schema=table_info.schema,
                 partition_spec=table_info.partition_spec,
+                base_uri=base_uri,
             )
 
             # Generate table UUID
@@ -927,11 +973,23 @@ class LocalCatalog(Catalog):
         with self._staging():
             table_path = self._get_metadata_location(table_info.identifier)
 
+            # Calculate base URI for table metadata
+            from faceberg.convert import _join_uri
+
+            table_id = self._identifier_to_str(table_info.identifier)
+            parts = table_id.split(".")
+            namespace = parts[0]
+            table_name = ".".join(parts[1:])
+
+            # Use catalog's uri + table path
+            base_uri = _join_uri(self.uri, namespace, table_name)
+
             # Create metadata writer
             metadata_writer = IcebergMetadataWriter(
                 table_path=table_path,
                 schema=table_info.schema,
                 partition_spec=table_info.partition_spec,
+                base_uri=base_uri,
             )
 
             # Append new snapshot with updated files
@@ -1007,10 +1065,19 @@ class RemoteCatalog(LocalCatalog):
             token=self.hf_token,
         )
 
-        # Load the catalog and track revision from cache info
-        # The hf_hub_download function stores revision metadata in the cached path
+        # Load the catalog
         with open(local_path) as f:
-            self._catalog = json.load(f)
+            data = json.load(f)
+
+        # Handle both legacy and new formats
+        if "type" not in data:
+            self._catalog = data
+            self.uri = f"hf://datasets/{self.hf_repo_id}"
+        else:
+            # New format with metadata - assert type matches
+            assert data["type"] == "remote", f"Expected catalog type 'remote', got '{data['type']}'"
+            self._catalog = data.get("tables", {})
+            self.uri = data["uri"]
 
         # Extract revision from cached path structure (contains commit hash in path)
         # Path format: .../snapshots/{commit_hash}/catalog.json
@@ -1022,6 +1089,27 @@ class RemoteCatalog(LocalCatalog):
             self._loaded_revision = None
 
         return self._catalog
+
+    def _save_catalog(self) -> None:
+        """Save catalog to staging directory (used by parent's _gather_changes).
+
+        Serializes self._catalog to staging_dir/catalog.json with remote catalog format.
+        Must be called within _staging() context.
+        """
+        if self._staging_dir is None:
+            raise RuntimeError("_save_catalog() must be called within _staging() context")
+
+        catalog_file = self._staging_dir / "catalog.json"
+
+        # Save in new format with metadata
+        data = {
+            "type": "remote",
+            "uri": self.uri,
+            "tables": self._catalog,
+        }
+
+        with open(catalog_file, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
 
     def _persist_changes(self) -> None:
         """Persist staged changes to HuggingFace Hub and local cache.

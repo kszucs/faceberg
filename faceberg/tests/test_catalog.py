@@ -195,8 +195,14 @@ def test_catalog_json_format(catalog, test_schema):
     with open(catalog_file) as f:
         data = json.load(f)
 
-    assert "default.test_table" in data
-    assert isinstance(data["default.test_table"], str)
+    # Check new catalog.json format
+    assert "type" in data
+    assert data["type"] == "local"
+    assert "uri" in data
+    assert data["uri"].startswith("file:///")
+    assert "tables" in data
+    assert "default.test_table" in data["tables"]
+    assert isinstance(data["tables"]["default.test_table"], str)
 
 
 # =============================================================================
@@ -504,6 +510,7 @@ def test_create_table_transaction_not_implemented(catalog, test_schema):
 def test_commit_table_not_implemented(catalog):
     """Test that commit_table is not yet implemented."""
     from unittest.mock import MagicMock
+
     from pyiceberg.table import CommitTableRequest
 
     # Use a mock request - we just need to test that NotImplementedError is raised
@@ -572,11 +579,14 @@ def test_load_table_metadata_file_not_found(catalog, test_schema, test_dir):
     with open(catalog_file) as f:
         data = json.load(f)
 
-    # Point to non-existent metadata file
-    data["default.test_table"] = "default/test_table/metadata/nonexistent.metadata.json"
+    # Point to non-existent metadata file (update tables dict)
+    data["tables"]["default.test_table"] = "default/test_table/metadata/nonexistent.metadata.json"
 
     with open(catalog_file, "w") as f:
         json.dump(data, f)
+
+    # Reload catalog to pick up the corrupted data
+    catalog._load_catalog()
 
     # Should raise NoSuchTableError
     with pytest.raises(NoSuchTableError, match="metadata file not found"):

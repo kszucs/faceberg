@@ -23,7 +23,6 @@ from pyiceberg.schema import Schema, assign_fresh_schema_ids
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import ListType, MapType, NestedField, StringType, StructType
 
-
 # =============================================================================
 # Bridge Output Classes
 # =============================================================================
