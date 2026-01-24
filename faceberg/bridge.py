@@ -10,14 +10,18 @@ import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from datasets import Features, get_dataset_config_names, get_dataset_split_names, load_dataset_builder
-from datasets.inspect import get_dataset_config_info
+from datasets import (
+    Features,
+    get_dataset_config_names,
+    get_dataset_split_names,
+    load_dataset_builder,
+)
+from datasets.exceptions import DatasetNotFoundError
 from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema, assign_fresh_schema_ids
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import NestedField, StringType
-
 
 # =============================================================================
 # Bridge Output Classes
@@ -270,7 +274,10 @@ class DatasetInfo:
             ValueError: If dataset not found or has errors
         """
         # Get all available configs
-        all_configs = get_dataset_config_names(repo_id, token=token)
+        try:
+            all_configs = get_dataset_config_names(repo_id, token=token)
+        except DatasetNotFoundError as e:
+            raise ValueError(f"Dataset {repo_id} not found or not accessible") from e
 
         # Filter to requested configs
         if configs:
@@ -290,7 +297,9 @@ class DatasetInfo:
         revision = None
 
         for config_name in discovered_configs:
-            config_splits, config_files, config_revision = cls._discover_config(repo_id, config_name, token)
+            config_splits, config_files, config_revision = cls._discover_config(
+                repo_id, config_name, token
+            )
             splits_dict[config_name] = config_splits
             parquet_files[config_name] = config_files
             if config_revision and not revision:

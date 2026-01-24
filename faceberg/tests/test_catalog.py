@@ -2,10 +2,7 @@
 
 import json
 import os
-import shutil
-from pathlib import Path
 
-import pyarrow as pa
 import pytest
 from pyiceberg.exceptions import TableAlreadyExistsError
 from pyiceberg.schema import Schema
@@ -56,8 +53,8 @@ def test_create_namespace(catalog):
     """Test namespace creation."""
     catalog.create_namespace("default")
 
-    # Namespace directory should exist
-    ns_dir = catalog.warehouse / "metadata" / "default"
+    # Namespace directory should exist at warehouse root
+    ns_dir = catalog.warehouse / "default"
     assert ns_dir.exists()
 
 
@@ -194,7 +191,9 @@ def faceberg_config(faceberg_test_dir):
             NamespaceConfig(
                 name="default",
                 tables=[
-                    TableConfig(name="imdb_plain_text", dataset="stanfordnlp/imdb", config="plain_text"),
+                    TableConfig(
+                        name="imdb_plain_text", dataset="stanfordnlp/imdb", config="plain_text"
+                    ),
                 ]
             )
         ],
@@ -347,7 +346,7 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
 def test_faceberg_invalid_table_name_format(faceberg_catalog, faceberg_config):
     """Test invalid table name format raises error in FacebergCatalog."""
     with pytest.raises(ValueError, match="Invalid table name"):
-        faceberg_catalog.create_tables(
+        faceberg_catalog.sync(
             token=None,
             table_name="invalid_format",  # Missing namespace
         )
@@ -357,7 +356,7 @@ def test_faceberg_dataset_not_found_in_config(faceberg_catalog):
     """Test error when dataset not found in config in FacebergCatalog."""
     # Catalog config has "imdb" dataset, so "nonexistent" should fail
     with pytest.raises(ValueError, match="not found in config"):
-        faceberg_catalog.create_tables(
+        faceberg_catalog.sync(
             token=None,
             table_name="default.nonexistent_default",
         )

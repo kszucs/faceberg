@@ -1,8 +1,8 @@
 """Configuration file parsing for Faceberg."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import yaml
 

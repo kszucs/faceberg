@@ -1,6 +1,5 @@
 """Tests for the bridge layer (dataset discovery, schema conversion, and TableInfo creation)."""
 
-import os
 
 import pytest
 from datasets import Features
@@ -16,8 +15,8 @@ from pyiceberg.types import (
 
 from faceberg.bridge import (
     DatasetInfo,
-    load_dataset_builder_safe,
     build_iceberg_schema_from_features,
+    load_dataset_builder_safe,
 )
 
 

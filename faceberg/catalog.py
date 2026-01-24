@@ -3,13 +3,12 @@
 import json
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
     NamespaceNotEmptyError,
-    NoSuchNamespaceError,
     NoSuchTableError,
     TableAlreadyExistsError,
 )
@@ -26,6 +25,8 @@ from faceberg.bridge import DatasetInfo, TableInfo
 from faceberg.convert import IcebergMetadataWriter
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from faceberg.config import CatalogConfig
 
 
@@ -110,7 +111,10 @@ class JsonCatalog(Catalog):
         # Split into namespace and table name
         parts = table_id.split(".")
         if len(parts) < 2:
-            raise ValueError(f"Invalid table identifier: {table_id}. Expected format: namespace.table_name")
+            raise ValueError(
+                f"Invalid table identifier: {table_id}. "
+                "Expected format: namespace.table_name"
+            )
 
         # Construct path as namespace/table_name
         namespace = parts[0]
@@ -277,7 +281,9 @@ class JsonCatalog(Catalog):
         )
 
         # Write metadata file
-        metadata_path = location_path / "metadata" / f"v{metadata.last_sequence_number}.metadata.json"
+        metadata_path = (
+            location_path / "metadata" / f"v{metadata.last_sequence_number}.metadata.json"
+        )
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(metadata_path, "w") as f:
@@ -288,8 +294,8 @@ class JsonCatalog(Catalog):
         with open(version_hint_path, "w") as f:
             f.write(str(metadata.last_sequence_number))
 
-        # Register in catalog
-        self._tables[table_id] = str(location)
+        # Register in catalog with metadata file path
+        self._tables[table_id] = str(metadata_path)
         self._save_catalog()
 
         # Load and return table
@@ -314,30 +320,40 @@ class JsonCatalog(Catalog):
         if not metadata_location:
             raise NoSuchTableError(f"Table {table_id} not found")
 
-        # Load table from metadata location
-        location_path = Path(metadata_location)
+        metadata_path = Path(metadata_location)
 
-        # Read version hint to find current metadata file
-        version_hint_path = location_path / "metadata" / "version-hint.text"
-        if not version_hint_path.exists():
-            raise NoSuchTableError(f"Table {table_id} metadata not found")
+        # Check if metadata_location points to a metadata file or directory (backward compatibility)
+        if metadata_path.suffix == ".json":
+            # New format: direct path to metadata file
+            if not metadata_path.exists():
+                raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_path}")
+            table_location = str(metadata_path.parent.parent)
+        else:
+            # Old format: directory path, read version hint
+            table_location = metadata_location
+            version_hint_path = metadata_path / "metadata" / "version-hint.text"
+            if not version_hint_path.exists():
+                raise NoSuchTableError(f"Table {table_id} metadata not found")
 
-        with open(version_hint_path) as f:
-            version = f.read().strip()
+            with open(version_hint_path) as f:
+                version = f.read().strip()
 
-        # Load metadata file
-        metadata_path = location_path / "metadata" / f"v{version}.metadata.json"
-        if not metadata_path.exists():
-            raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_path}")
+            metadata_path = metadata_path / "metadata" / f"v{version}.metadata.json"
+            if not metadata_path.exists():
+                raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_path}")
 
         # Load FileIO and metadata
-        io = load_file_io(properties=self.properties, location=metadata_location)
+        io = load_file_io(properties=self.properties, location=table_location)
 
         metadata_file = io.new_input(str(metadata_path))
         metadata = FromInputFile.table_metadata(metadata_file)
 
         return Table(
-            identifier=self.identifier_to_tuple(identifier) if isinstance(identifier, str) else identifier,
+            identifier=(
+                self.identifier_to_tuple(identifier)
+                if isinstance(identifier, str)
+                else identifier
+            ),
             metadata=metadata,
             metadata_location=str(metadata_path),
             io=io,
@@ -351,7 +367,7 @@ class JsonCatalog(Catalog):
 
         Args:
             identifier: Table identifier
-            metadata_location: Path to table metadata
+            metadata_location: Path to table metadata file or directory
 
         Returns:
             Registered table
@@ -364,7 +380,7 @@ class JsonCatalog(Catalog):
         if table_id in self._tables:
             raise TableAlreadyExistsError(f"Table {table_id} already exists")
 
-        # Register in catalog
+        # Register in catalog (supports both file path and directory path)
         self._tables[table_id] = metadata_location
         self._save_catalog()
 
@@ -514,7 +530,13 @@ class FacebergCatalog(JsonCatalog):
     - Creating Iceberg tables from datasets
     """
 
-    def __init__(self, name: str, warehouse: str, config: Optional["CatalogConfig"] = None, **properties: str):
+    def __init__(
+        self,
+        name: str,
+        warehouse: str,
+        config: Optional["CatalogConfig"] = None,
+        **properties: str,
+    ):
         """Initialize Faceberg catalog.
 
         Args:
@@ -545,7 +567,10 @@ class FacebergCatalog(JsonCatalog):
     def initialize(self) -> None:
         """Initialize catalog with all namespaces from config."""
         if self.config is None:
-            raise ValueError("No config set. Use FacebergCatalog.from_config() to create catalog with config.")
+            raise ValueError(
+                "No config set. Use FacebergCatalog.from_config() "
+                "to create catalog with config."
+            )
 
         for namespace_config in self.config.namespaces:
             try:
@@ -574,7 +599,10 @@ class FacebergCatalog(JsonCatalog):
             ValueError: If config is not set or if table_name is invalid
         """
         if self.config is None:
-            raise ValueError("No config set. Use FacebergCatalog.from_config() to create catalog with config.")
+            raise ValueError(
+                "No config set. Use FacebergCatalog.from_config() "
+                "to create catalog with config."
+            )
 
         created_tables = []
 
@@ -701,14 +729,14 @@ class FacebergCatalog(JsonCatalog):
         table_uuid = str(uuid.uuid4())
 
         # Write Iceberg metadata files (manifest, manifest list, table metadata)
-        metadata_location = metadata_writer.create_metadata_from_files(
+        metadata_file_path = metadata_writer.create_metadata_from_files(
             file_infos=table_info.files,
             table_uuid=table_uuid,
             properties=table_info.get_table_properties(),
         )
 
-        # Register table in catalog
-        self._tables[table_info.identifier] = str(table_path)
+        # Register table in catalog with metadata file path
+        self._tables[table_info.identifier] = str(metadata_file_path)
         self._save_catalog()
 
         # Load and return table
@@ -735,11 +763,15 @@ class FacebergCatalog(JsonCatalog):
         )
 
         # Append new snapshot with updated files
-        metadata_writer.append_snapshot_from_files(
+        metadata_file_path = metadata_writer.append_snapshot_from_files(
             file_infos=table_info.files,
             current_metadata=table.metadata,
             properties=table_info.get_table_properties(),
         )
+
+        # Update catalog with new metadata file path
+        self._tables[table_info.identifier] = str(metadata_file_path)
+        self._save_catalog()
 
         # Reload and return table
         return self.load_table(table_info.identifier)

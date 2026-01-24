@@ -1,13 +1,11 @@
 """Command-line interface for Faceberg."""
 
 import os
-import sys
 from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.table import Table
 
 from faceberg.catalog import FacebergCatalog
 from faceberg.config import CatalogConfig
@@ -71,7 +69,7 @@ def sync(ctx, table_name):
     if table_name:
         console.print(f"\n[bold blue]Syncing table:[/bold blue] {table_name}")
     else:
-        console.print(f"\n[bold blue]Syncing tables...[/bold blue]")
+        console.print("\n[bold blue]Syncing tables...[/bold blue]")
 
     with Progress(
         SpinnerColumn(),
@@ -88,8 +86,8 @@ def sync(ctx, table_name):
             if tables:
                 progress.update(task, description=f"✓ Synced {len(tables)} table(s)")
             else:
-                progress.update(task, description=f"✓ All tables up-to-date")
-            console.print(f"\n[bold green]Done![/bold green]")
+                progress.update(task, description="✓ All tables up-to-date")
+            console.print("\n[bold green]Done![/bold green]")
         except Exception as e:
             progress.update(task, description=f"✗ Failed: {e}")
             raise
