@@ -3,44 +3,50 @@
 These tests verify that DuckDB can properly read Iceberg tables
 created by the Faceberg catalog from HuggingFace datasets.
 
-Note: DuckDB does not natively support the hf:// protocol for file reading.
-Tests will be automatically skipped with informative messages when hf:// URIs
-are encountered.
+Note: DuckDB supports the hf:// protocol through the httpfs extension. The tests
+automatically load the httpfs and iceberg extensions to enable reading Iceberg
+tables with hf:// URIs in their manifest files.
+
+Limitation: DuckDB's httpfs extension requires hf:// URLs in the format
+hf://datasets/{org}/{dataset}/{file}. Datasets must have an organization/user
+prefix (e.g., stanfordnlp/imdb or glue/mrpc work, but rotten_tomatoes fails).
 """
 
 import pytest
-
-
-def duckdb_available():
-    """Check if DuckDB is installed."""
-    try:
-        import duckdb
-
-        return True
-    except ImportError:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not duckdb_available(), reason="DuckDB not installed (install with: pip install duckdb)"
-)
+import duckdb
+from pathlib import Path
 
 
 @pytest.fixture
 def duckdb_conn():
-    """Create a DuckDB connection for testing."""
-    import duckdb
-
+    """Create a DuckDB connection for testing with required extensions."""
     conn = duckdb.connect()
+
+    # Load httpfs extension for hf:// protocol support
+    try:
+        conn.execute("INSTALL httpfs")
+        conn.execute("LOAD httpfs")
+    except Exception as e:
+        pytest.skip(f"Could not load httpfs extension: {e}")
+
+    # Load iceberg extension for iceberg_scan support
+    try:
+        conn.execute("INSTALL iceberg")
+        conn.execute("LOAD iceberg")
+    except Exception as e:
+        pytest.skip(f"Could not load iceberg extension: {e}")
+
     yield conn
     conn.close()
 
 
 @pytest.fixture
-def imdb_metadata_path(synced_catalog_dir):
+def imdb_metadata_path(synced_catalog):
     """Return path to IMDB table metadata for DuckDB."""
     # DuckDB expects the metadata file path
-    metadata_path = synced_catalog_dir / "default" / "imdb_plain_text" / "metadata"
+    # synced_catalog fixture ensures catalog.sync() has been called
+    catalog_location = Path(synced_catalog.config.location)
+    metadata_path = catalog_location / "default" / "imdb_plain_text" / "metadata"
 
     # Find the actual metadata file (v1.metadata.json, v2.metadata.json, etc.)
     metadata_files = sorted(metadata_path.glob("v*.metadata.json"))
@@ -52,19 +58,6 @@ def imdb_metadata_path(synced_catalog_dir):
     raise FileNotFoundError(f"No metadata files found in {metadata_path}")
 
 
-@pytest.fixture
-def rotten_tomatoes_metadata_path(synced_catalog_dir):
-    """Return path to Rotten Tomatoes table metadata for DuckDB."""
-    metadata_path = synced_catalog_dir / "default" / "rotten_tomatoes" / "metadata"
-
-    # Find the actual metadata file
-    metadata_files = sorted(metadata_path.glob("v*.metadata.json"))
-    if metadata_files:
-        # Return the latest version
-        return str(metadata_files[-1])
-
-    # Fallback - should not happen if catalog sync worked
-    raise FileNotFoundError(f"No metadata files found in {metadata_path}")
 
 
 # =============================================================================
@@ -157,20 +150,24 @@ def test_duckdb_read_schema(duckdb_conn, imdb_metadata_path):
     assert "label" in column_names
 
 
-def test_duckdb_table_info(duckdb_conn, rotten_tomatoes_metadata_path):
-    """Test reading basic table information."""
+def test_duckdb_table_info(duckdb_conn, imdb_metadata_path):
+    """Test reading basic table information.
+
+    Uses stanfordnlp/imdb which has an org prefix compatible with DuckDB's
+    httpfs hf:// URL format requirements.
+    """
 
     # Query to verify table can be opened and scanned
     result = duckdb_conn.execute(
         f"""
         SELECT COUNT(*)
-        FROM iceberg_scan('{rotten_tomatoes_metadata_path}')
+        FROM iceberg_scan('{imdb_metadata_path}')
     """
     ).fetchone()
 
     # Verify we can read the table
     assert result is not None
-    assert result[0] >= 0  # May be 0 if no data, but should execute
+    assert result[0] > 0  # IMDB dataset has data
 
 
 # =============================================================================
@@ -202,13 +199,11 @@ def test_duckdb_partition_filter(duckdb_conn, imdb_metadata_path):
     assert train_count < total_count
 
 
-@pytest.mark.skip(reason="PyIceberg FileIO does not support hf:// protocol for comparison")
 def test_duckdb_partition_comparison(catalog, duckdb_conn, imdb_metadata_path):
     """Test that DuckDB partition filtering matches PyIceberg.
 
-    Note: Skipped because PyIceberg doesn't support hf:// protocol, so we can't
-    compare the results. DuckDB reads the Iceberg metadata correctly, but can't
-    read the actual data files from HuggingFace.
+    Both DuckDB (via httpfs extension) and PyIceberg (via HfFileIO) can read
+    hf:// URIs, allowing direct comparison of query results.
     """
     # Get count from DuckDB
     duckdb_count = duckdb_conn.execute(

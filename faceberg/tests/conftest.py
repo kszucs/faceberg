@@ -14,16 +14,15 @@ def synced_catalog_dir(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def synced_catalog(synced_catalog_dir):
-    """Create and sync catalog with test datasets (session-scoped).
+    """Create and sync catalog with test dataset (session-scoped).
 
-    Syncs two small public datasets:
-    - stanfordnlp/imdb (plain_text config)
-    - rotten_tomatoes (default config)
+    Syncs stanfordnlp/imdb (plain_text config) - a small public dataset with
+    org prefix compatible with DuckDB's httpfs hf:// URL requirements.
 
     This fixture is session-scoped to minimize API calls and improve test speed.
     The catalog is synced once and shared across all tests.
     """
-    # Create config with two test datasets
+    # Create config with test dataset
     config = CatalogConfig(
         name="test_catalog",
         location=str(synced_catalog_dir),
@@ -35,11 +34,6 @@ def synced_catalog(synced_catalog_dir):
                         name="imdb_plain_text",
                         dataset="stanfordnlp/imdb",
                         config="plain_text",
-                    ),
-                    TableConfig(
-                        name="rotten_tomatoes",
-                        dataset="rotten_tomatoes",
-                        config="default",
                     ),
                 ],
             )
@@ -53,7 +47,7 @@ def synced_catalog(synced_catalog_dir):
     synced_tables = catalog.sync(token=None, table_name=None)
 
     # Verify sync was successful
-    assert len(synced_tables) == 2, f"Expected 2 tables, got {len(synced_tables)}"
+    assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"
 
     return catalog
 
