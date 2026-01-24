@@ -14,7 +14,6 @@ prefix (e.g., stanfordnlp/imdb or glue/mrpc work, but rotten_tomatoes fails).
 
 import pytest
 import duckdb
-from pathlib import Path
 
 
 @pytest.fixture
@@ -45,7 +44,7 @@ def imdb_metadata_path(synced_catalog):
     """Return path to IMDB table metadata for DuckDB."""
     # DuckDB expects the metadata file path
     # synced_catalog fixture ensures catalog.sync() has been called
-    catalog_location = Path(synced_catalog.config.location)
+    catalog_location = synced_catalog.catalog_dir
     metadata_path = catalog_location / "default" / "imdb_plain_text" / "metadata"
 
     # Find the actual metadata file (v1.metadata.json, v2.metadata.json, etc.)

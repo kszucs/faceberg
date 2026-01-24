@@ -101,8 +101,8 @@ class HfFileIO(FsspecFileIO):
 # =============================================================================
 
 
-class LocalCatalog(Catalog):
-    """Local Iceberg catalog with temporary staging.
+class BaseCatalog(Catalog):
+    """Base Iceberg catalog with common catalog operations.
 
     A JSON-backed Iceberg catalog that stages changes in a temporary directory
     before persisting to the final location.
@@ -116,17 +116,25 @@ class LocalCatalog(Catalog):
     {
         "namespace.table_name": "path/to/metadata"
     }
+
+    Subclasses must implement:
+    - __init__: Initialize catalog-specific attributes
+    - _load_catalog(): Load catalog from storage
+    - _save_catalog(): Save catalog to staging
+    - _persist_changes(): Persist staged changes to final storage
     """
 
     def __init__(
         self,
-        config: CatalogConfig,
+        uri: str,
+        config: Optional[CatalogConfig] = None,
         **properties: str,
     ):
-        """Initialize local catalog.
+        """Initialize base catalog.
 
         Args:
-            config: Catalog configuration (contains name, location, and dataset mappings)
+            uri: Full catalog URI (e.g., "file:///path/to/catalog" or "hf://datasets/org/repo")
+            config: Optional catalog configuration (only needed for sync operations)
             **properties: Additional catalog properties
         """
         # Set default properties for HuggingFace hf:// protocol support
@@ -138,168 +146,75 @@ class LocalCatalog(Catalog):
             "hf.endpoint": os.environ.get("HF_ENDPOINT", "https://huggingface.co"),
         }
 
-        # Merge default properties with user properties (user properties take precedence)
-        merged_properties = {**default_properties, **properties}
+        # Remove 'name' from properties if present (we use uri as name)
+        properties_copy = {k: v for k, v in properties.items() if k != 'name'}
 
-        super().__init__(config.name, **merged_properties)
-        self.catalog_dir = Path(config.location)
+        # Merge default properties with user properties (user properties take precedence)
+        merged_properties = {**default_properties, **properties_copy}
+
+        super().__init__(name=uri, **merged_properties)
+        self.uri = uri
         self.config = config
 
         # Temporary staging attributes (set within context manager)
         self._staging_dir = None
         self._catalog = None
-        self._old_catalog = None  # For tracking changes
-
-        # Ensure catalog directory exists
-        self.catalog_dir.mkdir(parents=True, exist_ok=True)
+        self._staged_changes = None  # List of CommitOperation objects
 
     # =========================================================================
     # Internal helper methods (catalog persistence and utilities)
     # =========================================================================
+    # Subclasses must implement these methods
 
     def _load_catalog(self) -> Dict[str, str]:
-        """Load catalog from catalog directory.
+        """Load catalog from storage.
 
         Always sets self._catalog and returns it.
+        Subclasses must implement this method.
 
         Returns:
             Dictionary mapping table identifier to metadata path
         """
-        catalog_file = self.catalog_dir / "catalog.json"
-        if catalog_file.exists():
-            with open(catalog_file) as f:
-                data = json.load(f)
-
-            # Assert type matches
-            assert data["type"] == "local", f"Expected catalog type 'local', got '{data['type']}'"
-            self._catalog = data.get("tables", {})
-            self.uri = data["uri"]
-        else:
-            self._catalog = {}
-            path_str = self.catalog_dir.absolute().as_posix()
-            self.uri = f"file:///{path_str.lstrip('/')}"
-
-        return self._catalog
+        raise NotImplementedError("Subclasses must implement _load_catalog()")
 
     def _save_catalog(self) -> None:
-        """Save catalog to staging directory.
+        """Save catalog to staging directory and record the change.
 
-        Serializes self._catalog to staging_dir/catalog.json.
+        Serializes self._catalog to staging_dir/catalog.json and appends the
+        change to self._staged_changes.
         Must be called within _staging() context.
+        Subclasses must implement this method.
         """
-        if self._staging_dir is None:
-            raise RuntimeError("_save_catalog() must be called within _staging() context")
-
-        catalog_file = self._staging_dir / "catalog.json"
-
-        # Save in new format with metadata
-        data = {
-            "type": "local",
-            "uri": self.uri,
-            "tables": self._catalog,
-        }
-
-        with open(catalog_file, "w") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-
-    def _gather_changes(self) -> List[Union[CommitOperationAdd, CommitOperationDelete]]:
-        """Gather changes between old and new catalog state.
-
-        Compares self._old_catalog with current staging directory state to
-        construct CommitOperation objects for adds/deletes.
-
-        Returns:
-            List of CommitOperation objects (Add for new/modified files, Delete for removed tables)
-
-        Must be called within _staging() context after _save_catalog().
-        """
-        if self._staging_dir is None:
-            raise RuntimeError("_gather_changes() must be called within _staging() context")
-
-        operations = []
-
-        # Always add catalog.json (it's been updated)
-        catalog_file = self._staging_dir / "catalog.json"
-        operations.append(
-            CommitOperationAdd(
-                path_in_repo="catalog.json",
-                path_or_fileobj=str(catalog_file)
-            )
-        )
-
-        # Collect all files in staging directory (metadata files, etc.)
-        for file_path in self._staging_dir.rglob("*"):
-            if file_path.is_file() and file_path.name != "catalog.json":
-                rel_path = file_path.relative_to(self._staging_dir)
-                operations.append(
-                    CommitOperationAdd(
-                        path_in_repo=str(rel_path),
-                        path_or_fileobj=str(file_path)
-                    )
-                )
-
-        # Detect deleted tables by comparing old and new catalog
-        old_table_ids = set(self._old_catalog.keys()) if self._old_catalog else set()
-        new_table_ids = set(self._catalog.keys())
-        deleted_table_ids = old_table_ids - new_table_ids
-
-        for table_id in deleted_table_ids:
-            # table_id is like "namespace.table_name"
-            # Remove the table's metadata directory
-            namespace, table_name = table_id.rsplit(".", 1)
-            table_dir = f"{namespace}/{table_name}/"
-            operations.append(
-                CommitOperationDelete(path_in_repo=table_dir)
-            )
-
-        return operations
+        raise NotImplementedError("Subclasses must implement _save_catalog()")
 
     def _persist_changes(self) -> None:
-        """Persist staged changes to catalog directory.
-
-        Applies gathered changes (CommitOperations) to catalog_dir.
-        - CommitOperationAdd: moves file from staging to catalog_dir
-        - CommitOperationDelete: removes directory from catalog_dir
+        """Persist staged changes to final storage.
 
         Must be called within _staging() context.
+        Subclasses must implement this method.
         """
-        if self._staging_dir is None:
-            raise RuntimeError("_persist_changes() must be called within _staging() context")
+        raise NotImplementedError("Subclasses must implement _persist_changes()")
 
-        # Gather changes to apply
-        changes = self._gather_changes()
+    def _load_table_locally(self, namespace: str, table_name: str) -> Path:
+        """Get local path where table directory can be accessed.
 
-        # Apply each operation
-        for operation in changes:
-            if isinstance(operation, CommitOperationAdd):
-                # Move file from staging to catalog_dir
-                src = Path(operation.path_or_fileobj)
-                dest = self.catalog_dir / operation.path_in_repo
+        Used only for operations that need to copy table files (e.g., rename_table).
+        For loading tables, use URIs directly - PyIceberg's FileIO handles remote access.
 
-                # Ensure destination directory exists
-                dest.parent.mkdir(parents=True, exist_ok=True)
+        For local catalogs, returns the direct path in catalog_dir.
+        For remote catalogs, downloads from HF Hub and returns cached path.
 
-                # Remove existing file/dir if present
-                if dest.exists():
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
+        Args:
+            namespace: Table namespace
+            table_name: Table name
 
-                # Move file from staging to catalog_dir
-                shutil.move(str(src), str(dest))
+        Returns:
+            Path to locally accessible table directory
 
-            elif isinstance(operation, CommitOperationDelete):
-                # Remove directory from catalog_dir
-                path_to_delete = self.catalog_dir / operation.path_in_repo
-                if path_to_delete.exists():
-                    if path_to_delete.is_dir():
-                        shutil.rmtree(path_to_delete)
-                    else:
-                        path_to_delete.unlink()
+        Subclasses must implement this method.
+        """
+        raise NotImplementedError("Subclasses must implement _load_table_locally()")
 
-            else:
-                raise ValueError(f"Unknown CommitOperation type: {type(operation)}")
 
     @contextmanager
     def _staging(self):
@@ -312,28 +227,34 @@ class LocalCatalog(Catalog):
             with self._staging():
                 # self._staging_dir is available
                 # self._catalog contains loaded catalog
+                # self._staged_changes tracks all modifications
                 self._catalog['new.table'] = 'path/to/metadata'
                 # Write metadata files to self._staging_dir
+                # Append changes to self._staged_changes
         """
         # Create temporary staging directory
         temp_dir = tempfile.mkdtemp(prefix="faceberg_staging_")
         self._staging_dir = Path(temp_dir)
 
-        # Load catalog from catalog_dir (sets self._catalog)
-        self._old_catalog = self._load_catalog().copy()  # Store old state for comparison
+        # Initialize staged changes list
+        self._staged_changes = []
+
+        # Load catalog from storage (sets self._catalog)
+        self._load_catalog()
 
         try:
             yield
         finally:
             # Save catalog to staging (serializes self._catalog to staging_dir/catalog.json)
+            # This also records the catalog.json change in self._staged_changes
             self._save_catalog()
 
-            # Persist changes to catalog directory
+            # Persist changes to storage
             self._persist_changes()
 
             # Clean up
             self._catalog = None
-            self._old_catalog = None
+            self._staged_changes = None
             self._staging_dir = None
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -533,14 +454,33 @@ class LocalCatalog(Catalog):
             with open(metadata_file_path, "w") as f:
                 f.write(metadata.model_dump_json(indent=2))
 
+            # Record metadata file change
+            rel_metadata_path = metadata_file_path.relative_to(self._staging_dir)
+            self._staged_changes.append(
+                CommitOperationAdd(
+                    path_in_repo=str(rel_metadata_path),
+                    path_or_fileobj=str(metadata_file_path)
+                )
+            )
+
             # Write version hint
             version_hint_path = table_path / "metadata" / "version-hint.text"
             with open(version_hint_path, "w") as f:
                 f.write(str(metadata.last_sequence_number))
 
-            # Register in catalog with metadata file path (relative to staging_dir)
+            # Record version hint change
+            rel_version_hint = version_hint_path.relative_to(self._staging_dir)
+            self._staged_changes.append(
+                CommitOperationAdd(
+                    path_in_repo=str(rel_version_hint),
+                    path_or_fileobj=str(version_hint_path)
+                )
+            )
+
+            # Register in catalog with full metadata URI
             rel_path = metadata_file_path.relative_to(self._staging_dir)
-            self._catalog[table_id] = str(rel_path)
+            metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
+            self._catalog[table_id] = metadata_uri
 
         # Load and return table (after staging context exits and persists)
         return self.load_table(identifier)
@@ -559,27 +499,21 @@ class LocalCatalog(Catalog):
         """
         table_id = self._identifier_to_str(identifier)
 
-        # Get metadata location from catalog
+        # Get metadata location from catalog (should be a full URI)
         tables = self._load_catalog()
-        metadata_location = tables.get(table_id)
-        if not metadata_location:
+        metadata_uri = tables.get(table_id)
+        if not metadata_uri:
             raise NoSuchTableError(f"Table {table_id} not found")
 
-        # Resolve relative path to absolute path (from catalog_dir)
-        metadata_path = Path(metadata_location)
-        if not metadata_path.is_absolute():
-            metadata_path = self.catalog_dir / metadata_path
+        # Load FileIO and metadata using the URI
+        # PyIceberg's FileIO handles all protocol schemes (file://, hf://, etc.)
+        io = load_file_io(properties=self.properties, location=metadata_uri)
 
-        # Direct path to metadata file
-        if not metadata_path.exists():
-            raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_path}")
-        table_location = str(metadata_path.parent.parent)
-
-        # Load FileIO and metadata
-        io = load_file_io(properties=self.properties, location=table_location)
-
-        metadata_file = io.new_input(str(metadata_path))
-        metadata = FromInputFile.table_metadata(metadata_file)
+        try:
+            metadata_file = io.new_input(metadata_uri)
+            metadata = FromInputFile.table_metadata(metadata_file)
+        except FileNotFoundError as e:
+            raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_uri}") from e
 
         return Table(
             identifier=(
@@ -588,7 +522,7 @@ class LocalCatalog(Catalog):
                 else identifier
             ),
             metadata=metadata,
-            metadata_location=str(metadata_path),
+            metadata_location=metadata_uri,
             io=io,
             catalog=self,
         )
@@ -614,18 +548,22 @@ class LocalCatalog(Catalog):
             if table_id in self._catalog:
                 raise TableAlreadyExistsError(f"Table {table_id} already exists")
 
-            # Convert to relative path if within staging
-            metadata_path = Path(metadata_location)
-            if metadata_path.is_absolute():
-                try:
-                    metadata_path = metadata_path.relative_to(self._staging_dir)
-                    metadata_location = str(metadata_path)
-                except ValueError:
-                    # Path is not within staging, keep absolute
-                    pass
+            # Ensure metadata_location is a full URI
+            if "://" not in metadata_location:
+                # Convert path to URI
+                metadata_path = Path(metadata_location)
+                if metadata_path.is_absolute():
+                    metadata_uri = f"file://{metadata_location}"
+                else:
+                    # Relative path - should not happen, but handle it
+                    metadata_uri = f"{self.uri.rstrip('/')}/{metadata_location}"
+            else:
+                # Already a URI
+                metadata_uri = metadata_location
 
-            # Register in catalog (supports both file path and directory path)
-            self._catalog[table_id] = metadata_location
+            # Register in catalog with full URI
+            self._catalog[table_id] = metadata_uri
+            # Note: No files are added to staged_changes - only catalog.json will be updated
 
         return self.load_table(identifier)
 
@@ -665,6 +603,13 @@ class LocalCatalog(Catalog):
             if table_id not in self._catalog:
                 raise NoSuchTableError(f"Table {table_id} not found")
 
+            # Record deletion of table directory
+            namespace, table_name = table_id.rsplit(".", 1)
+            table_dir = f"{namespace}/{table_name}/"
+            self._staged_changes.append(
+                CommitOperationDelete(path_in_repo=table_dir)
+            )
+
             # Remove from catalog
             del self._catalog[table_id]
 
@@ -694,7 +639,6 @@ class LocalCatalog(Catalog):
             if to_id in self._catalog:
                 raise TableAlreadyExistsError(f"Table {to_id} already exists")
 
-            # Determine new metadata location in staging
             # Parse the namespace and table name from identifiers
             from_parts = from_id.split(".")
             to_parts = to_id.split(".")
@@ -704,23 +648,42 @@ class LocalCatalog(Catalog):
             to_namespace = to_parts[0]
             to_table = ".".join(to_parts[1:])
 
-            # Copy old table directory to new location in staging
-            old_table_dir = self.catalog_dir / from_namespace / from_table
+            # Get source table directory
+            source_table_dir = self._load_table_locally(from_namespace, from_table)
             new_table_dir = self._staging_dir / to_namespace / to_table
 
-            if old_table_dir.exists():
-                shutil.copytree(old_table_dir, new_table_dir)
+            if source_table_dir.exists():
+                # Copy from source to new location in staging
+                shutil.copytree(source_table_dir, new_table_dir)
 
-                # Update catalog with new metadata path (relative to staging)
+                # Record all files in the new table directory
+                for file_path in new_table_dir.rglob("*"):
+                    if file_path.is_file():
+                        rel_path = file_path.relative_to(self._staging_dir)
+                        self._staged_changes.append(
+                            CommitOperationAdd(
+                                path_in_repo=str(rel_path),
+                                path_or_fileobj=str(file_path)
+                            )
+                        )
+
+                # Update catalog with full metadata URI
                 # Find the metadata file in the copied directory
                 metadata_files = list(new_table_dir.glob("metadata/*.metadata.json"))
                 if metadata_files:
                     # Use the latest metadata file
                     metadata_file = sorted(metadata_files)[-1]
                     rel_path = metadata_file.relative_to(self._staging_dir)
-                    self._catalog[to_id] = str(rel_path)
+                    metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
+                    self._catalog[to_id] = metadata_uri
 
-            # Remove old table from catalog (this will trigger deletion in _gather_changes)
+            # Record deletion of old table directory
+            old_table_dir = f"{from_namespace}/{from_table}/"
+            self._staged_changes.append(
+                CommitOperationDelete(path_in_repo=old_table_dir)
+            )
+
+            # Remove old table from catalog
             del self._catalog[from_id]
 
         return self.load_table(to_identifier)
@@ -796,6 +759,7 @@ class LocalCatalog(Catalog):
 
     def sync(
         self,
+        config: Optional[CatalogConfig] = None,
         token: Optional[str] = None,
         table_name: Optional[str] = None,
     ) -> List[Table]:
@@ -805,6 +769,7 @@ class LocalCatalog(Catalog):
         with new snapshots if the dataset revision has changed.
 
         Args:
+            config: Catalog configuration defining which datasets to sync (uses self.config if not provided)
             token: HuggingFace API token (optional, uses HF_TOKEN env var if not provided)
             table_name: Specific table to sync (None for all), format: "namespace.table_name"
 
@@ -812,12 +777,15 @@ class LocalCatalog(Catalog):
             List of synced Table objects (created or updated)
 
         Raises:
-            ValueError: If config is not set or table_name is invalid
+            ValueError: If config is not provided and not set at initialization, or if table_name is invalid
         """
-        # Validate config is provided (should always be true since it's required in __init__)
-        if self.config is None:
+        # Use provided config or fall back to instance config
+        sync_config = config or self.config
+
+        # Validate config is provided
+        if sync_config is None:
             raise ValueError(
-                "No config set. Catalog requires a CatalogConfig to be provided at initialization."
+                "No config provided. Pass a CatalogConfig to sync() or provide one during catalog initialization."
             )
 
         created_tables = []
@@ -836,7 +804,7 @@ class LocalCatalog(Catalog):
             # Find the specific table in config
             table_config = None
             namespace_name = None
-            for ns in self.config.namespaces:
+            for ns in sync_config.namespaces:
                 if ns.name == target_namespace:
                     for tbl in ns.tables:
                         if tbl.name == target_table:
@@ -853,7 +821,7 @@ class LocalCatalog(Catalog):
             # Process all tables
             tables_to_process = [
                 (ns.name, tbl)
-                for ns in self.config.namespaces
+                for ns in sync_config.namespaces
                 for tbl in ns.tables
             ]
 
@@ -966,9 +934,21 @@ class LocalCatalog(Catalog):
                 properties=table_info.get_table_properties(),
             )
 
-            # Register table in catalog with metadata file path (relative to staging)
+            # Record all created files in the table directory
+            for file_path in metadata_path.rglob("*"):
+                if file_path.is_file():
+                    rel_path = file_path.relative_to(self._staging_dir)
+                    self._staged_changes.append(
+                        CommitOperationAdd(
+                            path_in_repo=str(rel_path),
+                            path_or_fileobj=str(file_path)
+                        )
+                    )
+
+            # Register table in catalog with full metadata URI
             rel_path = metadata_file_path.relative_to(self._staging_dir)
-            self._catalog[table_info.identifier] = str(rel_path)
+            metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
+            self._catalog[table_info.identifier] = metadata_uri
 
         # Load and return table after staging context exits and persists
         return self.load_table(table_info.identifier)
@@ -1012,44 +992,196 @@ class LocalCatalog(Catalog):
                 properties=table_info.get_table_properties(),
             )
 
-            # Update catalog with new metadata file path (relative to staging)
+            # Record all files in the table directory (including new manifest/metadata files)
+            for file_path in metadata_path.rglob("*"):
+                if file_path.is_file():
+                    rel_path = file_path.relative_to(self._staging_dir)
+                    self._staged_changes.append(
+                        CommitOperationAdd(
+                            path_in_repo=str(rel_path),
+                            path_or_fileobj=str(file_path)
+                        )
+                    )
+
+            # Update catalog with full metadata URI
             rel_path = metadata_file_path.relative_to(self._staging_dir)
-            self._catalog[table_info.identifier] = str(rel_path)
+            metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
+            self._catalog[table_info.identifier] = metadata_uri
 
         # Reload and return table after staging context exits and persists
         return self.load_table(table_info.identifier)
 
 
-class RemoteCatalog(LocalCatalog):
+class LocalCatalog(BaseCatalog):
+    """Local Iceberg catalog with file system storage.
+
+    Stores catalog metadata in a local directory.
+    """
+
+    def __init__(
+        self,
+        location: str | Path,
+        config: Optional[CatalogConfig] = None,
+        **properties: str,
+    ):
+        """Initialize local catalog.
+
+        Args:
+            location: Local directory path for catalog storage
+            config: Optional catalog configuration (only needed for sync operations)
+            **properties: Additional catalog properties
+        """
+        # Convert path to absolute file:// URI
+        self.catalog_dir = Path(location).resolve()
+        path_str = self.catalog_dir.as_posix()
+        catalog_uri = f"file:///{path_str.lstrip('/')}"
+
+        super().__init__(uri=catalog_uri, config=config, **properties)
+
+        # Ensure catalog directory exists
+        self.catalog_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_catalog(self) -> Dict[str, str]:
+        """Load catalog from catalog directory.
+
+        Always sets self._catalog and returns it.
+
+        Returns:
+            Dictionary mapping table identifier to metadata path
+        """
+        catalog_file = self.catalog_dir / "catalog.json"
+        if catalog_file.exists():
+            with open(catalog_file) as f:
+                data = json.load(f)
+
+            # Assert type matches
+            assert data["type"] == "local", f"Expected catalog type 'local', got '{data['type']}'"
+            self._catalog = data.get("tables", {})
+        else:
+            self._catalog = {}
+
+        return self._catalog
+
+    def _save_catalog(self) -> None:
+        """Save catalog to staging directory and record the change.
+
+        Serializes self._catalog to staging_dir/catalog.json and appends to staged_changes.
+        Must be called within _staging() context.
+        """
+        if self._staging_dir is None:
+            raise RuntimeError("_save_catalog() must be called within _staging() context")
+
+        catalog_file = self._staging_dir / "catalog.json"
+
+        # Save in new format with metadata
+        data = {
+            "type": "local",
+            "uri": self.uri,
+            "tables": self._catalog,
+        }
+
+        with open(catalog_file, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+
+        # Record the change
+        self._staged_changes.append(
+            CommitOperationAdd(
+                path_in_repo="catalog.json",
+                path_or_fileobj=str(catalog_file)
+            )
+        )
+
+    def _persist_changes(self) -> None:
+        """Persist staged changes to catalog directory.
+
+        Applies staged changes (CommitOperations) to catalog_dir.
+        - CommitOperationAdd: moves file from staging to catalog_dir
+        - CommitOperationDelete: removes directory from catalog_dir
+
+        Must be called within _staging() context.
+        """
+        if self._staging_dir is None:
+            raise RuntimeError("_persist_changes() must be called within _staging() context")
+
+        # Apply each operation
+        for operation in self._staged_changes:
+            if isinstance(operation, CommitOperationAdd):
+                # Move file from staging to catalog_dir
+                src = Path(operation.path_or_fileobj)
+                dest = self.catalog_dir / operation.path_in_repo
+
+                # Ensure destination directory exists
+                dest.parent.mkdir(parents=True, exist_ok=True)
+
+                # Remove existing file/dir if present
+                if dest.exists():
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+
+                # Move file from staging to catalog_dir
+                shutil.move(str(src), str(dest))
+
+            elif isinstance(operation, CommitOperationDelete):
+                # Remove directory from catalog_dir
+                path_to_delete = self.catalog_dir / operation.path_in_repo
+                if path_to_delete.exists():
+                    if path_to_delete.is_dir():
+                        shutil.rmtree(path_to_delete)
+                    else:
+                        path_to_delete.unlink()
+
+            else:
+                raise ValueError(f"Unknown CommitOperation type: {type(operation)}")
+
+    def _load_table_locally(self, namespace: str, table_name: str) -> Path:
+        """Get local path where table directory can be accessed.
+
+        Returns the direct path in catalog_dir (no copying needed).
+
+        Args:
+            namespace: Table namespace
+            table_name: Table name
+
+        Returns:
+            Path to table directory in catalog_dir
+        """
+        return self.catalog_dir / namespace / table_name
+
+
+class RemoteCatalog(BaseCatalog):
     """Remote Iceberg catalog with HuggingFace Hub integration.
 
-    Extends LocalCatalog to automatically sync changes to HuggingFace Hub.
+    Uses HuggingFace Hub for catalog storage with automatic local caching.
     All operations work on a local staging directory (cache), and changes
     are uploaded to the hub by _persist_changes().
 
     Features:
-    - Local staging (cache) with automatic hub uploads
+    - HuggingFace Hub storage with local caching
     - Deletion tracking for removed tables
     - Atomic commits with all changes
     """
 
     def __init__(
         self,
-        config: CatalogConfig,
         hf_repo_id: str,
         hf_token: Optional[str] = None,
+        config: Optional[CatalogConfig] = None,
         **properties: str,
     ):
         """Initialize remote catalog.
 
         Args:
-            config: Catalog configuration (contains name, location, and dataset mappings)
-            hf_repo_id: HuggingFace repository ID for hub syncing
-            hf_token: HuggingFace authentication token
+            hf_repo_id: HuggingFace repository ID (dataset) where catalog is stored
+            hf_token: HuggingFace authentication token (optional)
+            config: Optional catalog configuration (only needed for sync operations)
             **properties: Additional catalog properties
         """
-        # Call parent init (which sets up catalog_dir, etc.)
-        super().__init__(config, **properties)
+        # Construct HuggingFace Hub URI
+        catalog_uri = f"hf://datasets/{hf_repo_id}"
+
+        super().__init__(uri=catalog_uri, config=config, **properties)
 
         # Hub-specific attributes
         self.hf_repo_id = hf_repo_id
@@ -1081,7 +1213,6 @@ class RemoteCatalog(LocalCatalog):
         # Assert type matches
         assert data["type"] == "remote", f"Expected catalog type 'remote', got '{data['type']}'"
         self._catalog = data.get("tables", {})
-        self.uri = data["uri"]
 
         # Extract revision from cached path structure (contains commit hash in path)
         # Path format: .../snapshots/{commit_hash}/catalog.json
@@ -1095,9 +1226,10 @@ class RemoteCatalog(LocalCatalog):
         return self._catalog
 
     def _save_catalog(self) -> None:
-        """Save catalog to staging directory (used by parent's _gather_changes).
+        """Save catalog to staging directory and record the change.
 
-        Serializes self._catalog to staging_dir/catalog.json with remote catalog format.
+        Serializes self._catalog to staging_dir/catalog.json with remote catalog format
+        and appends to staged_changes.
         Must be called within _staging() context.
         """
         if self._staging_dir is None:
@@ -1115,28 +1247,57 @@ class RemoteCatalog(LocalCatalog):
         with open(catalog_file, "w") as f:
             json.dump(data, f, indent=2, sort_keys=True)
 
+        # Record the change
+        self._staged_changes.append(
+            CommitOperationAdd(
+                path_in_repo="catalog.json",
+                path_or_fileobj=str(catalog_file)
+            )
+        )
+
     def _persist_changes(self) -> None:
-        """Persist staged changes to HuggingFace Hub and local cache.
+        """Persist staged changes to HuggingFace Hub.
 
-        Uses gathered changeset to create atomic commit with all operations.
+        Uses staged changes to create atomic commit with all operations.
         Tracks parent revision for proper concurrent update handling.
-        Also saves to local cache (catalog_dir).
+        Files are automatically cached by HuggingFace Hub's download mechanism.
         """
-        # Gather changes (Add/Delete operations)
-        operations = self._gather_changes()
-
-        # Create commit with all operations, using loaded revision as parent
+        # Create commit with all staged operations, using loaded revision as parent
         api = HfApi(token=self.hf_token)
         commit_info = api.create_commit(
             repo_id=self.hf_repo_id,
             repo_type="dataset",
-            operations=operations,
+            operations=self._staged_changes,
             commit_message="Sync catalog metadata",
             parent_commit=self._loaded_revision,  # Use tracked revision as parent
         )
 
         # Update loaded revision to the new commit
         self._loaded_revision = commit_info.commit_url.split("/")[-1]
+
+    def _load_table_locally(self, namespace: str, table_name: str) -> Path:
+        """Get local path where table directory can be accessed.
+
+        Downloads table directory from HF Hub and returns cached path.
+
+        Args:
+            namespace: Table namespace
+            table_name: Table name
+
+        Returns:
+            Path to table directory in HF cache
+        """
+        # Download the catalog.json to get the snapshot directory where the table is cached
+        catalog_path = hf_hub_download(
+            repo_id=self.hf_repo_id,
+            filename="catalog.json",
+            repo_type="dataset",
+            token=self.hf_token,
+            revision=self._loaded_revision,
+        )
+        # The catalog is in the snapshot directory, table dirs are siblings
+        catalog_dir = Path(catalog_path).parent
+        return catalog_dir / namespace / table_name
 
 
 # Alias for main API

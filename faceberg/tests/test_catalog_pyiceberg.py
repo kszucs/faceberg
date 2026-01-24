@@ -56,7 +56,7 @@ def test_scan_to_arrow(catalog):
 
 def test_scan_to_pandas(catalog):
     """Test scanning table to Pandas DataFrame."""
-    table = catalog.load_table("default.rotten_tomatoes")
+    table = catalog.load_table("default.imdb_plain_text")
     scan = table.scan()
 
     # Convert to Pandas DataFrame

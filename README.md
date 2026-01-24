@@ -28,58 +28,161 @@ pip install -e .
 
 ## Quick Start
 
-1. Create a `faceberg.yml` config file:
+### Option 1: Read from Remote Catalog (HuggingFace Hub)
 
-```yaml
-catalog:
-  name: my_catalog
-  location: .faceberg/
-
-datasets:
-  - name: dataset1
-    repo: kszucs/dataset1
-  - name: dataset2
-    repo: kszucs/dataset2
-```
-
-2. Initialize the catalog:
-
-```bash
-faceberg init faceberg.yml
-```
-
-3. Create Iceberg tables:
-
-```bash
-faceberg create
-```
-
-4. Query your data:
+Connect to an existing catalog hosted on HuggingFace:
 
 ```python
-from faceberg.catalog import JsonCatalog
+from faceberg.catalog import RemoteCatalog
 
-catalog = JsonCatalog("my_catalog", ".faceberg/")
-table = catalog.load_table("default.dataset1_default")
+# Connect to remote catalog (no config needed for reading)
+catalog = RemoteCatalog(
+    hf_repo_id="your-org/your-catalog-dataset",
+    hf_token=None,  # Or your HF token for private repos
+)
+
+# Load and query a table
+table = catalog.load_table("default.my_table")
+df = table.scan().to_pandas()
+print(df.head())
+```
+
+### Option 2: Create Local Catalog from HuggingFace Datasets
+
+Sync HuggingFace datasets to a local Iceberg catalog:
+
+```python
+from faceberg.catalog import LocalCatalog
+from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
+
+# Define which datasets to sync
+config = CatalogConfig(
+    namespaces=[
+        NamespaceConfig(
+            name="default",
+            tables=[
+                TableConfig(
+                    name="imdb",
+                    dataset="stanfordnlp/imdb",
+                    config="plain_text",
+                ),
+            ],
+        )
+    ],
+)
+
+# Create local catalog
+catalog = LocalCatalog(location=".faceberg/")
+
+# Sync datasets to create Iceberg tables
+tables = catalog.sync(config=config, token=None)
+print(f"Synced {len(tables)} tables")
+
+# Query the table
+table = catalog.load_table("default.imdb")
+df = table.scan().to_pandas()
+print(df.head())
+```
+
+### Option 3: Read Existing Local Catalog
+
+Read from a local catalog without syncing:
+
+```python
+from faceberg.catalog import LocalCatalog
+
+# Open existing local catalog (no config needed)
+catalog = LocalCatalog(location=".faceberg/")
+
+# List available tables
+for ns in catalog.list_namespaces():
+    print(f"Namespace: {ns}")
+    for table_id in catalog.list_tables(ns):
+        print(f"  - {table_id}")
+
+# Load and query a table
+table = catalog.load_table("default.imdb")
 df = table.scan().to_pandas()
 ```
 
-## Commands
+### Option 4: Query with DuckDB
 
-- `faceberg init` - Initialize catalog from config
-- `faceberg create` - Create Iceberg tables for datasets
-- `faceberg sync` - Sync metadata with dataset updates
-- `faceberg list` - List all tables
-- `faceberg info <table>` - Show table information
-- `faceberg push` - Push catalog to HuggingFace
-- `faceberg pull` - Pull catalog from HuggingFace
+DuckDB can read Iceberg tables created by Faceberg:
+
+```python
+import duckdb
+
+# Create DuckDB connection and load extensions
+conn = duckdb.connect()
+conn.execute("INSTALL httpfs")
+conn.execute("LOAD httpfs")
+conn.execute("INSTALL iceberg")
+conn.execute("LOAD iceberg")
+
+# Query the Iceberg table
+metadata_path = ".faceberg/default/imdb/metadata/v1.metadata.json"
+result = conn.execute(f"""
+    SELECT split, COUNT(*) as count
+    FROM iceberg_scan('{metadata_path}')
+    GROUP BY split
+    ORDER BY split
+""").fetchall()
+
+print(result)
+```
+
+## CLI Usage
+
+The CLI operates on catalogs specified by `--catalog` (local path or HuggingFace repo ID):
+
+```bash
+# Sync datasets to local catalog
+faceberg --catalog=.faceberg --config=faceberg.yml sync
+
+# Sync to remote catalog (automatically pushes to HuggingFace)
+faceberg --catalog=org/catalog-repo --config=faceberg.yml sync
+
+# List tables in local catalog
+faceberg --catalog=.faceberg list
+
+# List tables in remote catalog
+faceberg --catalog=org/catalog-repo list
+
+# Show table info
+faceberg --catalog=.faceberg info default.my_table
+
+# Scan and display sample data from a table
+faceberg --catalog=.faceberg scan default.my_table
+faceberg --catalog=.faceberg scan default.my_table --limit=10
+```
+
+### Config File Format
+
+Create a `faceberg.yml` file (only needed for syncing):
+
+```yaml
+default:
+  imdb:
+    dataset: stanfordnlp/imdb
+    config: plain_text
+  glue:
+    dataset: glue
+    config: mrpc
+
+analytics:
+  sales:
+    dataset: your-org/sales-data
+    config: default
+```
 
 ## Features
 
-- **Config-driven**: Define your datasets in `faceberg.yml`
-- **Local-first**: Test everything locally before pushing to HF
+- **Flexible catalogs**: Local directories or HuggingFace repositories
+- **Config-driven syncing**: Define datasets to sync in YAML
+- **Read without config**: Open existing catalogs without configuration
+- **Remote-first**: Catalogs on HuggingFace can be read by anyone
 - **Dataset-aware**: Handles multiple configs and splits
-- **hf:// protocol**: Leverages HF XET storage for efficiency
+- **hf:// protocol**: Leverages HF dataset storage efficiently
 
 ## License
 

@@ -24,9 +24,7 @@ class NamespaceConfig:
 
 @dataclass
 class CatalogConfig:
-    """Catalog configuration."""
-    name: str
-    location: str
+    """Catalog configuration - defines which datasets to sync as tables."""
     namespaces: List[NamespaceConfig]
 
     @classmethod
@@ -53,24 +51,9 @@ class CatalogConfig:
         if not data:
             raise ValueError("Config file is empty")
 
-        # Parse catalog config
-        if "catalog" not in data:
-            raise ValueError("Missing 'catalog' section in config")
-
-        catalog_data = data["catalog"]
-        if "name" not in catalog_data:
-            raise ValueError("Missing 'name' in catalog config")
-        if "location" not in catalog_data:
-            raise ValueError("Missing 'location' in catalog config")
-
-        catalog_name = catalog_data["name"]
-        catalog_location = catalog_data["location"]
-
         # Parse namespaces config
         namespaces = []
         for key, value in data.items():
-            if key == "catalog":
-                continue  # Skip catalog section
 
             # Each remaining top-level key is a namespace
             namespace_name = key
@@ -126,7 +109,7 @@ class CatalogConfig:
         if not namespaces:
             raise ValueError("No namespaces defined in config")
 
-        return cls(name=catalog_name, location=catalog_location, namespaces=namespaces)
+        return cls(namespaces=namespaces)
 
     def to_yaml(self, path: str | Path) -> None:
         """Save configuration to YAML file.
@@ -136,12 +119,7 @@ class CatalogConfig:
         """
         path = Path(path)
 
-        data = {
-            "catalog": {
-                "name": self.name,
-                "location": self.location,
-            }
-        }
+        data = {}
 
         # Add each namespace as a top-level key
         for namespace in self.namespaces:

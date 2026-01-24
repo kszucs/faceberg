@@ -48,24 +48,14 @@ class TestCatalogConfig:
         table = TableConfig(name="table1", dataset="org/repo")
         namespace = NamespaceConfig(name="ns1", tables=[table])
 
-        config = CatalogConfig(
-            name="my_catalog",
-            location=".faceberg/",
-            namespaces=[namespace]
-        )
+        config = CatalogConfig(namespaces=[namespace])
 
-        assert config.name == "my_catalog"
-        assert config.location == ".faceberg/"
         assert len(config.namespaces) == 1
         assert config.namespaces[0].name == "ns1"
 
     def test_from_yaml_valid_config(self, tmp_path):
         """Test parsing valid YAML config."""
         yaml_content = """
-catalog:
-  name: test_catalog
-  location: .faceberg/
-
 namespace1:
   table1:
     dataset: org/repo1
@@ -84,8 +74,6 @@ namespace2:
 
         config = CatalogConfig.from_yaml(config_file)
 
-        assert config.name == "test_catalog"
-        assert config.location == ".faceberg/"
         assert len(config.namespaces) == 2
 
         # Check namespace1
@@ -117,47 +105,19 @@ namespace2:
         with pytest.raises(ValueError, match="Config file is empty"):
             CatalogConfig.from_yaml(config_file)
 
-    def test_from_yaml_missing_catalog_section(self, tmp_path):
-        """Test parsing YAML without catalog section."""
+    def test_from_yaml_valid_config_simple(self, tmp_path):
+        """Test parsing simple valid YAML config (no catalog section needed)."""
         yaml_content = """
 namespace1:
   table1:
     dataset: org/repo1
 """
-        config_file = tmp_path / "no_catalog.yml"
+        config_file = tmp_path / "simple.yml"
         config_file.write_text(yaml_content)
 
-        with pytest.raises(ValueError, match="Missing 'catalog' section"):
-            CatalogConfig.from_yaml(config_file)
-
-    def test_from_yaml_missing_catalog_name(self, tmp_path):
-        """Test parsing YAML with incomplete catalog config."""
-        yaml_content = """
-catalog:
-  location: .faceberg/
-
-namespace1:
-  table1:
-    dataset: org/repo1
-"""
-        config_file = tmp_path / "no_name.yml"
-        config_file.write_text(yaml_content)
-
-        with pytest.raises(ValueError, match="Missing 'name' in catalog config"):
-            CatalogConfig.from_yaml(config_file)
-
-    def test_from_yaml_missing_catalog_location(self, tmp_path):
-        """Test parsing YAML with missing catalog location."""
-        yaml_content = """
-catalog:
-  name: test_catalog
-
-namespace1:
-  table1:
-    dataset: org/repo1
-"""
-        config_file = tmp_path / "no_location.yml"
-        config_file.write_text(yaml_content)
+        config = CatalogConfig.from_yaml(config_file)
+        assert len(config.namespaces) == 1
+        assert config.namespaces[0].name == "namespace1"
 
         with pytest.raises(ValueError, match="Missing 'location' in catalog config"):
             CatalogConfig.from_yaml(config_file)
@@ -195,10 +155,6 @@ namespace@invalid:
     def test_from_yaml_namespace_not_dict(self, tmp_path):
         """Test parsing YAML where namespace value is not a dict."""
         yaml_content = """
-catalog:
-  name: test_catalog
-  location: .faceberg/
-
 namespace1: not_a_dict
 """
         config_file = tmp_path / "ns_not_dict.yml"
@@ -210,10 +166,6 @@ namespace1: not_a_dict
     def test_from_yaml_empty_namespace(self, tmp_path):
         """Test parsing YAML with namespace that has no tables."""
         yaml_content = """
-catalog:
-  name: test_catalog
-  location: .faceberg/
-
 namespace1: {}
 """
         config_file = tmp_path / "empty_ns.yml"
@@ -225,10 +177,6 @@ namespace1: {}
     def test_from_yaml_missing_dataset(self, tmp_path):
         """Test parsing YAML with table missing 'dataset' field."""
         yaml_content = """
-catalog:
-  name: test_catalog
-  location: .faceberg/
-
 namespace1:
   table1:
     config: config1
@@ -242,10 +190,6 @@ namespace1:
     def test_from_yaml_valid_namespace_names(self, tmp_path):
         """Test parsing YAML with various valid namespace names."""
         yaml_content = """
-catalog:
-  name: test_catalog
-  location: .faceberg/
-
 namespace_1:
   table1:
     dataset: org/repo1
@@ -279,11 +223,7 @@ ns123:
         table2 = TableConfig(name="table2", dataset="org/repo2", config="default")
         namespace = NamespaceConfig(name="test_ns", tables=[table1, table2])
 
-        config = CatalogConfig(
-            name="my_catalog",
-            location=".faceberg/",
-            namespaces=[namespace]
-        )
+        config = CatalogConfig(namespaces=[namespace])
 
         output_file = tmp_path / "output.yml"
         config.to_yaml(output_file)
@@ -292,8 +232,6 @@ ns123:
         with open(output_file) as f:
             data = yaml.safe_load(f)
 
-        assert data["catalog"]["name"] == "my_catalog"
-        assert data["catalog"]["location"] == ".faceberg/"
         assert "test_ns" in data
         assert "table1" in data["test_ns"]
         assert data["test_ns"]["table1"]["dataset"] == "org/repo1"
@@ -303,10 +241,6 @@ ns123:
     def test_round_trip(self, tmp_path):
         """Test that config can be exported and re-imported correctly."""
         yaml_content = """
-catalog:
-  name: roundtrip_test
-  location: /tmp/faceberg/
-
 namespace1:
   table1:
     dataset: org/repo1
@@ -330,8 +264,6 @@ namespace2:
         config2 = CatalogConfig.from_yaml(output_file)
 
         # Verify they're equivalent
-        assert config1.name == config2.name
-        assert config1.location == config2.location
         assert len(config1.namespaces) == len(config2.namespaces)
 
         for ns1, ns2 in zip(config1.namespaces, config2.namespaces):

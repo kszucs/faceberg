@@ -3,7 +3,6 @@
 import json
 
 import pytest
-from huggingface_hub import CommitOperationAdd, CommitOperationDelete
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
     NamespaceNotEmptyError,
@@ -29,15 +28,7 @@ def test_dir(tmp_path):
 @pytest.fixture
 def catalog(test_dir):
     """Create a test catalog."""
-    from faceberg.config import CatalogConfig
-
-    # Create minimal config for testing basic catalog functionality
-    minimal_config = CatalogConfig(
-        name="test_catalog",
-        location=str(test_dir),
-        namespaces=[],
-    )
-    return LocalCatalog(config=minimal_config)
+    return LocalCatalog(location=str(test_dir), name="test_catalog")
 
 
 @pytest.fixture
@@ -51,16 +42,10 @@ def test_schema():
 
 def test_create_catalog(test_dir):
     """Test catalog creation."""
-    from faceberg.config import CatalogConfig
+    catalog = LocalCatalog(location=str(test_dir), name="test")
 
-    minimal_config = CatalogConfig(
-        name="test",
-        location=str(test_dir),
-        namespaces=[],
-    )
-    catalog = LocalCatalog(config=minimal_config)
-
-    assert catalog.name == "test"
+    assert catalog.name.startswith("file:///")
+    assert catalog.name.endswith(str(test_dir.name))
     assert catalog.catalog_dir == test_dir
     assert test_dir.exists()
     # Note: catalog.json is created after first operation, not at init
@@ -157,22 +142,14 @@ def test_rename_table(catalog, test_schema):
 
 def test_catalog_persistence(test_dir, test_schema):
     """Test that catalog persists across instances."""
-    from faceberg.config import CatalogConfig
-
-    minimal_config = CatalogConfig(
-        name="test",
-        location=str(test_dir),
-        namespaces=[],
-    )
-
     # Create catalog and table
-    catalog1 = LocalCatalog(config=minimal_config)
+    catalog1 = LocalCatalog(location=str(test_dir), name="test")
     catalog1.create_namespace("default")
     catalog1.create_table("default.test_table", test_schema)
     # Changes are automatically persisted via context manager
 
     # Create new catalog instance
-    catalog2 = LocalCatalog(config=minimal_config)
+    catalog2 = LocalCatalog(location=str(test_dir), name="test")
 
     # Table should still exist
     assert catalog2.table_exists("default.test_table")
@@ -213,11 +190,9 @@ def faceberg_test_dir(tmp_path):
 
 
 @pytest.fixture
-def faceberg_config(faceberg_test_dir):
+def faceberg_config():
     """Create test CatalogConfig."""
     return CatalogConfig(
-        name="test_catalog",
-        location=str(faceberg_test_dir),
         namespaces=[
             NamespaceConfig(
                 name="default",
@@ -232,14 +207,10 @@ def faceberg_config(faceberg_test_dir):
 
 
 @pytest.fixture
-def faceberg_config_file(tmp_path, faceberg_test_dir):
+def faceberg_config_file(tmp_path):
     """Create test config YAML file."""
     config_file = tmp_path / "test_faceberg.yml"
-    config_content = f"""catalog:
-  name: test_catalog
-  location: {faceberg_test_dir}
-
-default:
+    config_content = """default:
   imdb_plain_text:
     dataset: stanfordnlp/imdb
     config: plain_text
@@ -249,18 +220,19 @@ default:
 
 
 @pytest.fixture
-def faceberg_catalog(faceberg_config_file):
+def faceberg_catalog(faceberg_config_file, faceberg_test_dir):
     """Create test LocalCatalog for Faceberg tests."""
     config = CatalogConfig.from_yaml(faceberg_config_file)
-    return LocalCatalog(config=config)
+    return LocalCatalog(location=str(faceberg_test_dir), config=config)
 
 
 def test_faceberg_from_local(faceberg_config_file, faceberg_test_dir):
     """Test creating LocalCatalog from local config file."""
     config = CatalogConfig.from_yaml(faceberg_config_file)
-    catalog = LocalCatalog(config=config)
+    catalog = LocalCatalog(location=str(faceberg_test_dir), config=config, name="test_catalog")
 
-    assert catalog.name == "test_catalog"
+    assert catalog.name.startswith("file:///")
+    assert catalog.name.endswith(str(faceberg_test_dir.name))
     assert catalog.catalog_dir == faceberg_test_dir
 
 
@@ -526,12 +498,6 @@ def test_save_catalog_outside_staging_context(catalog):
         catalog._save_catalog()
 
 
-def test_gather_changes_outside_staging_context(catalog):
-    """Test that _gather_changes raises error outside staging context."""
-    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
-        catalog._gather_changes()
-
-
 def test_persist_changes_outside_staging_context(catalog):
     """Test that _persist_changes raises error outside staging context."""
     with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
@@ -623,41 +589,6 @@ def test_staging_context_cleanup_on_error(catalog, test_schema):
     # Staging should be cleaned up
     assert catalog._staging_dir is None
     assert catalog._catalog is None
-    assert catalog._old_catalog is None
+    assert catalog._staged_changes is None
 
 
-def test_gather_changes_with_new_and_deleted_tables(catalog, test_schema):
-    """Test _gather_changes detects both additions and deletions."""
-    catalog.create_namespace("default")
-    catalog.create_table("default.table1", test_schema)
-    catalog.create_table("default.table2", test_schema)
-
-    # Now drop table1 and add table3
-    with catalog._staging():
-        # Simulate old catalog having table1 and table2
-        catalog._old_catalog = {"default.table1": "path1", "default.table2": "path2"}
-        # New catalog has table2 and table3
-        catalog._catalog = {"default.table2": "path2", "default.table3": "path3"}
-
-        # Create dummy metadata file for table3 in staging
-        table3_path = catalog._staging_dir / "default" / "table3" / "metadata"
-        table3_path.mkdir(parents=True, exist_ok=True)
-        metadata_file = table3_path / "v0.metadata.json"
-        metadata_file.write_text('{"test": "data"}')
-
-        # Save catalog to staging
-        catalog._save_catalog()
-
-        # Gather changes
-        changes = catalog._gather_changes()
-
-        # Should have:
-        # 1. catalog.json (Add)
-        # 2. table3 metadata file (Add)
-        # 3. table1 directory (Delete)
-        add_ops = [op for op in changes if isinstance(op, CommitOperationAdd)]
-        delete_ops = [op for op in changes if isinstance(op, CommitOperationDelete)]
-
-        assert len(add_ops) >= 2  # catalog.json + table3 metadata
-        assert len(delete_ops) == 1  # table1 deleted
-        assert delete_ops[0].path_in_repo == "default/table1/"

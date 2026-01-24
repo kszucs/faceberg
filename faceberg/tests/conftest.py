@@ -24,8 +24,6 @@ def synced_catalog(synced_catalog_dir):
     """
     # Create config with test dataset
     config = CatalogConfig(
-        name="test_catalog",
-        location=str(synced_catalog_dir),
         namespaces=[
             NamespaceConfig(
                 name="default",
@@ -41,10 +39,10 @@ def synced_catalog(synced_catalog_dir):
     )
 
     # Create catalog instance (hf:// protocol support is built-in)
-    catalog = LocalCatalog(config=config)
+    catalog = LocalCatalog(location=str(synced_catalog_dir))
 
     # Sync all tables (token=None works for public datasets)
-    synced_tables = catalog.sync(token=None, table_name=None)
+    synced_tables = catalog.sync(config=config, token=None, table_name=None)
 
     # Verify sync was successful
     assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"
