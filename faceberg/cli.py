@@ -1,60 +1,50 @@
 """Command-line interface for Faceberg."""
 
-import os
 from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from faceberg.catalog import LocalCatalog, RemoteCatalog
 from faceberg.config import CatalogConfig
 
 console = Console()
 
 
-def _is_hf_repo_id(path: str) -> bool:
-    """Check if path looks like a HuggingFace repo ID (org/repo format)."""
-    return "/" in path and not path.startswith(("./", "../", "/"))
 
-
-def _get_catalog(catalog_path: str, config: CatalogConfig = None):
-    """Create catalog instance based on path (local or remote)."""
-    if _is_hf_repo_id(catalog_path):
-        # Remote catalog
-        token = os.getenv("HF_TOKEN")
-        return RemoteCatalog(hf_repo_id=catalog_path, hf_token=token, config=config)
-    else:
-        # Local catalog
-        return LocalCatalog(location=catalog_path, config=config)
 
 
 @click.group()
 @click.version_option(version="0.1.0", prog_name="faceberg")
 @click.option(
-    "--catalog",
-    type=str,
-    default=".",
-    help="Catalog location: local path or HuggingFace repo ID (org/repo)",
-)
-@click.option(
     "--config",
     "-c",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default=None,
+    default="faceberg.yml",
     help="Path to faceberg.yml config file (only needed for sync)",
+)
+@click.option(
+    "--token",
+    "-t",
+    help="HuggingFace API token (can also set HF_TOKEN env variable)",
+    type=str,
+    envvar="HF_TOKEN",
+    default=None,
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.pass_context
-def main(ctx, catalog, config, verbose):
+def main(ctx, config, verbose, token):
     """Faceberg - Bridge HuggingFace datasets with Apache Iceberg.
 
     A command-line tool to expose HuggingFace datasets as Iceberg tables,
     enabling powerful analytics and time-travel capabilities.
     """
+    config = CatalogConfig.from_yaml(config)
+
     ctx.ensure_object(dict)
-    ctx.obj["catalog_path"] = catalog
-    ctx.obj["config_path"] = config
+    ctx.obj["config"] = config
+    ctx.obj["catalog"] = config.to_catalog(token)
+    ctx.obj["token"] = token
     ctx.obj["verbose"] = verbose
 
 
@@ -69,27 +59,12 @@ def sync(ctx, table_name):
     checks if dataset revision has changed and skips if already up-to-date.
 
     Example:
-        faceberg --catalog=. --config=faceberg.yml sync
-        faceberg --catalog=org/catalog-repo sync namespace1.table1
+        faceberg --config=faceberg.yml sync
+        faceberg --config=faceberg.yml sync namespace1.table1
     """
-    catalog_path = ctx.obj["catalog_path"]
-    config_path = ctx.obj["config_path"]
+    catalog = ctx.obj["catalog"]
 
-    # Config is required for sync
-    if not config_path:
-        console.print("[bold red]Error:[/bold red] --config is required for sync command")
-        console.print("Usage: faceberg --catalog=. --config=faceberg.yml sync")
-        raise click.Abort()
-
-    # Load config and create catalog
-    config = CatalogConfig.from_yaml(config_path)
-    catalog = _get_catalog(catalog_path, config=config)
-
-    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.name}")
-    console.print(f"[bold blue]Location:[/bold blue] {catalog.catalog_dir}")
-
-    # Get HF token
-    token = os.getenv("HF_TOKEN")
+    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.uri}")
 
     # Sync tables with progress
     if table_name:
@@ -105,11 +80,7 @@ def sync(ctx, table_name):
         task = progress.add_task("Discovering and syncing...", total=None)
 
         try:
-            tables = catalog.sync(
-                config=config,
-                token=token,
-                table_name=table_name,
-            )
+            tables = catalog.sync(table_name=table_name)
             if tables:
                 progress.update(task, description=f"✓ Synced {len(tables)} table(s)")
             else:
@@ -134,49 +105,32 @@ def init(ctx):
 
     Example:
         # Initialize local catalog
-        faceberg --catalog=.faceberg init
+        faceberg --config=faceberg.yml init
 
         # Initialize remote catalog (creates HF dataset repo)
         export HF_TOKEN=your_token
-        faceberg --catalog=org/catalog-repo init
+        faceberg --config=faceberg.yml init
     """
-    catalog_path = ctx.obj["catalog_path"]
-
-    # Check if it's a remote catalog
-    is_remote = _is_hf_repo_id(catalog_path)
+    catalog = ctx.obj["catalog"]
+    is_remote = catalog.uri.startswith("hf://")
 
     if is_remote:
-        # Remote catalog requires HF token
-        token = os.getenv("HF_TOKEN")
-        if not token:
-            console.print(
-                "[bold red]Error:[/bold red] HF_TOKEN environment variable required for remote catalog"
-            )
-            console.print(
-                "Usage: export HF_TOKEN=your_token && faceberg --catalog=org/catalog-repo init"
-            )
-            raise click.Abort()
-
-        console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog_path}")
+        console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog.uri}")
     else:
-        console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog_path}")
+        console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog.uri}")
 
     try:
-        catalog = _get_catalog(catalog_path)
         catalog.init()
         console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
 
         if is_remote:
-            console.print(
-                f"\n[bold blue]Repository URL:[/bold blue] https://huggingface.co/datasets/{catalog_path}"
-            )
             console.print("\n[dim]Next steps:[/dim]")
-            console.print("  1. Create a faceberg.yml config file")
-            console.print(f"  2. Run: faceberg --catalog={catalog_path} --config=faceberg.yml sync")
+            console.print("  1. Ensure faceberg.yml config file is configured")
+            console.print("  2. Run: faceberg --config=faceberg.yml sync")
         else:
             console.print("\n[dim]Next steps:[/dim]")
-            console.print("  1. Create a faceberg.yml config file")
-            console.print(f"  2. Run: faceberg --catalog={catalog_path} --config=faceberg.yml sync")
+            console.print("  1. Ensure faceberg.yml config file is configured")
+            console.print("  2. Run: faceberg --config=faceberg.yml sync")
     except ValueError as e:
         # Handle "repository already exists" error
         if "already exists" in str(e):
@@ -201,14 +155,11 @@ def list_tables(ctx):
     """List all tables in catalog.
 
     Example:
-        faceberg --catalog=. list
-        faceberg --catalog=org/catalog-repo list
+        faceberg --config=faceberg.yml list
     """
-    catalog_path = ctx.obj["catalog_path"]
-    catalog = _get_catalog(catalog_path)
+    catalog = ctx.obj["catalog"]
 
-    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.name}")
-    console.print(f"[bold blue]Location:[/bold blue] {catalog.catalog_dir}\n")
+    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.uri}\n")
 
     # List all namespaces and tables
     namespaces = catalog.list_namespaces()
@@ -234,10 +185,9 @@ def info(ctx, table_name):
     Displays schema, partitioning, current snapshot, and data location.
 
     Example:
-        faceberg --catalog=. info default.dataset1
+        faceberg --config=faceberg.yml info default.dataset1
     """
-    catalog_path = ctx.obj["catalog_path"]
-    catalog = _get_catalog(catalog_path)
+    catalog = ctx.obj["catalog"]
 
     console.print(f"[bold blue]Table:[/bold blue] {table_name}")
 
@@ -262,12 +212,10 @@ def scan(ctx, table_name, limit):
     the first few rows as a quick verification that the table is readable.
 
     Example:
-        faceberg --catalog=. scan default.imdb
-        faceberg --catalog=. scan default.imdb --limit=10
-        faceberg --catalog=org/catalog-repo scan default.dataset1
+        faceberg --config=faceberg.yml scan default.imdb
+        faceberg --config=faceberg.yml scan default.imdb --limit=10
     """
-    catalog_path = ctx.obj["catalog_path"]
-    catalog = _get_catalog(catalog_path)
+    catalog = ctx.obj["catalog"]
 
     console.print(f"[bold blue]Scanning table:[/bold blue] {table_name}\n")
 
@@ -303,36 +251,6 @@ def scan(ctx, table_name, limit):
 
             console.print("\n[bold red]Traceback:[/bold red]")
             console.print(traceback.format_exc())
-
-
-@main.command()
-@click.pass_context
-def push(ctx):
-    """Push local catalog to HuggingFace.
-
-    Note: With RemoteCatalog, changes are automatically pushed during sync.
-    Use RemoteCatalog in your code for automatic syncing to HuggingFace.
-
-    Example:
-        faceberg --catalog=org/catalog-repo --config=faceberg.yml sync
-    """
-    console.print("[bold blue]Pushing catalog to HuggingFace...[/bold blue]")
-    console.print("[yellow]⚠️  Use RemoteCatalog for automatic HF syncing[/yellow]")
-
-
-@main.command()
-@click.pass_context
-def pull(ctx):
-    """Pull catalog from HuggingFace to local.
-
-    Note: With RemoteCatalog, the catalog is automatically cached locally.
-    Simply use a HuggingFace repo ID as the catalog path.
-
-    Example:
-        faceberg --catalog=org/catalog-repo list
-    """
-    console.print("[bold blue]Pulling catalog from HuggingFace...[/bold blue]")
-    console.print("[yellow]⚠️  Use RemoteCatalog to read from HF automatically[/yellow]")
 
 
 if __name__ == "__main__":

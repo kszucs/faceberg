@@ -6,6 +6,8 @@ from typing import List
 
 import yaml
 
+from faceberg.catalog import LocalCatalog, RemoteCatalog
+
 
 @dataclass
 class TableConfig:
@@ -28,6 +30,7 @@ class NamespaceConfig:
 class CatalogConfig:
     """Catalog configuration - defines which datasets to sync as tables."""
 
+    uri: str
     namespaces: List[NamespaceConfig]
 
     @classmethod
@@ -53,6 +56,11 @@ class CatalogConfig:
 
         if not data:
             raise ValueError("Config file is empty")
+
+        # Extract URI if present
+        uri = data.pop("uri", None)
+        if not uri:
+            raise ValueError("Missing required 'uri' field in config")
 
         # Parse namespaces config
         namespaces = []
@@ -112,7 +120,7 @@ class CatalogConfig:
         if not namespaces:
             raise ValueError("No namespaces defined in config")
 
-        return cls(namespaces=namespaces)
+        return cls(uri=uri, namespaces=namespaces)
 
     def to_yaml(self, path: str | Path) -> None:
         """Save configuration to YAML file.
@@ -122,7 +130,7 @@ class CatalogConfig:
         """
         path = Path(path)
 
-        data = {}
+        data = {"uri": self.uri}
 
         # Add each namespace as a top-level key
         for namespace in self.namespaces:
@@ -136,3 +144,10 @@ class CatalogConfig:
 
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    def to_catalog(self, hf_token=None) -> LocalCatalog | RemoteCatalog:
+        if self.uri.startswith("hf://"):
+            # parse repo ID from URI
+            return RemoteCatalog(self.uri, hf_token=hf_token, config=self)
+        else:
+            return LocalCatalog(self.uri, hf_token=hf_token, config=self)

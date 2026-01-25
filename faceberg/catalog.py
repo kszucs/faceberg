@@ -1193,7 +1193,7 @@ class RemoteCatalog(BaseCatalog):
 
     def __init__(
         self,
-        hf_repo: str,
+        location: str,
         hf_token: Optional[str] = None,
         config: Optional[CatalogConfig] = None,
         **properties: str,
@@ -1201,14 +1201,22 @@ class RemoteCatalog(BaseCatalog):
         """Initialize remote catalog.
 
         Args:
-            hf_repo: HuggingFace repository ID (dataset) where catalog is stored
+            location: HuggingFace URI in format "hf://datasets/org/repo"
             hf_token: HuggingFace authentication token (optional)
             config: Optional catalog configuration (only needed for sync operations)
             **properties: Additional catalog properties
         """
         # Construct HuggingFace Hub URI
-        catalog_uri = f"hf://datasets/{hf_repo}"
-        super().__init__(uri=catalog_uri, config=config, hf_token=hf_token, **properties)
+        super().__init__(uri=location, config=config, hf_token=hf_token, **properties)
+
+        # Parse hf_repo from URI (format: hf://datasets/org/repo)
+        if location.startswith("hf://datasets/"):
+            hf_repo = location.replace("hf://datasets/", "")
+        elif location.startswith("hf://"):
+            # Handle other hf:// formats
+            hf_repo = location.replace("hf://", "")
+        else:
+            raise ValueError(f"Invalid HuggingFace URI format: {location}. Expected hf://datasets/org/repo")
 
         # Hub-specific attributes
         self._hf_repo = hf_repo
