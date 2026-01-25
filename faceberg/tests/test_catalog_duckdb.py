@@ -43,7 +43,7 @@ def duckdb_conn():
 def imdb_metadata_path(synced_catalog):
     """Return path to IMDB table metadata for DuckDB."""
     # DuckDB expects the metadata file path
-    # synced_catalog fixture ensures catalog.sync() has been called
+    # synced_catalog fixture ensures catalog.sync_datasets() has been called
     catalog_location = synced_catalog.catalog_dir
     metadata_path = catalog_location / "default" / "imdb_plain_text" / "metadata"
 

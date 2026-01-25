@@ -11,17 +11,19 @@ class TestTable:
 
     def test_table_config_defaults(self):
         """Test Table with default config value."""
-        table = Table(dataset="org/repo", uri="file:///path/to/metadata")
+        table = Table(dataset="org/repo", uri="file:///path/to/metadata", revision="abc123")
         assert table.dataset == "org/repo"
         assert table.config == "default"
         assert table.uri == "file:///path/to/metadata"
+        assert table.revision == "abc123"
 
     def test_table_config_explicit(self):
         """Test Table with explicit config value."""
-        table = Table(dataset="org/repo", uri="file:///path/to/metadata", config="custom")
+        table = Table(dataset="org/repo", uri="file:///path/to/metadata", revision="def456", config="custom")
         assert table.dataset == "org/repo"
         assert table.config == "custom"
         assert table.uri == "file:///path/to/metadata"
+        assert table.revision == "def456"
 
 
 class TestNamespace:
@@ -30,8 +32,8 @@ class TestNamespace:
     def test_namespace_config(self):
         """Test Namespace creation."""
         tables = {
-            "table1": Table(dataset="org/repo1", uri="file:///path1"),
-            "table2": Table(dataset="org/repo2", uri="file:///path2", config="custom"),
+            "table1": Table(dataset="org/repo1", uri="file:///path1", revision="rev1"),
+            "table2": Table(dataset="org/repo2", uri="file:///path2", revision="rev2", config="custom"),
         }
         namespace = Namespace(tables=tables)
 
@@ -47,7 +49,7 @@ class TestCatalog:
 
     def test_catalog_config_creation(self):
         """Test Catalog creation."""
-        tables = {"table1": Table(dataset="org/repo", uri="file:///path")}
+        tables = {"table1": Table(dataset="org/repo", uri="file:///path", revision="rev1")}
         namespaces = {"ns1": Namespace(tables=tables)}
 
         config = Catalog(uri=".faceberg", namespaces=namespaces)
@@ -236,8 +238,8 @@ ns123:
     def test_to_yaml(self, tmp_path):
         """Test exporting config to YAML."""
         tables = {
-            "table1": Table(dataset="org/repo1", uri="file:///path1", config="config1"),
-            "table2": Table(dataset="org/repo2", uri="file:///path2", config="default"),
+            "table1": Table(dataset="org/repo1", uri="file:///path1", revision="rev1", config="config1"),
+            "table2": Table(dataset="org/repo2", uri="file:///path2", revision="rev2", config="default"),
         }
         namespaces = {"test_ns": Namespace(tables=tables)}
 

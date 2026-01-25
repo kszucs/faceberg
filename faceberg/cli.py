@@ -32,11 +32,16 @@ def main(ctx, uri, verbose, token):
     """
     # Create catalog instance based on URI
     if uri.startswith("hf://"):
-        # Extract repo ID from hf://datasets/org/repo format
+        # Explicit HuggingFace protocol: hf://datasets/org/repo
         hf_repo = uri.replace("hf://datasets/", "")
-        catalog = RemoteCatalog(hf_repo=hf_repo, hf_token=token)
+        catalog = RemoteCatalog(hf_repo, hf_token=token)
+    elif uri.startswith("file://"):
+        # Explicit protocol or existing local path
+        catalog = LocalCatalog(uri, hf_token=token)
+    elif Path(uri).is_dir():
+        catalog = LocalCatalog(uri, hf_token=token)
     else:
-        catalog = LocalCatalog(path=uri, hf_token=token)
+        catalog = RemoteCatalog(uri, hf_token=token)
 
     ctx.ensure_object(dict)
     ctx.obj["catalog"] = catalog
@@ -82,9 +87,9 @@ def add(ctx, dataset, table, config_name):
             console.print("[red]Error: dataset must be in format 'org/repo'[/red]")
             raise click.Abort()
 
-    # Add table definition to catalog using public API
+    # Add dataset to catalog and create Iceberg table
     try:
-        catalog.add_table_definition(
+        table = catalog.add_dataset(
             identifier=table_identifier, dataset=dataset, config=config_name
         )
     except ValueError as e:
@@ -100,12 +105,7 @@ def add(ctx, dataset, table, config_name):
     console.print(f"[green]✓ Added {table_identifier} to catalog[/green]")
     console.print(f"  Dataset: {dataset}")
     console.print(f"  Config: {config_name}")
-
-    # Show appropriate sync command based on catalog type
-    if hasattr(catalog, 'catalog_dir'):
-        console.print(f"\n[dim]Run 'faceberg {catalog.catalog_dir} sync' to create the table[/dim]")
-    else:
-        console.print(f"\n[dim]Run 'faceberg {catalog.uri} sync' to create the table[/dim]")
+    console.print(f"  Location: {table.metadata_location}")
 
 
 @main.command()
@@ -140,7 +140,7 @@ def sync(ctx, table_name):
         task = progress.add_task("Discovering and syncing...", total=None)
 
         try:
-            tables = catalog.sync(table_name=table_name)
+            tables = catalog.sync_datasets(table_name=table_name)
             if tables:
                 progress.update(task, description=f"✓ Synced {len(tables)} table(s)")
             else:
@@ -290,7 +290,7 @@ def scan(ctx, table_name, limit):
             console=console,
         ) as progress:
             task = progress.add_task("Reading data...", total=None)
-            df = table.scan().to_pandas()
+            df = table.scan().limit(limit).to_pandas()
             progress.update(task, description=f"✓ Read {len(df)} rows")
 
         # Display basic info

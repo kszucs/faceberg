@@ -35,6 +35,7 @@ def synced_catalog(synced_catalog_dir):
                     "imdb_plain_text": Table(
                         dataset="stanfordnlp/imdb",
                         uri="",  # Empty until synced
+                        revision="",  # Empty until synced
                         config="plain_text",
                     ),
                 }
@@ -50,7 +51,7 @@ def synced_catalog(synced_catalog_dir):
     catalog = LocalCatalog(path=str(synced_catalog_dir))
 
     # Sync all tables (token=None works for public datasets)
-    synced_tables = catalog.sync()
+    synced_tables = catalog.sync_datasets()
 
     # Verify sync was successful
     assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"

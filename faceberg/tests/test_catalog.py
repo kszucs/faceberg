@@ -203,7 +203,7 @@ def faceberg_config():
             "default": Namespace(
                 tables={
                     "imdb_plain_text": Table(
-                        dataset="stanfordnlp/imdb", uri="", config="plain_text"
+                        dataset="stanfordnlp/imdb", uri="", revision="", config="plain_text"
                     ),
                 }
             )
@@ -251,7 +251,7 @@ def test_faceberg_lazy_namespace_creation(faceberg_catalog):
     assert ("default",) in faceberg_catalog.list_namespaces()
 
     # Sync will create tables
-    synced_tables = faceberg_catalog.sync()
+    synced_tables = faceberg_catalog.sync_datasets()
 
     # Namespace should still exist
     assert ("default",) in faceberg_catalog.list_namespaces()
@@ -261,7 +261,7 @@ def test_faceberg_lazy_namespace_creation(faceberg_catalog):
 def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config):
     """Test creating tables from datasets in FacebergCatalog."""
     # Sync tables (token=None works for public datasets, namespaces created on-demand)
-    synced_tables = faceberg_catalog.sync()
+    synced_tables = faceberg_catalog.sync_datasets()
 
     # Verify tables were created
     assert len(synced_tables) > 0
@@ -278,7 +278,7 @@ def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config)
 def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
     """Test creating a specific table in FacebergCatalog."""
     # Sync specific table (token=None works for public datasets, namespace created on-demand)
-    synced_tables = faceberg_catalog.sync(
+    synced_tables = faceberg_catalog.sync_datasets(
         table_name="default.imdb_plain_text",
     )
 
@@ -305,11 +305,11 @@ def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config)
     )
 
     # Create table first time
-    faceberg_catalog._create_table(table_info)
+    faceberg_catalog._add_dataset(table_info)
 
     # Try to create again - should raise
     with pytest.raises(TableAlreadyExistsError):
-        faceberg_catalog._create_table(table_info)
+        faceberg_catalog._add_dataset(table_info)
 
 
 def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
@@ -328,7 +328,7 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
     )
 
     # Create table
-    table = faceberg_catalog._create_table(table_info)
+    table = faceberg_catalog._add_dataset(table_info)
 
     # Verify table
     assert table is not None
@@ -346,7 +346,7 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
 def test_faceberg_invalid_table_name_format(faceberg_catalog, faceberg_config):
     """Test invalid table name format raises error in FacebergCatalog."""
     with pytest.raises(ValueError, match="Invalid table name"):
-        faceberg_catalog.sync(
+        faceberg_catalog.sync_datasets(
             table_name="invalid_format",  # Missing namespace
         )
 
@@ -355,7 +355,7 @@ def test_faceberg_dataset_not_found_in_config(faceberg_catalog):
     """Test error when dataset not found in store in FacebergCatalog."""
     # Catalog store has "imdb_plain_text" dataset, so "nonexistent" should fail
     with pytest.raises(ValueError, match="not found in store"):
-        faceberg_catalog.sync(
+        faceberg_catalog.sync_datasets(
             table_name="default.nonexistent_default",
         )
 

@@ -115,23 +115,26 @@ class IcebergMetadataWriter:
             file_path: HuggingFace file path in format hf://datasets/repo_id/path/to/file
 
         Returns:
-            File size in bytes, or 0 if unable to determine
+            File size in bytes
+
+        Raises:
+            ValueError: If file path cannot be parsed or file size cannot be determined
         """
-        try:
-            # Parse hf:// URL - format is hf://datasets/org/repo/path/to/file
-            if file_path.startswith("hf://datasets/"):
-                # Split into repo_id (org/repo) and filename (path/to/file)
-                remaining = file_path[len("hf://datasets/") :]
-                parts = remaining.split("/")
-                if len(parts) >= 3:
-                    repo_id = f"{parts[0]}/{parts[1]}"  # org/repo
-                    filename = "/".join(parts[2:])  # path/to/file
-                    url = hf_hub_url(repo_id=repo_id, filename=filename, repo_type="dataset")
-                    metadata = get_hf_file_metadata(url)
-                    return metadata.size
-        except Exception as e:
-            logger.warning(f"Could not get file size from HuggingFace for {file_path}: {e}")
-        return 0
+        # Parse hf:// URL - format is hf://datasets/org/repo/path/to/file
+        if not file_path.startswith("hf://datasets/"):
+            raise ValueError(f"Invalid HuggingFace file path: {file_path}")
+
+        # Split into repo_id (org/repo) and filename (path/to/file)
+        remaining = file_path[len("hf://datasets/") :]
+        parts = remaining.split("/")
+        if len(parts) < 3:
+            raise ValueError(f"Invalid HuggingFace file path format: {file_path}")
+
+        repo_id = f"{parts[0]}/{parts[1]}"  # org/repo
+        filename = "/".join(parts[2:])  # path/to/file
+        url = hf_hub_url(repo_id=repo_id, filename=filename, repo_type="dataset")
+        metadata = get_hf_file_metadata(url)
+        return metadata.size
 
     def _read_file_metadata(self, file_infos: List[FileInfo]) -> List[FileInfo]:
         """Read metadata from HuggingFace Hub files without downloading.
@@ -141,34 +144,31 @@ class IcebergMetadataWriter:
 
         Returns:
             List of FileInfo objects with enriched metadata
+
+        Raises:
+            Exception: If metadata cannot be read from any file
         """
         enriched = []
 
         for file_info in file_infos:
-            try:
-                # Read metadata directly from HF Hub without downloading the file
-                metadata = pq.read_metadata(file_info.path)
-                row_count = metadata.num_rows
+            # Read metadata directly from HF Hub without downloading the file
+            metadata = pq.read_metadata(file_info.path)
+            row_count = metadata.num_rows
 
-                # Use provided size if available, otherwise get from HuggingFace API
-                file_size = file_info.size_bytes
-                if file_size == 0:
-                    # Get exact file size from HuggingFace Hub API
-                    file_size = self._get_hf_file_size(file_info.path)
+            # Use provided size if available, otherwise get from HuggingFace API
+            file_size = file_info.size_bytes
+            if file_size == 0:
+                # Get exact file size from HuggingFace Hub API
+                file_size = self._get_hf_file_size(file_info.path)
 
-                enriched.append(
-                    FileInfo(
-                        path=file_info.path,
-                        size_bytes=file_size,
-                        row_count=row_count,
-                        split=file_info.split,
-                    )
+            enriched.append(
+                FileInfo(
+                    path=file_info.path,
+                    size_bytes=file_size,
+                    row_count=row_count,
+                    split=file_info.split,
                 )
-
-            except Exception as e:
-                logger.warning(f"Could not read metadata from {file_info.path}: {e}")
-                # Keep original file info if we can't read metadata
-                enriched.append(file_info)
+            )
 
         return enriched
 

@@ -87,7 +87,7 @@ class TableInfo:
         name_mapping = build_name_mapping(self.schema)
 
         properties = {
-            "format-version": "2",
+            "format-version": "3",
             "write.parquet.compression-codec": "snappy",
             "huggingface.dataset.repo": self.source_repo,
             "huggingface.dataset.config": self.source_config,

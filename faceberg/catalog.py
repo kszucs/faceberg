@@ -495,6 +495,7 @@ class BaseCatalog(Catalog):
             table_entry = db.Table(
                 dataset="",  # Empty for manually created tables
                 uri=metadata_uri,
+                revision="",  # Empty for manually created tables
                 config="default",
             )
 
@@ -601,6 +602,7 @@ class BaseCatalog(Catalog):
             table_entry = db.Table(
                 dataset="",  # Empty for registered tables
                 uri=metadata_uri,
+                revision="",  # Empty for registered tables
                 config="default",
             )
 
@@ -731,6 +733,7 @@ class BaseCatalog(Catalog):
                     new_table_entry = db.Table(
                         dataset=from_table.dataset,  # Preserve dataset info
                         uri=metadata_uri,
+                        revision=from_table.revision,  # Preserve revision
                         config=from_table.config,  # Preserve config
                     )
 
@@ -821,7 +824,7 @@ class BaseCatalog(Catalog):
     # Faceberg-specific Methods (dataset synchronization)
     # =========================================================================
 
-    def sync(self, table_name: Optional[str] = None) -> List[Table]:
+    def sync_datasets(self, table_name: Optional[str] = None) -> List[Table]:
         """Sync Iceberg tables with HuggingFace datasets in store.
 
         Discovers datasets and either creates new tables or updates existing ones
@@ -889,7 +892,7 @@ class BaseCatalog(Catalog):
             )
 
             # Sync table (create new or update existing)
-            table = self._sync_table(table_info)
+            table = self._sync_dataset(table_info)
             if table is not None:
                 # Update store with metadata URI
                 store_table.uri = table.metadata_location
@@ -897,22 +900,25 @@ class BaseCatalog(Catalog):
 
         return created_tables
 
-    def add_table_definition(
+    def add_dataset(
         self, identifier: Union[str, Identifier], dataset: str, config: str = "default"
-    ) -> None:
-        """Add a table definition to the catalog without syncing.
+    ) -> Table:
+        """Add a dataset to the catalog and create the Iceberg table.
 
-        This adds a table entry to the catalog's faceberg.yml that can be synced later.
-        The table will have an empty URI until sync() is called.
+        This discovers the HuggingFace dataset, converts it to an Iceberg table,
+        and adds it to the catalog in a single operation.
 
         Args:
             identifier: Table identifier in format "namespace.table"
             dataset: HuggingFace dataset in format "org/repo"
             config: Dataset configuration name (default: "default")
 
+        Returns:
+            Created Table object
+
         Raises:
             ValueError: If identifier format is invalid
-            TableAlreadyExistsError: If table definition already exists
+            TableAlreadyExistsError: If table already exists
         """
         table_id = self._identifier_to_str(identifier)
 
@@ -923,22 +929,29 @@ class BaseCatalog(Catalog):
 
         namespace, table_name = parts
 
-        with self._staging():
-            # Check if table already exists
-            if namespace in self._db.namespaces and table_name in self._db.namespaces[namespace].tables:
-                raise TableAlreadyExistsError(f"Table {table_id} already exists in catalog")
+        # Check if table already exists
+        if self.table_exists(identifier):
+            raise TableAlreadyExistsError(f"Table {table_id} already exists in catalog")
 
-            # Create table entry
-            table_entry = db.Table(dataset=dataset, uri="", config=config)
+        # Discover dataset
+        dataset_info = DatasetInfo.discover(
+            repo_id=dataset,
+            configs=[config],
+            token=self._hf_token,
+        )
 
-            # Ensure namespace exists
-            if namespace not in self._db.namespaces:
-                self._db.namespaces[namespace] = db.Namespace(tables={})
+        # Convert to TableInfo
+        table_info = dataset_info.to_table_info(
+            namespace=namespace,
+            table_name=table_name,
+            config=config,
+            token=self._hf_token,
+        )
 
-            # Add table to database
-            self._db.namespaces[namespace].tables[table_name] = table_entry
+        # Create the table with full metadata
+        return self._add_dataset(table_info)
 
-    def _sync_table(self, table_info: TableInfo) -> Optional[Table]:
+    def _sync_dataset(self, table_info: TableInfo) -> Optional[Table]:
         """Sync a table by creating it or checking if it needs updates.
 
         Args:
@@ -957,26 +970,23 @@ class BaseCatalog(Catalog):
 
             # If table hasn't been synced yet (empty uri), create it
             if not store_table.uri or store_table.uri == "":
-                return self._create_table(table_info)
+                return self._add_dataset(table_info)
 
-            # Table has been synced - load it and check if we need to update it
-            table = self.load_table(table_info.identifier)
-
-            # Get the current revision from table properties
-            current_revision = table.properties.get("huggingface.dataset.revision")
+            # Table has been synced - check if revision has changed
+            current_revision = store_table.revision
             new_revision = table_info.source_revision
 
             # If revisions match, no sync needed
-            if current_revision == new_revision and new_revision is not None:
+            if current_revision == new_revision and new_revision is not None and current_revision:
                 return None
 
-            # Revision changed - update the table snapshot
-            return self._update_table(table_info)
+            # Revision changed or not set - update the table snapshot
+            return self._update_dataset(table_info)
 
         # Table doesn't exist - create it
-        return self._create_table(table_info)
+        return self._add_dataset(table_info)
 
-    def _create_table(self, table_info: TableInfo) -> Table:
+    def _add_dataset(self, table_info: TableInfo) -> Table:
         """Create Iceberg table from TableInfo using metadata-only mode.
 
         This method creates an Iceberg table by:
@@ -1053,24 +1063,22 @@ class BaseCatalog(Catalog):
             rel_path = metadata_file_path.relative_to(self._staging_dir)
             metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
 
-            # Update the existing table entry's URI or create new entry
             # Ensure namespace exists
             if namespace not in self._db.namespaces:
                 self._db.namespaces[namespace] = db.Namespace(tables={})
 
-            # Update existing table if present, otherwise create new one
-            if table in self._db.namespaces[namespace].tables:
-                # Update existing table's URI
-                self._db.namespaces[namespace].tables[table].uri = metadata_uri
-            else:
-                # Create new table entry (for manually created tables)
-                table_entry = db.Table(dataset="", uri=metadata_uri, config="default")
-                self._db.namespaces[namespace].tables[table] = table_entry
+            # Create and set table entry
+            self._db.namespaces[namespace].tables[table] = db.Table(
+                dataset=table_info.source_repo,
+                uri=metadata_uri,
+                revision=table_info.source_revision or "",  # Empty if revision not available
+                config=table_info.source_config,
+            )
 
         # Load and return table after staging context exits and persists
         return self.load_table(table_info.identifier)
 
-    def _update_table(self, table_info: TableInfo) -> Table:
+    def _update_dataset(self, table_info: TableInfo) -> Table:
         """Update existing table with a new snapshot for the updated dataset revision.
 
         Args:
@@ -1123,11 +1131,13 @@ class BaseCatalog(Catalog):
             rel_path = metadata_file_path.relative_to(self._staging_dir)
             metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
 
-            # Update the table's URI in the store
-            try:
-                self._db.namespaces[namespace].tables[table].uri = metadata_uri
-            except KeyError:
-                pass  # Table doesn't exist in store, skip update
+            # Update table entry with new snapshot
+            self._db.namespaces[namespace].tables[table] = db.Table(
+                dataset=table_info.source_repo,
+                uri=metadata_uri,
+                revision=table_info.source_revision or "",  # Empty if revision not available
+                config=table_info.source_config,
+            )
 
         # Reload and return table after staging context exits and persists
         return self.load_table(table_info.identifier)

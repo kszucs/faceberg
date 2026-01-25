@@ -13,6 +13,7 @@ class Table:
 
     dataset: str
     uri: str
+    revision: str
     config: str = "default"
 
 
@@ -96,6 +97,7 @@ class Catalog:
                 tables[table_name] = Table(
                     dataset=table_data["dataset"],
                     uri=table_data.get("uri", ""),  # Empty string if not synced yet
+                    revision=table_data.get("revision", ""),  # Empty string if not set
                     config=table_data.get("config", "default"),
                 )
 
@@ -121,6 +123,7 @@ class Catalog:
             for table_name, table in namespace.tables.items():
                 table_data = {
                     "dataset": table.dataset,
+                    "revision": table.revision,
                     "config": table.config,
                 }
                 # Include uri only if set

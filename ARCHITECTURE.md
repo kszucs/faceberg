@@ -212,7 +212,7 @@ class FacebergCatalog(JsonCatalog):
 
         # 3. Create Iceberg metadata for each table
         for table_info in table_infos:
-            self._create_table_from_table_info(table_info)
+            self._add_dataset(table_info)
 ```
 
 ## Metadata-Only Mode

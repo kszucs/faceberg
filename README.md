@@ -73,7 +73,7 @@ catalog = RemoteCatalog(
 catalog.init()
 
 # Sync datasets to create Iceberg tables
-tables = catalog.sync()
+tables = catalog.sync_datasets()
 print(f"Synced {len(tables)} tables")
 
 # Query the table
@@ -91,7 +91,7 @@ from faceberg.catalog import LocalCatalog
 from faceberg.database import Catalog, Namespace, Table
 
 # Create faceberg.yml config file first:
-# uri: .faceberg
+# uri: mycatalog
 #
 # default:
 #   imdb:
@@ -99,7 +99,7 @@ from faceberg.database import Catalog, Namespace, Table
 #     config: plain_text
 
 # Or create programmatically and save
-catalog_dir = ".faceberg"
+catalog_dir = "mycatalog"
 config = Catalog(
     uri=f"file:///{catalog_dir}",
     namespaces={
@@ -120,7 +120,7 @@ config.to_yaml(f"{catalog_dir}/faceberg.yml")
 catalog = LocalCatalog(path=catalog_dir)
 
 # Sync datasets to create Iceberg tables
-tables = catalog.sync()
+tables = catalog.sync_datasets()
 print(f"Synced {len(tables)} tables")
 
 # Query the table
@@ -137,7 +137,7 @@ Read from a local catalog without syncing:
 from faceberg.catalog import LocalCatalog
 
 # Open existing local catalog (no config needed)
-catalog = LocalCatalog(path=".faceberg/")
+catalog = LocalCatalog(path="mycatalog/")
 
 # List available tables
 for ns in catalog.list_namespaces():
@@ -165,7 +165,7 @@ conn.execute("INSTALL iceberg")
 conn.execute("LOAD iceberg")
 
 # Query the Iceberg table
-metadata_path = ".faceberg/default/imdb/metadata/v1.metadata.json"
+metadata_path = "mycatalog/default/imdb/metadata/v1.metadata.json"
 result = conn.execute(f"""
     SELECT split, COUNT(*) as count
     FROM iceberg_scan('{metadata_path}')
@@ -182,33 +182,33 @@ The CLI operates on catalog URIs. Use local paths for local catalogs or `hf://` 
 
 ```bash
 # Initialize a new local catalog
-faceberg .faceberg init
+faceberg mycatalog init
 
 # Initialize a new remote catalog (creates HF dataset repository)
 export HF_TOKEN=your_token
 faceberg hf://datasets/org/catalog-repo init
 
 # Sync datasets to local catalog (reads faceberg.yml from catalog directory)
-faceberg .faceberg sync
+faceberg mycatalog sync
 
 # Sync specific table
-faceberg .faceberg sync default.my_table
+faceberg mycatalog sync default.my_table
 
 # Sync to remote catalog (automatically pushes to HuggingFace)
 faceberg hf://datasets/org/catalog-repo sync
 
 # List tables in local catalog
-faceberg .faceberg list
+faceberg mycatalog list
 
 # List tables in remote catalog
 faceberg hf://datasets/org/catalog-repo list
 
 # Show table info
-faceberg .faceberg info default.my_table
+faceberg mycatalog info default.my_table
 
 # Scan and display sample data from a table
-faceberg .faceberg scan default.my_table
-faceberg .faceberg scan default.my_table --limit=10
+faceberg mycatalog scan default.my_table
+faceberg mycatalog scan default.my_table --limit=10
 ```
 
 ### Config File Format
@@ -216,8 +216,8 @@ faceberg .faceberg scan default.my_table --limit=10
 Create a `faceberg.yml` file in your catalog directory (only needed for syncing):
 
 ```yaml
-# Catalog URI (required)
-uri: .faceberg  # For local catalogs
+# Absolute Catalog URI (required)
+uri: file://path/to/mycatalog  # For local catalogs
 # uri: hf://datasets/org/repo  # For remote catalogs
 
 # Namespaces (dict of namespace_name -> tables)
@@ -238,13 +238,13 @@ analytics:
 After syncing, the `uri` field in each table will be automatically populated with the metadata location:
 
 ```yaml
-uri: .faceberg
+uri: mycatalog
 
 default:
   imdb:
     dataset: stanfordnlp/imdb
     config: plain_text
-    uri: file:///.faceberg/default/imdb/metadata/v1.metadata.json
+    uri: file:///mycatalog/default/imdb/metadata/v1.metadata.json
 ```
 
 ## Features
@@ -255,7 +255,3 @@ default:
 - **Remote-first**: Catalogs on HuggingFace can be read by anyone
 - **Dataset-aware**: Handles multiple configs and splits
 - **hf:// protocol**: Leverages HF dataset storage efficiently
-
-## License
-
-MIT
