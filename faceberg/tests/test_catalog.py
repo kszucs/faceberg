@@ -1,9 +1,10 @@
 """Tests for FacebergCatalog implementation."""
 
-import json
+import shutil
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from huggingface_hub import HfFileSystem
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
@@ -18,7 +19,7 @@ from pyiceberg.types import LongType, NestedField, StringType
 
 from faceberg.bridge import DatasetInfo
 from faceberg.catalog import HfFileIO, LocalCatalog
-from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
+from faceberg.database import Catalog, Namespace, Table
 
 
 @pytest.fixture
@@ -33,7 +34,7 @@ def test_dir(tmp_path):
 @pytest.fixture
 def catalog(test_dir):
     """Create a test catalog."""
-    return LocalCatalog(location=str(test_dir), name="test_catalog")
+    return LocalCatalog(test_dir, name="test_catalog")
 
 
 @pytest.fixture
@@ -47,7 +48,7 @@ def test_schema():
 
 def test_create_catalog(test_dir):
     """Test catalog creation."""
-    catalog = LocalCatalog(location=str(test_dir), name="test")
+    catalog = LocalCatalog(test_dir, name="test")
 
     assert catalog.name.startswith("file:///")
     assert catalog.name.endswith(str(test_dir.name))
@@ -148,13 +149,13 @@ def test_rename_table(catalog, test_schema):
 def test_catalog_persistence(test_dir, test_schema):
     """Test that catalog persists across instances."""
     # Create catalog and table
-    catalog1 = LocalCatalog(location=str(test_dir), name="test")
+    catalog1 = LocalCatalog(str(test_dir), name="test")
     catalog1.create_namespace("default")
     catalog1.create_table("default.test_table", test_schema)
     # Changes are automatically persisted via context manager
 
     # Create new catalog instance
-    catalog2 = LocalCatalog(location=str(test_dir), name="test")
+    catalog2 = LocalCatalog(str(test_dir), name="test")
 
     # Table should still exist
     assert catalog2.table_exists("default.test_table")
@@ -163,24 +164,23 @@ def test_catalog_persistence(test_dir, test_schema):
 
 
 def test_catalog_json_format(catalog, test_schema):
-    """Test catalog.json format."""
+    """Test faceberg.yml format."""
     catalog.create_namespace("default")
     catalog.create_table("default.test_table", test_schema)
 
-    catalog_file = catalog.catalog_dir / "catalog.json"
+    catalog_file = catalog.catalog_dir / "faceberg.yml"
     assert catalog_file.exists()
 
     with open(catalog_file) as f:
-        data = json.load(f)
+        data = yaml.safe_load(f)
 
-    # Check new catalog.json format
-    assert "type" in data
-    assert data["type"] == "local"
+    # Check faceberg.yml format
     assert "uri" in data
     assert data["uri"].startswith("file:///")
-    assert "tables" in data
-    assert "default.test_table" in data["tables"]
-    assert isinstance(data["tables"]["default.test_table"], str)
+    assert "default" in data
+    assert "test_table" in data["default"]
+    assert isinstance(data["default"]["test_table"], dict)
+    assert "uri" in data["default"]["test_table"]
 
 
 # =============================================================================
@@ -196,18 +196,18 @@ def faceberg_test_dir(tmp_path):
 
 @pytest.fixture
 def faceberg_config():
-    """Create test CatalogConfig."""
-    return CatalogConfig(
-        namespaces=[
-            NamespaceConfig(
-                name="default",
-                tables=[
-                    TableConfig(
-                        name="imdb_plain_text", dataset="stanfordnlp/imdb", config="plain_text"
+    """Create test Catalog."""
+    return Catalog(
+        uri=".faceberg",
+        namespaces={
+            "default": Namespace(
+                tables={
+                    "imdb_plain_text": Table(
+                        dataset="stanfordnlp/imdb", uri="", config="plain_text"
                     ),
-                ],
+                }
             )
-        ],
+        },
     )
 
 
@@ -215,7 +215,9 @@ def faceberg_config():
 def faceberg_config_file(tmp_path):
     """Create test config YAML file."""
     config_file = tmp_path / "test_faceberg.yml"
-    config_content = """default:
+    config_content = """uri: .faceberg
+
+default:
   imdb_plain_text:
     dataset: stanfordnlp/imdb
     config: plain_text
@@ -227,14 +229,16 @@ def faceberg_config_file(tmp_path):
 @pytest.fixture
 def faceberg_catalog(faceberg_config_file, faceberg_test_dir):
     """Create test LocalCatalog for Faceberg tests."""
-    config = CatalogConfig.from_yaml(faceberg_config_file)
-    return LocalCatalog(location=str(faceberg_test_dir), config=config)
+    # Create catalog and ensure the database file exists
+    faceberg_test_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(faceberg_config_file, faceberg_test_dir / "faceberg.yml")
+    return LocalCatalog(str(faceberg_test_dir))
 
 
 def test_faceberg_from_local(faceberg_config_file, faceberg_test_dir):
     """Test creating LocalCatalog from local config file."""
-    config = CatalogConfig.from_yaml(faceberg_config_file)
-    catalog = LocalCatalog(location=str(faceberg_test_dir), config=config, name="test_catalog")
+    store = Catalog.from_yaml(faceberg_config_file)
+    catalog = LocalCatalog(str(faceberg_test_dir), store=store, name="test_catalog")
 
     assert catalog.name.startswith("file:///")
     assert catalog.name.endswith(str(faceberg_test_dir.name))
@@ -242,14 +246,14 @@ def test_faceberg_from_local(faceberg_config_file, faceberg_test_dir):
 
 
 def test_faceberg_lazy_namespace_creation(faceberg_catalog):
-    """Test that namespaces are created on-demand when tables are created."""
-    # Namespace should not exist yet
-    assert ("default",) not in faceberg_catalog.list_namespaces()
+    """Test that namespaces exist after tables are defined in config."""
+    # Namespace should exist from config
+    assert ("default",) in faceberg_catalog.list_namespaces()
 
-    # Sync will create namespace on-demand
-    synced_tables = faceberg_catalog.sync(table_name=None)
+    # Sync will create tables
+    synced_tables = faceberg_catalog.sync()
 
-    # Namespace should now exist
+    # Namespace should still exist
     assert ("default",) in faceberg_catalog.list_namespaces()
     assert len(synced_tables) > 0
 
@@ -257,9 +261,7 @@ def test_faceberg_lazy_namespace_creation(faceberg_catalog):
 def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config):
     """Test creating tables from datasets in FacebergCatalog."""
     # Sync tables (token=None works for public datasets, namespaces created on-demand)
-    synced_tables = faceberg_catalog.sync(
-        table_name=None,
-    )
+    synced_tables = faceberg_catalog.sync()
 
     # Verify tables were created
     assert len(synced_tables) > 0
@@ -350,9 +352,9 @@ def test_faceberg_invalid_table_name_format(faceberg_catalog, faceberg_config):
 
 
 def test_faceberg_dataset_not_found_in_config(faceberg_catalog):
-    """Test error when dataset not found in config in FacebergCatalog."""
-    # Catalog config has "imdb" dataset, so "nonexistent" should fail
-    with pytest.raises(ValueError, match="not found in config"):
+    """Test error when dataset not found in store in FacebergCatalog."""
+    # Catalog store has "imdb_plain_text" dataset, so "nonexistent" should fail
+    with pytest.raises(ValueError, match="not found in store"):
         faceberg_catalog.sync(
             table_name="default.nonexistent_default",
         )
@@ -480,9 +482,9 @@ def test_identifier_to_str_with_string(catalog):
 
 
 def test_save_catalog_outside_staging_context(catalog):
-    """Test that _save_catalog raises error outside staging context."""
+    """Test that _save_database raises error outside staging context."""
     with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
-        catalog._save_catalog()
+        catalog._save_database()
 
 
 def test_persist_changes_outside_staging_context(catalog):
@@ -503,18 +505,18 @@ def test_load_table_metadata_file_not_found(catalog, test_schema, test_dir):
     catalog.create_table("default.test_table", test_schema)
 
     # Manually corrupt the catalog to point to non-existent file
-    catalog_file = catalog.catalog_dir / "catalog.json"
+    catalog_file = catalog.catalog_dir / "faceberg.yml"
     with open(catalog_file) as f:
-        data = json.load(f)
+        data = yaml.safe_load(f)
 
-    # Point to non-existent metadata file (update tables dict)
-    data["tables"]["default.test_table"] = "default/test_table/metadata/nonexistent.metadata.json"
+    # Point to non-existent metadata file
+    data["default"]["test_table"]["uri"] = "file:///nonexistent/metadata.json"
 
     with open(catalog_file, "w") as f:
-        json.dump(data, f)
+        yaml.dump(data, f)
 
     # Reload catalog to pick up the corrupted data
-    catalog._load_catalog()
+    catalog._load_database()
 
     # Should raise NoSuchTableError
     with pytest.raises(NoSuchTableError, match="metadata file not found"):
@@ -567,15 +569,13 @@ def test_staging_context_cleanup_on_error(catalog, test_schema):
 
     try:
         with catalog._staging():
-            # Try to create duplicate table (will fail)
-            catalog._catalog["default.test_table"] = "some/path"
+            # Try to create duplicate namespace (will fail)
             raise ValueError("Simulated error")
     except ValueError:
         pass
 
     # Staging should be cleaned up
     assert catalog._staging_dir is None
-    assert catalog._catalog is None
     assert catalog._staged_changes is None
 
 

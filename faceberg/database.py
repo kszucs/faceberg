@@ -1,47 +1,44 @@
-"""Configuration file parsing for Faceberg."""
+"""Store module for Faceberg catalog state management."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Dict
 
 import yaml
 
-from faceberg.catalog import LocalCatalog, RemoteCatalog
-
 
 @dataclass
-class TableConfig:
-    """Table configuration within a namespace."""
+class Table:
+    """Table entry in catalog store."""
 
-    name: str
     dataset: str
+    uri: str
     config: str = "default"
 
 
 @dataclass
-class NamespaceConfig:
-    """Namespace configuration."""
+class Namespace:
+    """Namespace containing tables."""
 
-    name: str
-    tables: List[TableConfig]
+    tables: Dict[str, Table] = field(default_factory=dict)
 
 
 @dataclass
-class CatalogConfig:
-    """Catalog configuration - defines which datasets to sync as tables."""
+class Catalog:
+    """Catalog store - single source of truth for catalog state."""
 
     uri: str
-    namespaces: List[NamespaceConfig]
+    namespaces: Dict[str, Namespace] = field(default_factory=dict)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "CatalogConfig":
-        """Load configuration from YAML file.
+    def from_yaml(cls, path: str | Path) -> "Catalog":
+        """Load catalog from YAML file.
 
         Args:
             path: Path to faceberg.yml file
 
         Returns:
-            Parsed CatalogConfig
+            Parsed Catalog
 
         Raises:
             FileNotFoundError: If config file doesn't exist
@@ -63,11 +60,8 @@ class CatalogConfig:
             raise ValueError("Missing required 'uri' field in config")
 
         # Parse namespaces config
-        namespaces = []
-        for key, value in data.items():
-            # Each remaining top-level key is a namespace
-            namespace_name = key
-
+        namespaces = {}
+        for namespace_name, namespace_tables in data.items():
             # Validate namespace name
             if not namespace_name:
                 raise ValueError("Namespace name cannot be empty")
@@ -85,12 +79,12 @@ class CatalogConfig:
                     "Must contain only alphanumeric characters, underscores, or hyphens"
                 )
 
-            if not isinstance(value, dict):
+            if not isinstance(namespace_tables, dict):
                 raise ValueError(f"Namespace '{namespace_name}' must be a dict of tables")
 
             # Parse tables in this namespace
-            tables = []
-            for table_name, table_data in value.items():
+            tables = {}
+            for table_name, table_data in namespace_tables.items():
                 if not isinstance(table_data, dict):
                     raise ValueError(
                         f"Table '{namespace_name}.{table_name}' must be a dict with 'dataset' field"
@@ -99,31 +93,20 @@ class CatalogConfig:
                 if "dataset" not in table_data:
                     raise ValueError(f"Missing 'dataset' in {namespace_name}.{table_name}")
 
-                tables.append(
-                    TableConfig(
-                        name=table_name,
-                        dataset=table_data["dataset"],
-                        config=table_data.get("config", "default"),
-                    )
+                tables[table_name] = Table(
+                    dataset=table_data["dataset"],
+                    uri=table_data.get("uri", ""),  # Empty string if not synced yet
+                    config=table_data.get("config", "default"),
                 )
 
-            if not tables:
-                raise ValueError(f"Namespace '{namespace_name}' has no tables defined")
+            # Allow empty namespaces for newly created namespaces
+            namespaces[namespace_name] = Namespace(tables=tables)
 
-            namespaces.append(
-                NamespaceConfig(
-                    name=namespace_name,
-                    tables=tables,
-                )
-            )
-
-        if not namespaces:
-            raise ValueError("No namespaces defined in config")
-
+        # Allow empty namespaces for new catalogs
         return cls(uri=uri, namespaces=namespaces)
 
     def to_yaml(self, path: str | Path) -> None:
-        """Save configuration to YAML file.
+        """Save catalog to YAML file.
 
         Args:
             path: Path to save faceberg.yml file
@@ -133,21 +116,19 @@ class CatalogConfig:
         data = {"uri": self.uri}
 
         # Add each namespace as a top-level key
-        for namespace in self.namespaces:
-            data[namespace.name] = {
-                table.name: {
+        for namespace_name, namespace in self.namespaces.items():
+            namespace_data = {}
+            for table_name, table in namespace.tables.items():
+                table_data = {
                     "dataset": table.dataset,
                     "config": table.config,
                 }
-                for table in namespace.tables
-            }
+                # Include uri only if set
+                if table.uri:
+                    table_data["uri"] = table.uri
+                namespace_data[table_name] = table_data
+
+            data[namespace_name] = namespace_data
 
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-
-    def to_catalog(self, hf_token=None) -> LocalCatalog | RemoteCatalog:
-        if self.uri.startswith("hf://"):
-            # parse repo ID from URI
-            return RemoteCatalog(self.uri, hf_token=hf_token, config=self)
-        else:
-            return LocalCatalog(self.uri, hf_token=hf_token, config=self)

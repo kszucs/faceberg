@@ -3,7 +3,7 @@
 import pytest
 
 from faceberg.catalog import LocalCatalog
-from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
+from faceberg.database import Catalog, Namespace, Table
 
 
 @pytest.fixture(scope="session")
@@ -22,27 +22,35 @@ def synced_catalog(synced_catalog_dir):
     This fixture is session-scoped to minimize API calls and improve test speed.
     The catalog is synced once and shared across all tests.
     """
-    # Create config with test dataset
-    config = CatalogConfig(
-        namespaces=[
-            NamespaceConfig(
-                name="default",
-                tables=[
-                    TableConfig(
-                        name="imdb_plain_text",
+    # Create catalog directory
+    synced_catalog_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create store with test dataset
+    catalog_uri = f"file:///{synced_catalog_dir.as_posix()}"
+    store_obj = Catalog(
+        uri=catalog_uri,
+        namespaces={
+            "default": Namespace(
+                tables={
+                    "imdb_plain_text": Table(
                         dataset="stanfordnlp/imdb",
+                        uri="",  # Empty until synced
                         config="plain_text",
                     ),
-                ],
+                }
             )
-        ],
+        },
     )
 
+    # Write config to faceberg.yml
+    config_file = synced_catalog_dir / "faceberg.yml"
+    store_obj.to_yaml(config_file)
+
     # Create catalog instance (hf:// protocol support is built-in)
-    catalog = LocalCatalog(location=str(synced_catalog_dir))
+    catalog = LocalCatalog(path=str(synced_catalog_dir))
 
     # Sync all tables (token=None works for public datasets)
-    synced_tables = catalog.sync(config)
+    synced_tables = catalog.sync()
 
     # Verify sync was successful
     assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"

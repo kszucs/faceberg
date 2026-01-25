@@ -6,23 +6,14 @@ import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from faceberg.config import CatalogConfig
+from faceberg.catalog import LocalCatalog, RemoteCatalog
 
 console = Console()
 
 
-
-
-
 @click.group()
+@click.argument("uri", type=str)
 @click.version_option(version="0.1.0", prog_name="faceberg")
-@click.option(
-    "--config",
-    "-c",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default="faceberg.yml",
-    help="Path to faceberg.yml config file (only needed for sync)",
-)
 @click.option(
     "--token",
     "-t",
@@ -33,19 +24,88 @@ console = Console()
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.pass_context
-def main(ctx, config, verbose, token):
+def main(ctx, uri, verbose, token):
     """Faceberg - Bridge HuggingFace datasets with Apache Iceberg.
 
     A command-line tool to expose HuggingFace datasets as Iceberg tables,
     enabling powerful analytics and time-travel capabilities.
     """
-    config = CatalogConfig.from_yaml(config)
+    # Create catalog instance based on URI
+    if uri.startswith("hf://"):
+        # Extract repo ID from hf://datasets/org/repo format
+        hf_repo = uri.replace("hf://datasets/", "")
+        catalog = RemoteCatalog(hf_repo=hf_repo, hf_token=token)
+    else:
+        catalog = LocalCatalog(path=uri, hf_token=token)
 
     ctx.ensure_object(dict)
-    ctx.obj["config"] = config
-    ctx.obj["catalog"] = config.to_catalog(token)
+    ctx.obj["catalog"] = catalog
     ctx.obj["token"] = token
     ctx.obj["verbose"] = verbose
+
+
+@main.command()
+@click.argument("dataset")
+@click.option("--table", "-t", help="Explicit table identifier (namespace.table)")
+@click.option("--config-name", "-c", default="default", help="Dataset config name")
+@click.pass_context
+def add(ctx, dataset, table, config_name):
+    """Add a table to the catalog.
+
+    DATASET: HuggingFace dataset in format 'org/repo'
+
+    By default, the table identifier is inferred from the dataset:
+    org/repo -> namespace 'org', table 'repo' (identifier: org.repo)
+
+    Examples:
+        # Add with inferred identifier (deepmind.code_contests)
+        faceberg add deepmind/code_contests
+
+        # Add with explicit identifier
+        faceberg add deepmind/code_contests --table myns.mytable
+
+        # Add with non-default config
+        faceberg add squad --config-name plain_text --table default.squad
+    """
+    catalog = ctx.obj["catalog"]
+
+    # Determine table identifier
+    if table:
+        # Explicit identifier provided
+        table_identifier = table
+    else:
+        # Infer from dataset: org/repo -> org.repo
+        try:
+            namespace, table_name = dataset.split("/", 1)
+            table_identifier = f"{namespace}.{table_name}"
+        except ValueError:
+            console.print("[red]Error: dataset must be in format 'org/repo'[/red]")
+            raise click.Abort()
+
+    # Add table definition to catalog using public API
+    try:
+        catalog.add_table_definition(
+            identifier=table_identifier, dataset=dataset, config=config_name
+        )
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise click.Abort()
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            console.print(f"[yellow]Table {table_identifier} already exists[/yellow]")
+        else:
+            console.print(f"[red]Error: {e}[/red]")
+        raise click.Abort()
+
+    console.print(f"[green]✓ Added {table_identifier} to catalog[/green]")
+    console.print(f"  Dataset: {dataset}")
+    console.print(f"  Config: {config_name}")
+
+    # Show appropriate sync command based on catalog type
+    if hasattr(catalog, 'catalog_dir'):
+        console.print(f"\n[dim]Run 'faceberg {catalog.catalog_dir} sync' to create the table[/dim]")
+    else:
+        console.print(f"\n[dim]Run 'faceberg {catalog.uri} sync' to create the table[/dim]")
 
 
 @main.command()
