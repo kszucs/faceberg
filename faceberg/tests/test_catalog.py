@@ -469,18 +469,6 @@ def test_commit_table_not_implemented(catalog):
         catalog.commit_table(mock_request)
 
 
-def test_identifier_to_str_with_tuple(catalog):
-    """Test converting tuple identifier to string."""
-    result = catalog._identifier_to_str(("namespace", "table"))
-    assert result == "namespace.table"
-
-
-def test_identifier_to_str_with_string(catalog):
-    """Test that string identifiers pass through unchanged."""
-    result = catalog._identifier_to_str("namespace.table")
-    assert result == "namespace.table"
-
-
 def test_save_catalog_outside_staging_context(catalog):
     """Test that _save_database raises error outside staging context."""
     with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):

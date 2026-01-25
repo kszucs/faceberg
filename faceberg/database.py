@@ -135,3 +135,66 @@ class Catalog:
 
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    def get_table(self, namespace: str, table_name: str) -> Table:
+        """Get a table from the catalog.
+
+        Args:
+            namespace: Namespace name
+            table_name: Table name
+
+        Returns:
+            Table object
+
+        Raises:
+            KeyError: If table or namespace doesn't exist
+        """
+        return self.namespaces[namespace].tables[table_name]
+
+    def set_table(self, namespace: str, table_name: str, table: Table) -> None:
+        """Set/update a table in the catalog.
+
+        Creates the namespace if it doesn't exist.
+
+        Args:
+            namespace: Namespace name
+            table_name: Table name
+            table: Table object to set
+        """
+        # Ensure namespace exists
+        if namespace not in self.namespaces:
+            self.namespaces[namespace] = Namespace(tables={})
+
+        self.namespaces[namespace].tables[table_name] = table
+
+    def has_table(self, namespace: str, table_name: str) -> bool:
+        """Check if a table exists in the catalog.
+
+        Args:
+            namespace: Namespace name
+            table_name: Table name
+
+        Returns:
+            True if table exists, False otherwise
+        """
+        try:
+            self.get_table(namespace, table_name)
+            return True
+        except KeyError:
+            return False
+
+    def delete_table(self, namespace: str, table_name: str) -> bool:
+        """Delete a table from the catalog.
+
+        Args:
+            namespace: Namespace name
+            table_name: Table name
+
+        Returns:
+            True if table was deleted, False if it didn't exist
+        """
+        try:
+            del self.namespaces[namespace].tables[table_name]
+            return True
+        except KeyError:
+            return False

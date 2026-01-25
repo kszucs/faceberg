@@ -92,16 +92,20 @@ class TestGetHfFileSize:
 
     def test_get_hf_file_size_invalid_url_format(self, metadata_writer):
         """Test handling of invalid URL format."""
+        import pytest
+
         # Not a hf:// URL
-        file_size = metadata_writer._get_hf_file_size("s3://bucket/file.parquet")
-        assert file_size == 0
+        with pytest.raises(ValueError, match="Invalid HuggingFace file path"):
+            metadata_writer._get_hf_file_size("s3://bucket/file.parquet")
 
         # Invalid hf:// URL (too few parts)
-        file_size = metadata_writer._get_hf_file_size("hf://datasets/repo")
-        assert file_size == 0
+        with pytest.raises(ValueError, match="Invalid HuggingFace file path format"):
+            metadata_writer._get_hf_file_size("hf://datasets/repo")
 
     def test_get_hf_file_size_api_error(self, metadata_writer):
         """Test handling of HuggingFace API errors."""
+        import pytest
+
         test_url = "hf://datasets/org/repo/file.parquet"
 
         with (
@@ -112,9 +116,9 @@ class TestGetHfFileSize:
             # Simulate API error
             mock_get_metadata.side_effect = Exception("API Error")
 
-            # Should return 0 and log warning
-            file_size = metadata_writer._get_hf_file_size(test_url)
-            assert file_size == 0
+            # Should raise the API error (fail-fast behavior)
+            with pytest.raises(Exception, match="API Error"):
+                metadata_writer._get_hf_file_size(test_url)
 
 
 class TestReadFileMetadata:
@@ -237,7 +241,9 @@ class TestReadFileMetadata:
             assert mock_get_size.call_count == 2
 
     def test_read_file_metadata_handles_read_error(self, metadata_writer):
-        """Test that files with metadata read errors are kept with original info."""
+        """Test that metadata read errors are raised (fail-fast behavior)."""
+        import pytest
+
         file_infos = [
             FileInfo(
                 path="hf://datasets/org/repo/file1.parquet",
@@ -251,13 +257,9 @@ class TestReadFileMetadata:
             # Simulate read error
             mock_read_metadata.side_effect = Exception("Cannot read metadata")
 
-            enriched = metadata_writer._read_file_metadata(file_infos)
-
-            # Should keep original file info
-            assert len(enriched) == 1
-            assert enriched[0].path == file_infos[0].path
-            assert enriched[0].size_bytes == 0
-            assert enriched[0].row_count == 0
+            # Should raise the error (fail-fast behavior)
+            with pytest.raises(Exception, match="Cannot read metadata"):
+                metadata_writer._read_file_metadata(file_infos)
 
 
 class TestFileSizeRegression:

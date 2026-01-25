@@ -22,9 +22,8 @@ console = Console()
     envvar="HF_TOKEN",
     default=None,
 )
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.pass_context
-def main(ctx, uri, verbose, token):
+def main(ctx, uri, token):
     """Faceberg - Bridge HuggingFace datasets with Apache Iceberg.
 
     A command-line tool to expose HuggingFace datasets as Iceberg tables,
@@ -46,15 +45,14 @@ def main(ctx, uri, verbose, token):
     ctx.ensure_object(dict)
     ctx.obj["catalog"] = catalog
     ctx.obj["token"] = token
-    ctx.obj["verbose"] = verbose
 
 
 @main.command()
 @click.argument("dataset")
 @click.option("--table", "-t", help="Explicit table identifier (namespace.table)")
-@click.option("--config-name", "-c", default="default", help="Dataset config name")
+@click.option("--config", "-c", default="default", help="Dataset config name")
 @click.pass_context
-def add(ctx, dataset, table, config_name):
+def add(ctx, dataset, table, config):
     """Add a table to the catalog.
 
     DATASET: HuggingFace dataset in format 'org/repo'
@@ -70,7 +68,7 @@ def add(ctx, dataset, table, config_name):
         faceberg add deepmind/code_contests --table myns.mytable
 
         # Add with non-default config
-        faceberg add squad --config-name plain_text --table default.squad
+        faceberg add squad --config plain_text --table default.squad
     """
     catalog = ctx.obj["catalog"]
 
@@ -90,7 +88,7 @@ def add(ctx, dataset, table, config_name):
     # Add dataset to catalog and create Iceberg table
     try:
         table = catalog.add_dataset(
-            identifier=table_identifier, dataset=dataset, config=config_name
+            identifier=table_identifier, dataset=dataset, config=config
         )
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -104,7 +102,7 @@ def add(ctx, dataset, table, config_name):
 
     console.print(f"[green]✓ Added {table_identifier} to catalog[/green]")
     console.print(f"  Dataset: {dataset}")
-    console.print(f"  Config: {config_name}")
+    console.print(f"  Config: {config}")
     console.print(f"  Location: {table.metadata_location}")
 
 
@@ -201,11 +199,6 @@ def init(ctx):
             raise click.Abort()
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
-        if ctx.obj.get("verbose"):
-            import traceback
-
-            console.print("\n[bold red]Traceback:[/bold red]")
-            console.print(traceback.format_exc())
         raise click.Abort()
 
 
@@ -290,7 +283,7 @@ def scan(ctx, table_name, limit):
             console=console,
         ) as progress:
             task = progress.add_task("Reading data...", total=None)
-            df = table.scan().limit(limit).to_pandas()
+            df = table.scan(limit=limit).to_pandas()
             progress.update(task, description=f"✓ Read {len(df)} rows")
 
         # Display basic info
@@ -306,11 +299,6 @@ def scan(ctx, table_name, limit):
 
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
-        if ctx.obj.get("verbose"):
-            import traceback
-
-            console.print("\n[bold red]Traceback:[/bold red]")
-            console.print(traceback.format_exc())
 
 
 if __name__ == "__main__":

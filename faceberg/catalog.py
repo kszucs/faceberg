@@ -247,7 +247,7 @@ class BaseCatalog(Catalog):
                 # self._staging_dir is available
                 # self._db contains loaded catalog
                 # self._staged_changes tracks all modifications
-                # Direct dict manipulation: self._db.namespaces['ns'].tables['table'] = db.Table(...)
+                # Use helper methods: self._db.set_table('ns', 'table', db.Table(...))
                 # Write metadata files to self._staging_dir
                 # Append changes to self._staged_changes
         """
@@ -276,18 +276,34 @@ class BaseCatalog(Catalog):
             self._staging_dir = None
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def _identifier_to_str(self, identifier: Union[str, Identifier]) -> str:
-        """Convert identifier to string format.
+    def _parse_identifier(self, identifier: Union[str, Identifier]) -> tuple[str, str]:
+        """Parse and validate table identifier.
 
         Args:
             identifier: Table identifier (string or tuple)
 
         Returns:
-            String in format "namespace.table_name"
+            Tuple of (namespace, table_name)
+
+        Raises:
+            ValueError: If identifier format is invalid
         """
+        # Convert to string
         if isinstance(identifier, str):
-            return identifier
-        return ".".join(identifier)
+            table_id = identifier
+        else:
+            table_id = ".".join(identifier)
+
+        # Parse and validate
+        try:
+            namespace, table_name = table_id.split(".", 1)
+        except ValueError:
+            raise ValueError(
+                f"Invalid table identifier: {table_id}. "
+                f"Expected format: 'namespace.table' (e.g., 'deepmind.code_contests')"
+            )
+
+        return namespace, table_name
 
     # =========================================================================
     # Iceberg Catalog Interface (implementation of pyiceberg.catalog.Catalog)
@@ -309,7 +325,11 @@ class BaseCatalog(Catalog):
         Raises:
             NamespaceAlreadyExistsError: If namespace already exists
         """
-        ns_str = self._identifier_to_str(namespace)
+        # Convert to string
+        if isinstance(namespace, str):
+            ns_str = namespace
+        else:
+            ns_str = ".".join(namespace)
 
         with self._staging():
             # Check if namespace already exists
@@ -333,7 +353,11 @@ class BaseCatalog(Catalog):
             NoSuchNamespaceError: If namespace doesn't exist
             NamespaceNotEmptyError: If namespace contains tables
         """
-        ns_str = self._identifier_to_str(namespace)
+        # Convert to string
+        if isinstance(namespace, str):
+            ns_str = namespace
+        else:
+            ns_str = ".".join(namespace)
 
         with self._staging():
             # Check if namespace exists and has tables
@@ -420,18 +444,12 @@ class BaseCatalog(Catalog):
         Raises:
             TableAlreadyExistsError: If table already exists
         """
-        table_id = self._identifier_to_str(identifier)
+        namespace, table_name = self._parse_identifier(identifier)
 
         with self._staging():
-            # Parse identifier
-            namespace, table_name = table_id.split(".", 1)
-
             # Check if table already exists
-            try:
-                _ = self._db.namespaces[namespace].tables[table_name]
-                raise TableAlreadyExistsError(f"Table {table_id} already exists")
-            except KeyError:
-                pass  # Table doesn't exist, continue
+            if self._db.has_table(namespace, table_name):
+                raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
 
             # Convert schema if needed
             schema = self._convert_schema_if_needed(schema)
@@ -499,11 +517,7 @@ class BaseCatalog(Catalog):
                 config="default",
             )
 
-            # Ensure namespace exists
-            if namespace not in self._db.namespaces:
-                self._db.namespaces[namespace] = db.Namespace(tables={})
-
-            self._db.namespaces[namespace].tables[table_name] = table_entry
+            self._db.set_table(namespace, table_name, table_entry)
 
         # Load and return table (after staging context exits and persists)
         return self.load_table(identifier)
@@ -520,15 +534,13 @@ class BaseCatalog(Catalog):
         Raises:
             NoSuchTableError: If table doesn't exist
         """
-        table_id = self._identifier_to_str(identifier)
-
-        # Parse identifier
-        namespace, table_name = table_id.split(".", 1)
+        namespace, table_name = self._parse_identifier(identifier)
 
         # Get metadata location from catalog store
         catalog = self._load_database()
+        table_id = f"{namespace}.{table_name}"
         try:
-            store_table = catalog.namespaces[namespace].tables[table_name]
+            store_table = catalog.get_table(namespace, table_name)
         except KeyError:
             raise NoSuchTableError(f"Table {table_id} not found")
         metadata_uri = store_table.uri
@@ -572,18 +584,12 @@ class BaseCatalog(Catalog):
         Raises:
             TableAlreadyExistsError: If table already exists
         """
-        table_id = self._identifier_to_str(identifier)
+        namespace, table_name = self._parse_identifier(identifier)
 
         with self._staging():
-            # Parse identifier
-            namespace, table_name = table_id.split(".", 1)
-
             # Check if table already exists
-            try:
-                _ = self._db.namespaces[namespace].tables[table_name]
-                raise TableAlreadyExistsError(f"Table {table_id} already exists")
-            except KeyError:
-                pass  # Table doesn't exist, continue
+            if self._db.has_table(namespace, table_name):
+                raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
 
             # Ensure metadata_location is a full URI
             if "://" not in metadata_location:
@@ -606,11 +612,7 @@ class BaseCatalog(Catalog):
                 config="default",
             )
 
-            # Ensure namespace exists
-            if namespace not in self._db.namespaces:
-                self._db.namespaces[namespace] = db.Namespace(tables={})
-
-            self._db.namespaces[namespace].tables[table_name] = table_entry
+            self._db.set_table(namespace, table_name, table_entry)
             # Note: No files are added to staged_changes - only faceberg.yml will be updated
 
         return self.load_table(identifier)
@@ -624,7 +626,11 @@ class BaseCatalog(Catalog):
         Returns:
             List of table identifiers in namespace
         """
-        ns_str = self._identifier_to_str(namespace)
+        # Convert to string
+        if isinstance(namespace, str):
+            ns_str = namespace
+        else:
+            ns_str = ".".join(namespace)
 
         catalog = self._load_database()
         try:
@@ -644,17 +650,12 @@ class BaseCatalog(Catalog):
         Raises:
             NoSuchTableError: If table doesn't exist
         """
-        table_id = self._identifier_to_str(identifier)
+        namespace, table_name = self._parse_identifier(identifier)
 
         with self._staging():
-            # Parse identifier
-            namespace, table_name = table_id.rsplit(".", 1)
-
             # Check if table exists and remove it
-            try:
-                del self._db.namespaces[namespace].tables[table_name]
-            except KeyError:
-                raise NoSuchTableError(f"Table {table_id} not found")
+            if not self._db.delete_table(namespace, table_name):
+                raise NoSuchTableError(f"Table {namespace}.{table_name} not found")
 
             # Record deletion of table directory
             table_dir = f"{namespace}/{table_name}/"
@@ -676,31 +677,20 @@ class BaseCatalog(Catalog):
             NoSuchTableError: If source table doesn't exist
             TableAlreadyExistsError: If destination table already exists
         """
-        from_id = self._identifier_to_str(from_identifier)
-        to_id = self._identifier_to_str(to_identifier)
+        from_namespace, from_table_name = self._parse_identifier(from_identifier)
+        to_namespace, to_table_name = self._parse_identifier(to_identifier)
 
         with self._staging():
-            # Parse the namespace and table name from identifiers
-            from_parts = from_id.split(".")
-            to_parts = to_id.split(".")
-
-            from_namespace = from_parts[0]
-            from_table_name = ".".join(from_parts[1:])
-            to_namespace = to_parts[0]
-            to_table_name = ".".join(to_parts[1:])
 
             # Check if source table exists
             try:
-                from_table = self._db.namespaces[from_namespace].tables[from_table_name]
+                from_table = self._db.get_table(from_namespace, from_table_name)
             except KeyError:
-                raise NoSuchTableError(f"Table {from_id} not found")
+                raise NoSuchTableError(f"Table {from_namespace}.{from_table_name} not found")
 
             # Check if destination table already exists
-            try:
-                _ = self._db.namespaces[to_namespace].tables[to_table_name]
-                raise TableAlreadyExistsError(f"Table {to_id} already exists")
-            except KeyError:
-                pass  # Destination doesn't exist, continue
+            if self._db.has_table(to_namespace, to_table_name):
+                raise TableAlreadyExistsError(f"Table {to_namespace}.{to_table_name} already exists")
 
             # Get source table directory
             source_table_dir = self._load_table_locally(from_namespace, from_table_name)
@@ -737,18 +727,14 @@ class BaseCatalog(Catalog):
                         config=from_table.config,  # Preserve config
                     )
 
-                    # Ensure destination namespace exists
-                    if to_namespace not in self._db.namespaces:
-                        self._db.namespaces[to_namespace] = db.Namespace(tables={})
-
-                    self._db.namespaces[to_namespace].tables[to_table_name] = new_table_entry
+                    self._db.set_table(to_namespace, to_table_name, new_table_entry)
 
             # Record deletion of old table directory
             old_table_dir = f"{from_namespace}/{from_table_name}/"
             self._staged_changes.append(CommitOperationDelete(path_in_repo=old_table_dir))
 
             # Remove old table from store
-            del self._db.namespaces[from_namespace].tables[from_table_name]
+            self._db.delete_table(from_namespace, from_table_name)
 
         return self.load_table(to_identifier)
 
@@ -761,14 +747,12 @@ class BaseCatalog(Catalog):
         Returns:
             True if table exists
         """
-        table_id = self._identifier_to_str(identifier)
-        namespace, table_name = table_id.split(".", 1)
-        catalog = self._load_database()
         try:
-            _ = catalog.namespaces[namespace].tables[table_name]
-            return True
-        except KeyError:
+            namespace, table_name = self._parse_identifier(identifier)
+        except ValueError:
             return False
+        catalog = self._load_database()
+        return catalog.has_table(namespace, table_name)
 
     def purge_table(self, identifier: Union[str, Identifier]) -> None:
         """Drop table and delete all files.
@@ -861,7 +845,7 @@ class BaseCatalog(Catalog):
 
             # Find the specific table in store
             try:
-                store_table = db.namespaces[target_namespace].tables[target_table]
+                store_table = db.get_table(target_namespace, target_table)
             except KeyError:
                 raise ValueError(f"Table {table_name} not found in store")
 
@@ -920,18 +904,11 @@ class BaseCatalog(Catalog):
             ValueError: If identifier format is invalid
             TableAlreadyExistsError: If table already exists
         """
-        table_id = self._identifier_to_str(identifier)
-
-        # Parse identifier
-        parts = table_id.split(".")
-        if len(parts) != 2:
-            raise ValueError(f"Invalid table identifier: {table_id}. Expected format: namespace.table")
-
-        namespace, table_name = parts
+        namespace, table_name = self._parse_identifier(identifier)
 
         # Check if table already exists
         if self.table_exists(identifier):
-            raise TableAlreadyExistsError(f"Table {table_id} already exists in catalog")
+            raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists in catalog")
 
         # Discover dataset
         dataset_info = DatasetInfo.discover(
@@ -963,10 +940,9 @@ class BaseCatalog(Catalog):
         # Check if table entry exists in database
         if self.table_exists(table_info.identifier):
             # Get table entry to check if it has been synced (has metadata uri)
-            table_id = self._identifier_to_str(table_info.identifier)
-            namespace, table_name = table_id.split(".", 1)
+            namespace, table_name = self._parse_identifier(table_info.identifier)
             catalog = self._load_database()
-            store_table = catalog.namespaces[namespace].tables[table_name]
+            store_table = catalog.get_table(namespace, table_name)
 
             # If table hasn't been synced yet (empty uri), create it
             if not store_table.uri or store_table.uri == "":
@@ -1005,18 +981,18 @@ class BaseCatalog(Catalog):
             TableAlreadyExistsError: If table already exists
         """
         with self._staging():
+            # Parse identifier
+            namespace, table = self._parse_identifier(
+                table_info.identifier
+            )
+
             # Create namespace directory on-demand
-            namespace = table_info.namespace
             ns_dir = self._staging_dir / namespace
             ns_dir.mkdir(parents=True, exist_ok=True)
 
-            # Parse identifier
-            table_id = self._identifier_to_str(table_info.identifier)
-            namespace, table = table_id.split(".", 1)
-
             # Check if table already exists with metadata (has been synced)
             try:
-                existing_table = self._db.namespaces[namespace].tables[table]
+                existing_table = self._db.get_table(namespace, table)
                 # Only raise error if table has already been synced (has non-empty uri)
                 if existing_table.uri and existing_table.uri != "":
                     raise TableAlreadyExistsError(f"Table {table_info.identifier} already exists")
@@ -1063,16 +1039,16 @@ class BaseCatalog(Catalog):
             rel_path = metadata_file_path.relative_to(self._staging_dir)
             metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
 
-            # Ensure namespace exists
-            if namespace not in self._db.namespaces:
-                self._db.namespaces[namespace] = db.Namespace(tables={})
-
             # Create and set table entry
-            self._db.namespaces[namespace].tables[table] = db.Table(
-                dataset=table_info.source_repo,
-                uri=metadata_uri,
-                revision=table_info.source_revision or "",  # Empty if revision not available
-                config=table_info.source_config,
+            self._db.set_table(
+                namespace,
+                table,
+                db.Table(
+                    dataset=table_info.source_repo,
+                    uri=metadata_uri,
+                    revision=table_info.source_revision or "",  # Empty if revision not available
+                    config=table_info.source_config,
+                ),
             )
 
         # Load and return table after staging context exits and persists
@@ -1092,8 +1068,9 @@ class BaseCatalog(Catalog):
 
         with self._staging():
             # Parse identifier and create paths
-            table_id = self._identifier_to_str(table_info.identifier)
-            namespace, table = table_id.split(".", 1)
+            namespace, table = self._parse_identifier(
+                table_info.identifier
+            )
 
             # Create local metadata directory
             metadata_path = self._staging_dir / namespace / table
@@ -1132,11 +1109,15 @@ class BaseCatalog(Catalog):
             metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
 
             # Update table entry with new snapshot
-            self._db.namespaces[namespace].tables[table] = db.Table(
-                dataset=table_info.source_repo,
-                uri=metadata_uri,
-                revision=table_info.source_revision or "",  # Empty if revision not available
-                config=table_info.source_config,
+            self._db.set_table(
+                namespace,
+                table,
+                db.Table(
+                    dataset=table_info.source_repo,
+                    uri=metadata_uri,
+                    revision=table_info.source_revision or "",  # Empty if revision not available
+                    config=table_info.source_config,
+                ),
             )
 
         # Reload and return table after staging context exits and persists

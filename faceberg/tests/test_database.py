@@ -300,3 +300,122 @@ namespace2:
                 t2 = ns2.tables[table_name]
                 assert t1.dataset == t2.dataset
                 assert t1.config == t2.config
+
+    def test_get_table_success(self):
+        """Test get_table with existing table."""
+        table = Table(dataset="org/repo", uri="file:///path", revision="rev1")
+        tables = {"table1": table}
+        namespaces = {"ns1": Namespace(tables=tables)}
+        catalog = Catalog(uri=".faceberg", namespaces=namespaces)
+
+        result = catalog.get_table("ns1", "table1")
+        assert result == table
+        assert result.dataset == "org/repo"
+
+    def test_get_table_not_found(self):
+        """Test get_table with non-existent table."""
+        tables = {"table1": Table(dataset="org/repo", uri="file:///path", revision="rev1")}
+        namespaces = {"ns1": Namespace(tables=tables)}
+        catalog = Catalog(uri=".faceberg", namespaces=namespaces)
+
+        with pytest.raises(KeyError):
+            catalog.get_table("ns1", "nonexistent")
+
+    def test_get_table_namespace_not_found(self):
+        """Test get_table with non-existent namespace."""
+        catalog = Catalog(uri=".faceberg", namespaces={})
+
+        with pytest.raises(KeyError):
+            catalog.get_table("nonexistent", "table1")
+
+    def test_set_table_new_table(self):
+        """Test set_table to add a new table."""
+        catalog = Catalog(uri=".faceberg", namespaces={"ns1": Namespace(tables={})})
+
+        new_table = Table(dataset="org/repo", uri="file:///path", revision="rev1")
+        catalog.set_table("ns1", "table1", new_table)
+
+        assert "table1" in catalog.namespaces["ns1"].tables
+        assert catalog.namespaces["ns1"].tables["table1"] == new_table
+
+    def test_set_table_update_existing(self):
+        """Test set_table to update an existing table."""
+        old_table = Table(dataset="org/repo1", uri="file:///path1", revision="rev1")
+        catalog = Catalog(
+            uri=".faceberg",
+            namespaces={"ns1": Namespace(tables={"table1": old_table})}
+        )
+
+        new_table = Table(dataset="org/repo2", uri="file:///path2", revision="rev2")
+        catalog.set_table("ns1", "table1", new_table)
+
+        assert catalog.namespaces["ns1"].tables["table1"] == new_table
+        assert catalog.namespaces["ns1"].tables["table1"].dataset == "org/repo2"
+
+    def test_set_table_creates_namespace(self):
+        """Test set_table creates namespace if it doesn't exist."""
+        catalog = Catalog(uri=".faceberg", namespaces={})
+
+        new_table = Table(dataset="org/repo", uri="file:///path", revision="rev1")
+        catalog.set_table("new_ns", "table1", new_table)
+
+        assert "new_ns" in catalog.namespaces
+        assert "table1" in catalog.namespaces["new_ns"].tables
+        assert catalog.namespaces["new_ns"].tables["table1"] == new_table
+
+    def test_has_table_exists(self):
+        """Test has_table returns True for existing table."""
+        table = Table(dataset="org/repo", uri="file:///path", revision="rev1")
+        catalog = Catalog(
+            uri=".faceberg",
+            namespaces={"ns1": Namespace(tables={"table1": table})}
+        )
+
+        assert catalog.has_table("ns1", "table1") is True
+
+    def test_has_table_not_exists(self):
+        """Test has_table returns False for non-existent table."""
+        catalog = Catalog(
+            uri=".faceberg",
+            namespaces={"ns1": Namespace(tables={})}
+        )
+
+        assert catalog.has_table("ns1", "nonexistent") is False
+
+    def test_has_table_namespace_not_exists(self):
+        """Test has_table returns False for non-existent namespace."""
+        catalog = Catalog(uri=".faceberg", namespaces={})
+
+        assert catalog.has_table("nonexistent", "table1") is False
+
+    def test_delete_table_success(self):
+        """Test delete_table removes existing table."""
+        table = Table(dataset="org/repo", uri="file:///path", revision="rev1")
+        catalog = Catalog(
+            uri=".faceberg",
+            namespaces={"ns1": Namespace(tables={"table1": table})}
+        )
+
+        result = catalog.delete_table("ns1", "table1")
+
+        assert result is True
+        assert "table1" not in catalog.namespaces["ns1"].tables
+
+    def test_delete_table_not_found(self):
+        """Test delete_table returns False for non-existent table."""
+        catalog = Catalog(
+            uri=".faceberg",
+            namespaces={"ns1": Namespace(tables={})}
+        )
+
+        result = catalog.delete_table("ns1", "nonexistent")
+
+        assert result is False
+
+    def test_delete_table_namespace_not_found(self):
+        """Test delete_table returns False for non-existent namespace."""
+        catalog = Catalog(uri=".faceberg", namespaces={})
+
+        result = catalog.delete_table("nonexistent", "table1")
+
+        assert result is False
