@@ -47,7 +47,52 @@ df = table.scan().to_pandas()
 print(df.head())
 ```
 
-### Option 2: Create Local Catalog from HuggingFace Datasets
+### Option 2: Create Remote Catalog (HuggingFace Hub)
+
+Initialize a new catalog on HuggingFace and sync datasets:
+
+```python
+from faceberg.catalog import RemoteCatalog
+from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
+import os
+
+# Define which datasets to sync
+config = CatalogConfig(
+    namespaces=[
+        NamespaceConfig(
+            name="default",
+            tables=[
+                TableConfig(
+                    name="imdb",
+                    dataset="stanfordnlp/imdb",
+                    config="plain_text",
+                ),
+            ],
+        )
+    ],
+)
+
+# Create remote catalog (initializes HF dataset repository)
+catalog = RemoteCatalog(
+    hf_repo_id="your-org/your-catalog-dataset",
+    hf_token=os.getenv("HF_TOKEN"),  # Required for creating repos
+    config=config,
+)
+
+# Initialize the catalog (creates empty HF repo)
+catalog.init()
+
+# Sync datasets to create Iceberg tables
+tables = catalog.sync(config=config, token=os.getenv("HF_TOKEN"))
+print(f"Synced {len(tables)} tables")
+
+# Query the table
+table = catalog.load_table("default.imdb")
+df = table.scan().to_pandas()
+print(df.head())
+```
+
+### Option 3: Create Local Catalog from HuggingFace Datasets
 
 Sync HuggingFace datasets to a local Iceberg catalog:
 
@@ -84,7 +129,7 @@ df = table.scan().to_pandas()
 print(df.head())
 ```
 
-### Option 3: Read Existing Local Catalog
+### Option 4: Read Existing Local Catalog
 
 Read from a local catalog without syncing:
 
@@ -105,7 +150,7 @@ table = catalog.load_table("default.imdb")
 df = table.scan().to_pandas()
 ```
 
-### Option 4: Query with DuckDB
+### Option 5: Query with DuckDB
 
 DuckDB can read Iceberg tables created by Faceberg:
 
@@ -136,6 +181,13 @@ print(result)
 The CLI operates on catalogs specified by `--catalog` (local path or HuggingFace repo ID):
 
 ```bash
+# Initialize a new local catalog
+faceberg --catalog=.faceberg init
+
+# Initialize a new remote catalog (creates HF dataset repository)
+export HF_TOKEN=your_token
+faceberg --catalog=org/catalog-repo init
+
 # Sync datasets to local catalog
 faceberg --catalog=.faceberg --config=faceberg.yml sync
 

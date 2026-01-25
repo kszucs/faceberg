@@ -45,9 +45,10 @@ class TestGetHfFileSize:
         """Test getting file size from a valid HuggingFace URL."""
         test_url = "hf://datasets/deepmind/narrativeqa/data/train-00000-of-00024.parquet"
 
-        with patch("faceberg.convert.hf_hub_url") as mock_hf_hub_url, patch(
-            "faceberg.convert.get_hf_file_metadata"
-        ) as mock_get_metadata:
+        with (
+            patch("faceberg.convert.hf_hub_url") as mock_hf_hub_url,
+            patch("faceberg.convert.get_hf_file_metadata") as mock_get_metadata,
+        ):
             # Setup mocks
             mock_hf_hub_url.return_value = "https://huggingface.co/mock-url"
 
@@ -71,9 +72,10 @@ class TestGetHfFileSize:
         """Test getting file size from a URL with deeply nested path."""
         test_url = "hf://datasets/org/repo/path/to/deep/file.parquet"
 
-        with patch("faceberg.convert.hf_hub_url") as mock_hf_hub_url, patch(
-            "faceberg.convert.get_hf_file_metadata"
-        ) as mock_get_metadata:
+        with (
+            patch("faceberg.convert.hf_hub_url") as mock_hf_hub_url,
+            patch("faceberg.convert.get_hf_file_metadata") as mock_get_metadata,
+        ):
             mock_hf_hub_url.return_value = "https://mock.url"
             mock_metadata = Mock()
             mock_metadata.size = 12345678
@@ -102,9 +104,10 @@ class TestGetHfFileSize:
         """Test handling of HuggingFace API errors."""
         test_url = "hf://datasets/org/repo/file.parquet"
 
-        with patch("faceberg.convert.hf_hub_url") as mock_hf_hub_url, patch(
-            "faceberg.convert.get_hf_file_metadata"
-        ) as mock_get_metadata:
+        with (
+            patch("faceberg.convert.hf_hub_url") as mock_hf_hub_url,
+            patch("faceberg.convert.get_hf_file_metadata") as mock_get_metadata,
+        ):
             mock_hf_hub_url.return_value = "https://mock.url"
             # Simulate API error
             mock_get_metadata.side_effect = Exception("API Error")
@@ -128,9 +131,10 @@ class TestReadFileMetadata:
             )
         ]
 
-        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata, patch.object(
-            metadata_writer, "_get_hf_file_size"
-        ) as mock_get_size:
+        with (
+            patch("faceberg.convert.pq.read_metadata") as mock_read_metadata,
+            patch.object(metadata_writer, "_get_hf_file_size") as mock_get_size,
+        ):
             # Mock parquet metadata
             mock_metadata = Mock()
             mock_metadata.num_rows = 1000
@@ -160,9 +164,10 @@ class TestReadFileMetadata:
             )
         ]
 
-        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata, patch.object(
-            metadata_writer, "_get_hf_file_size"
-        ) as mock_get_size:
+        with (
+            patch("faceberg.convert.pq.read_metadata") as mock_read_metadata,
+            patch.object(metadata_writer, "_get_hf_file_size") as mock_get_size,
+        ):
             mock_metadata = Mock()
             mock_metadata.num_rows = 1000
             mock_read_metadata.return_value = mock_metadata
@@ -196,9 +201,10 @@ class TestReadFileMetadata:
             ),
         ]
 
-        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata, patch.object(
-            metadata_writer, "_get_hf_file_size"
-        ) as mock_get_size:
+        with (
+            patch("faceberg.convert.pq.read_metadata") as mock_read_metadata,
+            patch.object(metadata_writer, "_get_hf_file_size") as mock_get_size,
+        ):
             # Mock parquet metadata - return different row counts for each file
             def get_metadata_side_effect(path):
                 mock_metadata = Mock()
@@ -269,9 +275,10 @@ class TestFileSizeRegression:
             )
         ]
 
-        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata, patch.object(
-            metadata_writer, "_get_hf_file_size"
-        ) as mock_get_size:
+        with (
+            patch("faceberg.convert.pq.read_metadata") as mock_read_metadata,
+            patch.object(metadata_writer, "_get_hf_file_size") as mock_get_size,
+        ):
             # The bug was using metadata.serialized_size which is ~500 bytes
             mock_metadata = Mock()
             mock_metadata.num_rows = 1365
@@ -308,9 +315,10 @@ class TestFileSizeRegression:
         # Typical metadata.serialized_size values (footer size)
         serialized_sizes = [18853, 10532, 11971, 9938, 19011]
 
-        with patch("faceberg.convert.pq.read_metadata") as mock_read_metadata, patch.object(
-            metadata_writer, "_get_hf_file_size"
-        ) as mock_get_size:
+        with (
+            patch("faceberg.convert.pq.read_metadata") as mock_read_metadata,
+            patch.object(metadata_writer, "_get_hf_file_size") as mock_get_size,
+        ):
 
             def get_metadata_side_effect(path):
                 idx = int(path.split("train-")[1].split("-of")[0])

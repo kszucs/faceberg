@@ -12,8 +12,8 @@ hf://datasets/{org}/{dataset}/{file}. Datasets must have an organization/user
 prefix (e.g., stanfordnlp/imdb or glue/mrpc work, but rotten_tomatoes fails).
 """
 
-import pytest
 import duckdb
+import pytest
 
 
 @pytest.fixture
@@ -57,8 +57,6 @@ def imdb_metadata_path(synced_catalog):
     raise FileNotFoundError(f"No metadata files found in {metadata_path}")
 
 
-
-
 # =============================================================================
 # A. Basic Scanning Tests
 # =============================================================================
@@ -77,7 +75,6 @@ def test_duckdb_iceberg_scan_basic(duckdb_conn, imdb_metadata_path):
     # Verify we got a count
     assert result is not None
     assert result[0] > 0
-
 
 
 def test_duckdb_query_data(duckdb_conn, imdb_metadata_path):

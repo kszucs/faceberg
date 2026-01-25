@@ -1,18 +1,23 @@
 """Tests for FacebergCatalog implementation."""
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
+from huggingface_hub import HfFileSystem
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
     NamespaceNotEmptyError,
     NoSuchTableError,
     TableAlreadyExistsError,
 )
+from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.schema import Schema
+from pyiceberg.table import CommitTableRequest
 from pyiceberg.types import LongType, NestedField, StringType
 
-from faceberg.catalog import LocalCatalog
+from faceberg.bridge import DatasetInfo
+from faceberg.catalog import HfFileIO, LocalCatalog
 from faceberg.config import CatalogConfig, NamespaceConfig, TableConfig
 
 
@@ -200,7 +205,7 @@ def faceberg_config():
                     TableConfig(
                         name="imdb_plain_text", dataset="stanfordnlp/imdb", config="plain_text"
                     ),
-                ]
+                ],
             )
         ],
     )
@@ -242,7 +247,7 @@ def test_faceberg_lazy_namespace_creation(faceberg_catalog):
     assert ("default",) not in faceberg_catalog.list_namespaces()
 
     # Sync will create namespace on-demand
-    synced_tables = faceberg_catalog.sync(token=None, table_name=None)
+    synced_tables = faceberg_catalog.sync(table_name=None)
 
     # Namespace should now exist
     assert ("default",) in faceberg_catalog.list_namespaces()
@@ -253,7 +258,6 @@ def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config)
     """Test creating tables from datasets in FacebergCatalog."""
     # Sync tables (token=None works for public datasets, namespaces created on-demand)
     synced_tables = faceberg_catalog.sync(
-        token=None,
         table_name=None,
     )
 
@@ -273,7 +277,6 @@ def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
     """Test creating a specific table in FacebergCatalog."""
     # Sync specific table (token=None works for public datasets, namespace created on-demand)
     synced_tables = faceberg_catalog.sync(
-        token=None,
         table_name="default.imdb_plain_text",
     )
 
@@ -286,13 +289,10 @@ def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
 
 def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config):
     """Test creating a table that already exists raises error in FacebergCatalog."""
-    from faceberg.bridge import DatasetInfo
-
     # Discover dataset (token=None works for public datasets)
     dataset_info = DatasetInfo.discover(
         repo_id="stanfordnlp/imdb",
         configs=["plain_text"],
-        token=None,
     )
 
     # Convert to TableInfo
@@ -300,7 +300,6 @@ def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config)
         namespace="default",
         table_name="imdb_plain_text",
         config="plain_text",
-        token=None,
     )
 
     # Create table first time
@@ -313,13 +312,10 @@ def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config)
 
 def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
     """Test creating a table for a specific config in FacebergCatalog."""
-    from faceberg.bridge import DatasetInfo
-
     # Discover dataset (token=None works for public datasets, namespace created on-demand)
     dataset_info = DatasetInfo.discover(
         repo_id="stanfordnlp/imdb",
         configs=["plain_text"],
-        token=None,
     )
 
     # Convert to TableInfo
@@ -327,7 +323,6 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
         namespace="default",
         table_name="imdb_plain_text",
         config="plain_text",
-        token=None,
     )
 
     # Create table
@@ -350,7 +345,6 @@ def test_faceberg_invalid_table_name_format(faceberg_catalog, faceberg_config):
     """Test invalid table name format raises error in FacebergCatalog."""
     with pytest.raises(ValueError, match="Invalid table name"):
         faceberg_catalog.sync(
-            token=None,
             table_name="invalid_format",  # Missing namespace
         )
 
@@ -360,7 +354,6 @@ def test_faceberg_dataset_not_found_in_config(faceberg_catalog):
     # Catalog config has "imdb" dataset, so "nonexistent" should fail
     with pytest.raises(ValueError, match="not found in config"):
         faceberg_catalog.sync(
-            token=None,
             table_name="default.nonexistent_default",
         )
 
@@ -401,9 +394,7 @@ def test_update_namespace_properties(catalog):
     """Test updating namespace properties."""
     catalog.create_namespace("test_ns")
     summary = catalog.update_namespace_properties(
-        "test_ns",
-        removals={"old_prop"},
-        updates={"new_prop": "value"}
+        "test_ns", removals={"old_prop"}, updates={"new_prop": "value"}
     )
 
     # Currently returns empty summary
@@ -469,10 +460,6 @@ def test_create_table_transaction_not_implemented(catalog, test_schema):
 
 def test_commit_table_not_implemented(catalog):
     """Test that commit_table is not yet implemented."""
-    from unittest.mock import MagicMock
-
-    from pyiceberg.table import CommitTableRequest
-
     # Use a mock request - we just need to test that NotImplementedError is raised
     mock_request = MagicMock(spec=CommitTableRequest)
 
@@ -592,3 +579,65 @@ def test_staging_context_cleanup_on_error(catalog, test_schema):
     assert catalog._staged_changes is None
 
 
+# =============================================================================
+# HfFileIO Tests
+# =============================================================================
+
+
+class TestHfFileIO:
+    """Tests for HfFileIO custom FileIO implementation."""
+
+    def test_hffileio_initialization(self):
+        """Test that HfFileIO can be initialized with properties."""
+        io = HfFileIO(
+            properties={
+                "hf.endpoint": "https://huggingface.co",
+                "hf.token": "test_token",
+            }
+        )
+
+        assert io is not None
+        assert io.properties["hf.endpoint"] == "https://huggingface.co"
+        assert io.properties["hf.token"] == "test_token"
+
+    def test_hffileio_creates_hf_filesystem(self):
+        """Test that HfFileIO creates HfFileSystem for hf:// scheme."""
+        io = HfFileIO(properties={"hf.endpoint": "https://huggingface.co"})
+        fs = io.get_fs("hf")
+
+        assert isinstance(fs, HfFileSystem)
+
+    def test_hffileio_uses_skip_instance_cache(self):
+        """Test that HfFileIO creates multiple distinct HfFileSystem instances.
+
+        When skip_instance_cache=True, each call to get_fs('hf') should create
+        a new HfFileSystem instance (after cache eviction). This test verifies
+        that our custom factory uses skip_instance_cache correctly.
+        """
+        io = HfFileIO(properties={"hf.endpoint": "https://huggingface.co"})
+
+        # First call creates and caches filesystem
+        fs1 = io.get_fs("hf")
+
+        # Clear the thread-local cache to force recreation
+        io._thread_locals.get_fs_cached.cache_clear()
+
+        # Second call should create a new instance (not from HfFileSystem's global cache)
+        fs2 = io.get_fs("hf")
+
+        # With skip_instance_cache=True, these should be different instances
+        # (Without it, HfFileSystem would return the same cached instance)
+        assert fs1 is not fs2, (
+            "Expected different HfFileSystem instances with skip_instance_cache=True"
+        )
+
+    def test_hffileio_extends_fsspec_fileio(self):
+        """Test that HfFileIO properly extends FsspecFileIO."""
+        io = HfFileIO(properties={})
+
+        assert isinstance(io, FsspecFileIO)
+        # Should have all standard FileIO methods
+        assert hasattr(io, "new_input")
+        assert hasattr(io, "new_output")
+        assert hasattr(io, "delete")
+        assert hasattr(io, "get_fs")

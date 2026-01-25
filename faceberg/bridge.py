@@ -230,9 +230,7 @@ def build_split_partition_spec(schema: Schema) -> PartitionSpec:
     )
 
 
-def build_iceberg_schema_from_features(
-    features, include_split_column: bool = True
-) -> Schema:
+def build_iceberg_schema_from_features(features, include_split_column: bool = True) -> Schema:
     """
     Build an Iceberg Schema from HuggingFace dataset features using Arrow as an intermediate format.
 
@@ -404,8 +402,7 @@ class DatasetInfo:
             missing_configs = set(configs) - set(all_configs)
             if missing_configs:
                 raise ValueError(
-                    f"Configs not found in dataset: {missing_configs}. "
-                    f"Available: {all_configs}"
+                    f"Configs not found in dataset: {missing_configs}. Available: {all_configs}"
                 )
             discovered_configs = [c for c in all_configs if c in configs]
         else:
@@ -468,9 +465,7 @@ class DatasetInfo:
             splits = list(builder.info.splits.keys())
 
         # Get data files for parquet file paths
-        data_files = (
-            builder.config.data_files if hasattr(builder.config, "data_files") else None
-        )
+        data_files = builder.config.data_files if hasattr(builder.config, "data_files") else None
 
         if not data_files or not isinstance(data_files, dict):
             raise ValueError(
@@ -484,8 +479,10 @@ class DatasetInfo:
 
         # Resolve all file paths using HfFileSystem
         fs = HfFileSystem(token=token)
-        files = {split: [resolve_hf_path(fs, path) for path in paths]
-                 for split, paths in data_files.items()}
+        files = {
+            split: [resolve_hf_path(fs, path) for path in paths]
+            for split, paths in data_files.items()
+        }
 
         return splits, files, revision
 

@@ -121,20 +121,78 @@ def sync(ctx, table_name):
 
 
 @main.command()
-@click.argument("table_name", required=False)
 @click.pass_context
-def init(ctx, table_name):
-    """Initialize catalog and create Iceberg tables from config.
+def init(ctx):
+    """Initialize an empty catalog.
 
-    This is an alias for the 'sync' command. It discovers configured datasets
-    and creates corresponding Iceberg metadata locally.
+    For local catalogs, creates the directory and catalog.json file.
+    For remote catalogs (HuggingFace), creates a new dataset repository.
+
+    Use this command before syncing datasets to explicitly create the catalog.
+    For RemoteCatalog, this is required to create the HF repository before
+    you can sync datasets to it.
 
     Example:
-        faceberg init
-        faceberg init --config=my-config.yml
+        # Initialize local catalog
+        faceberg --catalog=.faceberg init
+
+        # Initialize remote catalog (creates HF dataset repo)
+        export HF_TOKEN=your_token
+        faceberg --catalog=org/catalog-repo init
     """
-    # Just invoke sync
-    ctx.invoke(sync, table_name=table_name)
+    catalog_path = ctx.obj["catalog_path"]
+
+    # Check if it's a remote catalog
+    is_remote = _is_hf_repo_id(catalog_path)
+
+    if is_remote:
+        # Remote catalog requires HF token
+        token = os.getenv("HF_TOKEN")
+        if not token:
+            console.print(
+                "[bold red]Error:[/bold red] HF_TOKEN environment variable required for remote catalog"
+            )
+            console.print(
+                "Usage: export HF_TOKEN=your_token && faceberg --catalog=org/catalog-repo init"
+            )
+            raise click.Abort()
+
+        console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog_path}")
+    else:
+        console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog_path}")
+
+    try:
+        catalog = _get_catalog(catalog_path)
+        catalog.init()
+        console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
+
+        if is_remote:
+            console.print(
+                f"\n[bold blue]Repository URL:[/bold blue] https://huggingface.co/datasets/{catalog_path}"
+            )
+            console.print("\n[dim]Next steps:[/dim]")
+            console.print("  1. Create a faceberg.yml config file")
+            console.print(f"  2. Run: faceberg --catalog={catalog_path} --config=faceberg.yml sync")
+        else:
+            console.print("\n[dim]Next steps:[/dim]")
+            console.print("  1. Create a faceberg.yml config file")
+            console.print(f"  2. Run: faceberg --catalog={catalog_path} --config=faceberg.yml sync")
+    except ValueError as e:
+        # Handle "repository already exists" error
+        if "already exists" in str(e):
+            console.print(f"[bold yellow]Warning:[/bold yellow] {e}")
+            console.print("[dim]Catalog already initialized. Use 'sync' to add tables.[/dim]")
+        else:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise click.Abort()
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        if ctx.obj.get("verbose"):
+            import traceback
+
+            console.print("\n[bold red]Traceback:[/bold red]")
+            console.print(traceback.format_exc())
+        raise click.Abort()
 
 
 @main.command("list")
@@ -186,7 +244,7 @@ def info(ctx, table_name):
     try:
         table = catalog.load_table(table_name)
         console.print(f"[bold blue]Location:[/bold blue] {table.location()}")
-        console.print(f"[bold blue]Schema:[/bold blue]")
+        console.print("[bold blue]Schema:[/bold blue]")
         for field in table.schema().fields:
             console.print(f"  • {field.name}: {field.field_type}")
     except Exception as e:
@@ -242,6 +300,7 @@ def scan(ctx, table_name, limit):
         console.print(f"[bold red]Error:[/bold red] {e}")
         if ctx.obj.get("verbose"):
             import traceback
+
             console.print("\n[bold red]Traceback:[/bold red]")
             console.print(traceback.format_exc())
 

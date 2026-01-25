@@ -42,7 +42,7 @@ def synced_catalog(synced_catalog_dir):
     catalog = LocalCatalog(location=str(synced_catalog_dir))
 
     # Sync all tables (token=None works for public datasets)
-    synced_tables = catalog.sync(config=config, token=None, table_name=None)
+    synced_tables = catalog.sync(config)
 
     # Verify sync was successful
     assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"

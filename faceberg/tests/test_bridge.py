@@ -1,6 +1,5 @@
 """Tests for the bridge layer (dataset discovery, schema conversion, and TableInfo creation)."""
 
-
 import pytest
 from datasets import Features
 from datasets.features import ClassLabel, Sequence, Value
@@ -454,9 +453,7 @@ def test_table_info_name_mapping_with_lists():
                 element_id=5,
                 element_type=StructType(
                     NestedField(field_id=6, name="name", field_type=StringType(), required=False),
-                    NestedField(
-                        field_id=7, name="value", field_type=StringType(), required=False
-                    ),
+                    NestedField(field_id=7, name="value", field_type=StringType(), required=False),
                 ),
                 element_required=False,
             ),
@@ -531,9 +528,7 @@ def test_table_info_name_mapping_with_maps():
                 key_type=StringType(),
                 value_id=4,
                 value_type=StructType(
-                    NestedField(
-                        field_id=5, name="count", field_type=IntegerType(), required=False
-                    ),
+                    NestedField(field_id=5, name="count", field_type=IntegerType(), required=False),
                     NestedField(field_id=6, name="name", field_type=StringType(), required=False),
                 ),
                 value_required=False,

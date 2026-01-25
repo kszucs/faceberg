@@ -10,6 +10,7 @@ import yaml
 @dataclass
 class TableConfig:
     """Table configuration within a namespace."""
+
     name: str
     dataset: str
     config: str = "default"
@@ -18,6 +19,7 @@ class TableConfig:
 @dataclass
 class NamespaceConfig:
     """Namespace configuration."""
+
     name: str
     tables: List[TableConfig]
 
@@ -25,6 +27,7 @@ class NamespaceConfig:
 @dataclass
 class CatalogConfig:
     """Catalog configuration - defines which datasets to sync as tables."""
+
     namespaces: List[NamespaceConfig]
 
     @classmethod
@@ -54,7 +57,6 @@ class CatalogConfig:
         # Parse namespaces config
         namespaces = []
         for key, value in data.items():
-
             # Each remaining top-level key is a namespace
             namespace_name = key
 
@@ -68,7 +70,8 @@ class CatalogConfig:
 
             # Validate namespace name format (alphanumeric, underscore, hyphen)
             import re
-            if not re.match(r'^[a-zA-Z0-9_-]+$', namespace_name):
+
+            if not re.match(r"^[a-zA-Z0-9_-]+$", namespace_name):
                 raise ValueError(
                     f"Invalid namespace name '{namespace_name}'. "
                     "Must contain only alphanumeric characters, underscores, or hyphens"

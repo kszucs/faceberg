@@ -9,9 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
-from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, hf_hub_download
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
-from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
     NamespaceNotEmptyError,
@@ -19,6 +18,7 @@ from pyiceberg.exceptions import (
     TableAlreadyExistsError,
 )
 from pyiceberg.io import load_file_io
+from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.serializers import FromInputFile
@@ -128,6 +128,7 @@ class BaseCatalog(Catalog):
         self,
         uri: str,
         config: Optional[CatalogConfig] = None,
+        hf_token: Optional[str] = None,
         **properties: str,
     ):
         """Initialize base catalog.
@@ -147,7 +148,7 @@ class BaseCatalog(Catalog):
         }
 
         # Remove 'name' from properties if present (we use uri as name)
-        properties_copy = {k: v for k, v in properties.items() if k != 'name'}
+        properties_copy = {k: v for k, v in properties.items() if k != "name"}
 
         # Merge default properties with user properties (user properties take precedence)
         merged_properties = {**default_properties, **properties_copy}
@@ -155,6 +156,7 @@ class BaseCatalog(Catalog):
         super().__init__(name=uri, **merged_properties)
         self.uri = uri
         self.config = config
+        self._hf_token = hf_token
 
         # Temporary staging attributes (set within context manager)
         self._staging_dir = None
@@ -162,9 +164,32 @@ class BaseCatalog(Catalog):
         self._staged_changes = None  # List of CommitOperation objects
 
     # =========================================================================
+    # Catalog initialization
+    # =========================================================================
+
+    def init(self) -> None:
+        """Initialize the catalog storage.
+
+        Creates the necessary storage structures and empty catalog.json.
+        For LocalCatalog, ensures directory exists and creates empty catalog.json.
+        For RemoteCatalog, creates a new HF dataset repository with empty catalog.json.
+
+        Raises:
+            Exception: Implementation-specific exceptions (e.g., repository already exists)
+        """
+        self._init_catalog()
+
+    # =========================================================================
     # Internal helper methods (catalog persistence and utilities)
     # =========================================================================
     # Subclasses must implement these methods
+
+    def _init_catalog(self) -> None:
+        """Initialize catalog-specific storage.
+
+        Subclasses must implement this method.
+        """
+        raise NotImplementedError("Subclasses must implement _init_catalog()")
 
     def _load_catalog(self) -> Dict[str, str]:
         """Load catalog from storage.
@@ -214,7 +239,6 @@ class BaseCatalog(Catalog):
         Subclasses must implement this method.
         """
         raise NotImplementedError("Subclasses must implement _load_table_locally()")
-
 
     @contextmanager
     def _staging(self):
@@ -328,9 +352,7 @@ class BaseCatalog(Catalog):
             if ns_dir.exists():
                 ns_dir.rmdir()
 
-    def list_namespaces(
-        self, namespace: Union[str, Identifier] = ()
-    ) -> List[Identifier]:
+    def list_namespaces(self, namespace: Union[str, Identifier] = ()) -> List[Identifier]:
         """List namespaces.
 
         Args:
@@ -351,9 +373,7 @@ class BaseCatalog(Catalog):
 
         return [tuple([ns]) if "." not in ns else tuple(ns.split(".")) for ns in sorted(namespaces)]
 
-    def load_namespace_properties(
-        self, namespace: Union[str, Identifier]
-    ) -> Properties:
+    def load_namespace_properties(self, namespace: Union[str, Identifier]) -> Properties:
         """Load namespace properties.
 
         Args:
@@ -458,8 +478,7 @@ class BaseCatalog(Catalog):
             rel_metadata_path = metadata_file_path.relative_to(self._staging_dir)
             self._staged_changes.append(
                 CommitOperationAdd(
-                    path_in_repo=str(rel_metadata_path),
-                    path_or_fileobj=str(metadata_file_path)
+                    path_in_repo=str(rel_metadata_path), path_or_fileobj=str(metadata_file_path)
                 )
             )
 
@@ -472,8 +491,7 @@ class BaseCatalog(Catalog):
             rel_version_hint = version_hint_path.relative_to(self._staging_dir)
             self._staged_changes.append(
                 CommitOperationAdd(
-                    path_in_repo=str(rel_version_hint),
-                    path_or_fileobj=str(version_hint_path)
+                    path_in_repo=str(rel_version_hint), path_or_fileobj=str(version_hint_path)
                 )
             )
 
@@ -513,13 +531,13 @@ class BaseCatalog(Catalog):
             metadata_file = io.new_input(metadata_uri)
             metadata = FromInputFile.table_metadata(metadata_file)
         except FileNotFoundError as e:
-            raise NoSuchTableError(f"Table {table_id} metadata file not found: {metadata_uri}") from e
+            raise NoSuchTableError(
+                f"Table {table_id} metadata file not found: {metadata_uri}"
+            ) from e
 
         return Table(
             identifier=(
-                self.identifier_to_tuple(identifier)
-                if isinstance(identifier, str)
-                else identifier
+                self.identifier_to_tuple(identifier) if isinstance(identifier, str) else identifier
             ),
             metadata=metadata,
             metadata_location=metadata_uri,
@@ -527,9 +545,7 @@ class BaseCatalog(Catalog):
             catalog=self,
         )
 
-    def register_table(
-        self, identifier: Union[str, Identifier], metadata_location: str
-    ) -> Table:
+    def register_table(self, identifier: Union[str, Identifier], metadata_location: str) -> Table:
         """Register existing table.
 
         Args:
@@ -606,9 +622,7 @@ class BaseCatalog(Catalog):
             # Record deletion of table directory
             namespace, table_name = table_id.rsplit(".", 1)
             table_dir = f"{namespace}/{table_name}/"
-            self._staged_changes.append(
-                CommitOperationDelete(path_in_repo=table_dir)
-            )
+            self._staged_changes.append(CommitOperationDelete(path_in_repo=table_dir))
 
             # Remove from catalog
             del self._catalog[table_id]
@@ -662,8 +676,7 @@ class BaseCatalog(Catalog):
                         rel_path = file_path.relative_to(self._staging_dir)
                         self._staged_changes.append(
                             CommitOperationAdd(
-                                path_in_repo=str(rel_path),
-                                path_or_fileobj=str(file_path)
+                                path_in_repo=str(rel_path), path_or_fileobj=str(file_path)
                             )
                         )
 
@@ -679,9 +692,7 @@ class BaseCatalog(Catalog):
 
             # Record deletion of old table directory
             old_table_dir = f"{from_namespace}/{from_table}/"
-            self._staged_changes.append(
-                CommitOperationDelete(path_in_repo=old_table_dir)
-            )
+            self._staged_changes.append(CommitOperationDelete(path_in_repo=old_table_dir))
 
             # Remove old table from catalog
             del self._catalog[from_id]
@@ -710,9 +721,7 @@ class BaseCatalog(Catalog):
         # For now, just drop the table (don't delete files)
         self.drop_table(identifier)
 
-    def commit_table(
-        self, request: CommitTableRequest
-    ) -> CommitTableResponse:
+    def commit_table(self, request: CommitTableRequest) -> CommitTableResponse:
         """Commit table updates.
 
         Args:
@@ -760,7 +769,6 @@ class BaseCatalog(Catalog):
     def sync(
         self,
         config: Optional[CatalogConfig] = None,
-        token: Optional[str] = None,
         table_name: Optional[str] = None,
     ) -> List[Table]:
         """Sync Iceberg tables with HuggingFace datasets in config.
@@ -770,7 +778,6 @@ class BaseCatalog(Catalog):
 
         Args:
             config: Catalog configuration defining which datasets to sync (uses self.config if not provided)
-            token: HuggingFace API token (optional, uses HF_TOKEN env var if not provided)
             table_name: Specific table to sync (None for all), format: "namespace.table_name"
 
         Returns:
@@ -820,9 +827,7 @@ class BaseCatalog(Catalog):
         else:
             # Process all tables
             tables_to_process = [
-                (ns.name, tbl)
-                for ns in sync_config.namespaces
-                for tbl in ns.tables
+                (ns.name, tbl) for ns in sync_config.namespaces for tbl in ns.tables
             ]
 
         # Create tables (each method manages its own staging)
@@ -831,7 +836,7 @@ class BaseCatalog(Catalog):
             dataset_info = DatasetInfo.discover(
                 repo_id=table_config.dataset,
                 configs=[table_config.config],  # Only discover the specific config
-                token=token,
+                token=self._hf_token,
             )
 
             # Convert to TableInfo using explicit namespace and table name
@@ -839,7 +844,7 @@ class BaseCatalog(Catalog):
                 namespace=namespace,
                 table_name=table_config.name,
                 config=table_config.config,
-                token=token,
+                token=self._hf_token,
             )
 
             # Sync table (create new or update existing)
@@ -940,8 +945,7 @@ class BaseCatalog(Catalog):
                     rel_path = file_path.relative_to(self._staging_dir)
                     self._staged_changes.append(
                         CommitOperationAdd(
-                            path_in_repo=str(rel_path),
-                            path_or_fileobj=str(file_path)
+                            path_in_repo=str(rel_path), path_or_fileobj=str(file_path)
                         )
                     )
 
@@ -998,8 +1002,7 @@ class BaseCatalog(Catalog):
                     rel_path = file_path.relative_to(self._staging_dir)
                     self._staged_changes.append(
                         CommitOperationAdd(
-                            path_in_repo=str(rel_path),
-                            path_or_fileobj=str(file_path)
+                            path_in_repo=str(rel_path), path_or_fileobj=str(file_path)
                         )
                     )
 
@@ -1022,6 +1025,7 @@ class LocalCatalog(BaseCatalog):
         self,
         location: str | Path,
         config: Optional[CatalogConfig] = None,
+        hf_token: Optional[str] = None,
         **properties: str,
     ):
         """Initialize local catalog.
@@ -1035,11 +1039,33 @@ class LocalCatalog(BaseCatalog):
         self.catalog_dir = Path(location).resolve()
         path_str = self.catalog_dir.as_posix()
         catalog_uri = f"file:///{path_str.lstrip('/')}"
-
-        super().__init__(uri=catalog_uri, config=config, **properties)
+        super().__init__(uri=catalog_uri, config=config, hf_token=hf_token, **properties)
 
         # Ensure catalog directory exists
         self.catalog_dir.mkdir(parents=True, exist_ok=True)
+
+        # Auto-initialize if catalog.json doesn't exist (backwards compatibility)
+        catalog_file = self.catalog_dir / "catalog.json"
+        if not catalog_file.exists():
+            self._init_catalog()
+
+    def _init_catalog(self) -> None:
+        """Initialize local catalog storage.
+
+        Ensures the catalog directory exists and creates an empty catalog.json file.
+        """
+        # Ensure catalog directory exists
+        self.catalog_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create empty catalog.json
+        catalog_file = self.catalog_dir / "catalog.json"
+        data = {
+            "type": "local",
+            "uri": self.uri,
+            "tables": {},
+        }
+        with open(catalog_file, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
 
     def _load_catalog(self) -> Dict[str, str]:
         """Load catalog from catalog directory.
@@ -1048,17 +1074,23 @@ class LocalCatalog(BaseCatalog):
 
         Returns:
             Dictionary mapping table identifier to metadata path
+
+        Raises:
+            FileNotFoundError: If catalog.json doesn't exist
         """
         catalog_file = self.catalog_dir / "catalog.json"
-        if catalog_file.exists():
-            with open(catalog_file) as f:
-                data = json.load(f)
+        if not catalog_file.exists():
+            raise FileNotFoundError(
+                f"Catalog not found at {catalog_file}. "
+                f"Initialize the catalog first by calling catalog.init()"
+            )
 
-            # Assert type matches
-            assert data["type"] == "local", f"Expected catalog type 'local', got '{data['type']}'"
-            self._catalog = data.get("tables", {})
-        else:
-            self._catalog = {}
+        with open(catalog_file) as f:
+            data = json.load(f)
+
+        # Assert type matches
+        assert data["type"] == "local", f"Expected catalog type 'local', got '{data['type']}'"
+        self._catalog = data.get("tables", {})
 
         return self._catalog
 
@@ -1079,16 +1111,12 @@ class LocalCatalog(BaseCatalog):
             "uri": self.uri,
             "tables": self._catalog,
         }
-
         with open(catalog_file, "w") as f:
             json.dump(data, f, indent=2, sort_keys=True)
 
         # Record the change
         self._staged_changes.append(
-            CommitOperationAdd(
-                path_in_repo="catalog.json",
-                path_or_fileobj=str(catalog_file)
-            )
+            CommitOperationAdd(path_in_repo="catalog.json", path_or_fileobj=str(catalog_file))
         )
 
     def _persist_changes(self) -> None:
@@ -1165,7 +1193,7 @@ class RemoteCatalog(BaseCatalog):
 
     def __init__(
         self,
-        hf_repo_id: str,
+        hf_repo: str,
         hf_token: Optional[str] = None,
         config: Optional[CatalogConfig] = None,
         **properties: str,
@@ -1173,38 +1201,84 @@ class RemoteCatalog(BaseCatalog):
         """Initialize remote catalog.
 
         Args:
-            hf_repo_id: HuggingFace repository ID (dataset) where catalog is stored
+            hf_repo: HuggingFace repository ID (dataset) where catalog is stored
             hf_token: HuggingFace authentication token (optional)
             config: Optional catalog configuration (only needed for sync operations)
             **properties: Additional catalog properties
         """
         # Construct HuggingFace Hub URI
-        catalog_uri = f"hf://datasets/{hf_repo_id}"
-
-        super().__init__(uri=catalog_uri, config=config, **properties)
+        catalog_uri = f"hf://datasets/{hf_repo}"
+        super().__init__(uri=catalog_uri, config=config, hf_token=hf_token, **properties)
 
         # Hub-specific attributes
-        self.hf_repo_id = hf_repo_id
-        self.hf_token = hf_token
+        self._hf_repo = hf_repo
+        self._hf_api = HfApi(token=hf_token)
         self._loaded_revision = None  # Track revision loaded from hub
+
+    def _init_catalog(self) -> None:
+        """Initialize remote catalog storage.
+
+        Creates a new HuggingFace dataset repository with an empty catalog.json.
+
+        Raises:
+            ValueError: If repository already exists
+        """
+        # Create the repository
+        self._hf_api.create_repo(
+            repo_id=self._hf_repo,
+            repo_type="dataset",
+            exist_ok=False,
+        )
+
+        # Create empty catalog.json in a temporary directory
+        with tempfile.TemporaryDirectory(prefix="faceberg_init_") as temp_dir:
+            catalog_file = Path(temp_dir) / "catalog.json"
+            data = {
+                "type": "remote",
+                "uri": self.uri,
+                "tables": {},
+            }
+
+            with open(catalog_file, "w") as f:
+                json.dump(data, f, indent=2, sort_keys=True)
+
+            # Upload the empty catalog to the repository
+            self._hf_api.upload_file(
+                path_or_fileobj=str(catalog_file),
+                path_in_repo="catalog.json",
+                repo_id=self._hf_repo,
+                repo_type="dataset",
+                commit_message="Initialize catalog",
+            )
 
     def _load_catalog(self) -> Dict[str, str]:
         """Load catalog from HuggingFace Hub.
 
-        Downloads catalog.json from hub using hf_hub_download and tracks the revision.
-        Falls back to local cache if hub is unavailable.
+        Downloads catalog.json from hub using HfApi and tracks the revision.
         Always sets self._catalog and returns it.
 
         Returns:
             Dictionary mapping table identifier to metadata path
+
+        Raises:
+            FileNotFoundError: If catalog.json doesn't exist in the repository
         """
         # Download catalog.json from hub
-        local_path = hf_hub_download(
-            repo_id=self.hf_repo_id,
-            filename="catalog.json",
-            repo_type="dataset",
-            token=self.hf_token,
-        )
+        try:
+            local_path = self._hf_api.hf_hub_download(
+                repo_id=self._hf_repo,
+                filename="catalog.json",
+                repo_type="dataset",
+            )
+        except Exception as e:
+            # Check if it's a "file not found" error
+            if "not found" in str(e).lower() or "404" in str(e):
+                raise FileNotFoundError(
+                    f"Catalog not found in repository {self._hf_repo}. "
+                    f"Initialize the catalog first by calling catalog.init()"
+                ) from e
+            # Re-raise other exceptions
+            raise
 
         # Load the catalog
         with open(local_path) as f:
@@ -1249,10 +1323,7 @@ class RemoteCatalog(BaseCatalog):
 
         # Record the change
         self._staged_changes.append(
-            CommitOperationAdd(
-                path_in_repo="catalog.json",
-                path_or_fileobj=str(catalog_file)
-            )
+            CommitOperationAdd(path_in_repo="catalog.json", path_or_fileobj=str(catalog_file))
         )
 
     def _persist_changes(self) -> None:
@@ -1263,9 +1334,8 @@ class RemoteCatalog(BaseCatalog):
         Files are automatically cached by HuggingFace Hub's download mechanism.
         """
         # Create commit with all staged operations, using loaded revision as parent
-        api = HfApi(token=self.hf_token)
-        commit_info = api.create_commit(
-            repo_id=self.hf_repo_id,
+        commit_info = self._hf_api.create_commit(
+            repo_id=self._hf_repo,
             repo_type="dataset",
             operations=self._staged_changes,
             commit_message="Sync catalog metadata",
@@ -1288,11 +1358,10 @@ class RemoteCatalog(BaseCatalog):
             Path to table directory in HF cache
         """
         # Download the catalog.json to get the snapshot directory where the table is cached
-        catalog_path = hf_hub_download(
-            repo_id=self.hf_repo_id,
+        catalog_path = self._hf_api.hf_hub_download(
+            repo_id=self._hf_repo,
             filename="catalog.json",
             repo_type="dataset",
-            token=self.hf_token,
             revision=self._loaded_revision,
         )
         # The catalog is in the snapshot directory, table dirs are siblings
@@ -1302,5 +1371,3 @@ class RemoteCatalog(BaseCatalog):
 
 # Alias for main API
 FacebergCatalog = LocalCatalog
-
-

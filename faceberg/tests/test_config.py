@@ -119,11 +119,8 @@ namespace1:
         assert len(config.namespaces) == 1
         assert config.namespaces[0].name == "namespace1"
 
-        with pytest.raises(ValueError, match="Missing 'location' in catalog config"):
-            CatalogConfig.from_yaml(config_file)
-
     def test_from_yaml_no_namespaces(self, tmp_path):
-        """Test parsing YAML with no namespaces defined."""
+        """Test parsing YAML with no namespaces defined (only reserved catalog key)."""
         yaml_content = """
 catalog:
   name: test_catalog
@@ -132,16 +129,14 @@ catalog:
         config_file = tmp_path / "no_namespaces.yml"
         config_file.write_text(yaml_content)
 
-        with pytest.raises(ValueError, match="No namespaces defined"):
+        with pytest.raises(
+            ValueError, match="Cannot use 'catalog' as namespace name \\(reserved\\)"
+        ):
             CatalogConfig.from_yaml(config_file)
 
     def test_from_yaml_invalid_namespace_name(self, tmp_path):
         """Test parsing YAML with invalid namespace name (special characters)."""
         yaml_content = """
-catalog:
-  name: test_catalog
-  location: .faceberg/
-
 namespace@invalid:
   table1:
     dataset: org/repo1

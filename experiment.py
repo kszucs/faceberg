@@ -7,6 +7,7 @@ This script shows that Apache Iceberg allows you to:
 
 This is achieved using the 'write.data.path' table property per table.
 """
+
 import os
 import pyarrow as pa
 
@@ -90,15 +91,19 @@ try:
     )
 except Exception:
     taxi_table = catalog.load_table("default.taxi")
-    taxi_table = taxi_table.transaction().set_properties(
-        **{"write.data.path": TABLE1_DATA}
-    ).commit_transaction()
+    taxi_table = (
+        taxi_table.transaction()
+        .set_properties(**{"write.data.path": TABLE1_DATA})
+        .commit_transaction()
+    )
 
 # Write taxi data
-taxi_arrow_schema = pa.schema([
-    pa.field("vendor_id", pa.int64(), nullable=False),
-    pa.field("pickup_zone", pa.string(), nullable=True),
-])
+taxi_arrow_schema = pa.schema(
+    [
+        pa.field("vendor_id", pa.int64(), nullable=False),
+        pa.field("pickup_zone", pa.string(), nullable=True),
+    ]
+)
 
 taxi_data = pa.table(
     {
@@ -124,15 +129,19 @@ try:
     )
 except Exception:
     weather_table = catalog.load_table("default.weather")
-    weather_table = weather_table.transaction().set_properties(
-        **{"write.data.path": TABLE2_DATA}
-    ).commit_transaction()
+    weather_table = (
+        weather_table.transaction()
+        .set_properties(**{"write.data.path": TABLE2_DATA})
+        .commit_transaction()
+    )
 
 # Write weather data
-weather_arrow_schema = pa.schema([
-    pa.field("station_id", pa.int64(), nullable=False),
-    pa.field("temperature", pa.int64(), nullable=True),
-])
+weather_arrow_schema = pa.schema(
+    [
+        pa.field("station_id", pa.int64(), nullable=False),
+        pa.field("temperature", pa.int64(), nullable=True),
+    ]
+)
 
 weather_data = pa.table(
     {
@@ -218,4 +227,3 @@ print(f"\nSeparate data locations:")
 print(f"  - Taxi data:    /tmp/table1/")
 print(f"  - Weather data: /tmp/table2/")
 print("=" * 80)
-
