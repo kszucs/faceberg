@@ -28,7 +28,5 @@ jobs:
       run: uv pip install --system -e ".[dev]"
 
     - name: Run format check
-      run: just format-check
+      run: just check
 
-    - name: Run linter
-      run: just lint

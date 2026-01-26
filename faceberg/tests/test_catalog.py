@@ -239,7 +239,6 @@ def faceberg_catalog(faceberg_config_file, faceberg_test_dir):
 
 def test_faceberg_from_local(faceberg_config_file, faceberg_test_dir):
     """Test creating LocalCatalog from local config file."""
-    store = Catalog.from_yaml(faceberg_config_file)
     catalog = LocalCatalog(name=str(faceberg_test_dir), path=faceberg_test_dir)
 
     assert catalog.uri.startswith("file:///")

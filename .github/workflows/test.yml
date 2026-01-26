@@ -33,11 +33,5 @@ jobs:
       run: uv pip install --system -e ".[dev]"
 
     - name: Run tests with coverage
-      run: just test-cov
+      run: just test
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
-      with:
-        file: ./coverage.xml
-        fail_ci_if_error: false
