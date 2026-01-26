@@ -30,7 +30,6 @@ from faceberg import database as db
 from faceberg.bridge import DatasetInfo, TableInfo
 from faceberg.convert import IcebergMetadataWriter
 
-
 if TYPE_CHECKING:
     import pyarrow as pa
 
@@ -679,7 +678,6 @@ class BaseCatalog(Catalog):
         to_namespace, to_table_name = self._parse_identifier(to_identifier)
 
         with self._staging():
-
             # Check if source table exists
             try:
                 from_table = self._db.get_table(from_namespace, from_table_name)
@@ -688,7 +686,9 @@ class BaseCatalog(Catalog):
 
             # Check if destination table already exists
             if self._db.has_table(to_namespace, to_table_name):
-                raise TableAlreadyExistsError(f"Table {to_namespace}.{to_table_name} already exists")
+                raise TableAlreadyExistsError(
+                    f"Table {to_namespace}.{to_table_name} already exists"
+                )
 
             # Get source table directory
             source_table_dir = self._load_table_locally(from_namespace, from_table_name)
@@ -837,7 +837,9 @@ class BaseCatalog(Catalog):
             # Parse table name (format: namespace.table)
             parts = table_name.split(".")
             if len(parts) != 2:
-                raise ValueError(f"Invalid table name: {table_name}. Expected format: namespace.table")
+                raise ValueError(
+                    f"Invalid table name: {table_name}. Expected format: namespace.table"
+                )
 
             target_namespace, target_table = parts
 
@@ -906,7 +908,9 @@ class BaseCatalog(Catalog):
 
         # Check if table already exists
         if self.table_exists(identifier):
-            raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists in catalog")
+            raise TableAlreadyExistsError(
+                f"Table {namespace}.{table_name} already exists in catalog"
+            )
 
         # Discover dataset
         dataset_info = DatasetInfo.discover(
@@ -980,9 +984,7 @@ class BaseCatalog(Catalog):
         """
         with self._staging():
             # Parse identifier
-            namespace, table = self._parse_identifier(
-                table_info.identifier
-            )
+            namespace, table = self._parse_identifier(table_info.identifier)
 
             # Create namespace directory on-demand
             ns_dir = self._staging_dir / namespace
@@ -1066,9 +1068,7 @@ class BaseCatalog(Catalog):
 
         with self._staging():
             # Parse identifier and create paths
-            namespace, table = self._parse_identifier(
-                table_info.identifier
-            )
+            namespace, table = self._parse_identifier(table_info.identifier)
 
             # Create local metadata directory
             metadata_path = self._staging_dir / namespace / table

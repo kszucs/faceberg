@@ -7,7 +7,6 @@ PyIceberg's FsspecFileIO provides full support for the hf:// protocol,
 enabling both metadata reading and data scanning from HuggingFace datasets.
 """
 
-import pandas as pd
 import pyarrow as pa
 from pandas.api.types import is_string_dtype
 from pyiceberg.transforms import IdentityTransform

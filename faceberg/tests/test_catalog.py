@@ -611,6 +611,7 @@ class TestHfFileIO:
 
         # Verify we got a HfFileSystem instance
         from huggingface_hub import HfFileSystem
+
         assert isinstance(fs1, HfFileSystem)
 
         # Just verify that calling get_fs again works

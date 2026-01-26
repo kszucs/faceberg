@@ -19,7 +19,9 @@ class TestTable:
 
     def test_table_config_explicit(self):
         """Test Table with explicit config value."""
-        table = Table(dataset="org/repo", uri="file:///path/to/metadata", revision="def456", config="custom")
+        table = Table(
+            dataset="org/repo", uri="file:///path/to/metadata", revision="def456", config="custom"
+        )
         assert table.dataset == "org/repo"
         assert table.config == "custom"
         assert table.uri == "file:///path/to/metadata"
@@ -33,7 +35,9 @@ class TestNamespace:
         """Test Namespace creation."""
         tables = {
             "table1": Table(dataset="org/repo1", uri="file:///path1", revision="rev1"),
-            "table2": Table(dataset="org/repo2", uri="file:///path2", revision="rev2", config="custom"),
+            "table2": Table(
+                dataset="org/repo2", uri="file:///path2", revision="rev2", config="custom"
+            ),
         }
         namespace = Namespace(tables=tables)
 
@@ -238,8 +242,12 @@ ns123:
     def test_to_yaml(self, tmp_path):
         """Test exporting config to YAML."""
         tables = {
-            "table1": Table(dataset="org/repo1", uri="file:///path1", revision="rev1", config="config1"),
-            "table2": Table(dataset="org/repo2", uri="file:///path2", revision="rev2", config="default"),
+            "table1": Table(
+                dataset="org/repo1", uri="file:///path1", revision="rev1", config="config1"
+            ),
+            "table2": Table(
+                dataset="org/repo2", uri="file:///path2", revision="rev2", config="default"
+            ),
         }
         namespaces = {"test_ns": Namespace(tables=tables)}
 
@@ -342,8 +350,7 @@ namespace2:
         """Test set_table to update an existing table."""
         old_table = Table(dataset="org/repo1", uri="file:///path1", revision="rev1")
         catalog = Catalog(
-            uri=".faceberg",
-            namespaces={"ns1": Namespace(tables={"table1": old_table})}
+            uri=".faceberg", namespaces={"ns1": Namespace(tables={"table1": old_table})}
         )
 
         new_table = Table(dataset="org/repo2", uri="file:///path2", revision="rev2")
@@ -366,19 +373,13 @@ namespace2:
     def test_has_table_exists(self):
         """Test has_table returns True for existing table."""
         table = Table(dataset="org/repo", uri="file:///path", revision="rev1")
-        catalog = Catalog(
-            uri=".faceberg",
-            namespaces={"ns1": Namespace(tables={"table1": table})}
-        )
+        catalog = Catalog(uri=".faceberg", namespaces={"ns1": Namespace(tables={"table1": table})})
 
         assert catalog.has_table("ns1", "table1") is True
 
     def test_has_table_not_exists(self):
         """Test has_table returns False for non-existent table."""
-        catalog = Catalog(
-            uri=".faceberg",
-            namespaces={"ns1": Namespace(tables={})}
-        )
+        catalog = Catalog(uri=".faceberg", namespaces={"ns1": Namespace(tables={})})
 
         assert catalog.has_table("ns1", "nonexistent") is False
 
@@ -391,10 +392,7 @@ namespace2:
     def test_delete_table_success(self):
         """Test delete_table removes existing table."""
         table = Table(dataset="org/repo", uri="file:///path", revision="rev1")
-        catalog = Catalog(
-            uri=".faceberg",
-            namespaces={"ns1": Namespace(tables={"table1": table})}
-        )
+        catalog = Catalog(uri=".faceberg", namespaces={"ns1": Namespace(tables={"table1": table})})
 
         result = catalog.delete_table("ns1", "table1")
 
@@ -403,10 +401,7 @@ namespace2:
 
     def test_delete_table_not_found(self):
         """Test delete_table returns False for non-existent table."""
-        catalog = Catalog(
-            uri=".faceberg",
-            namespaces={"ns1": Namespace(tables={})}
-        )
+        catalog = Catalog(uri=".faceberg", namespaces={"ns1": Namespace(tables={})})
 
         result = catalog.delete_table("ns1", "nonexistent")
 

@@ -87,9 +87,7 @@ def add(ctx, dataset, table, config):
 
     # Add dataset to catalog and create Iceberg table
     try:
-        table = catalog.add_dataset(
-            identifier=table_identifier, dataset=dataset, config=config
-        )
+        table = catalog.add_dataset(identifier=table_identifier, dataset=dataset, config=config)
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise click.Abort()
@@ -359,7 +357,9 @@ def remove(ctx, identifier, yes):
             for table in tables:
                 table_str = ".".join(table) if isinstance(table, tuple) else table
                 console.print(f"    • {table_str}")
-            console.print("\n[yellow]Remove all tables first before removing the namespace[/yellow]")
+            console.print(
+                "\n[yellow]Remove all tables first before removing the namespace[/yellow]"
+            )
             raise click.Abort()
 
         # Prompt for confirmation

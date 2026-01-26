@@ -8,8 +8,8 @@ from faceberg.bridge import (
     build_split_partition_spec,
 )
 from faceberg.catalog import FacebergCatalog, HfFileIO, LocalCatalog, RemoteCatalog
-from faceberg.database import Catalog, Namespace, Table
 from faceberg.convert import IcebergMetadataWriter
+from faceberg.database import Catalog, Namespace, Table
 
 __all__ = [
     # Catalog

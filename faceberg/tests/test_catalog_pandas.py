@@ -49,9 +49,7 @@ def test_read_iceberg_with_env_vars(synced_catalog):
     catalog_path = synced_catalog.catalog_dir
 
     # Set environment variables
-    os.environ["PYICEBERG_CATALOG__TEST_CATALOG__PY_CATALOG_IMPL"] = (
-        "faceberg.catalog.LocalCatalog"
-    )
+    os.environ["PYICEBERG_CATALOG__TEST_CATALOG__PY_CATALOG_IMPL"] = "faceberg.catalog.LocalCatalog"
     os.environ["PYICEBERG_CATALOG__TEST_CATALOG__PATH"] = str(catalog_path)
 
     try:
