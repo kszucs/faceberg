@@ -33,14 +33,14 @@ def main(ctx, uri, token):
     if uri.startswith("hf://"):
         # Explicit HuggingFace protocol: hf://datasets/org/repo
         hf_repo = uri.replace("hf://datasets/", "")
-        catalog = RemoteCatalog(hf_repo, hf_token=token)
+        catalog = RemoteCatalog(name=hf_repo, hf_repo=hf_repo, hf_token=token)
     elif uri.startswith("file://"):
         # Explicit protocol or existing local path
-        catalog = LocalCatalog(uri, hf_token=token)
+        catalog = LocalCatalog(name=uri, path=uri, hf_token=token)
     elif Path(uri).is_dir():
-        catalog = LocalCatalog(uri, hf_token=token)
+        catalog = LocalCatalog(name=uri, path=uri, hf_token=token)
     else:
-        catalog = RemoteCatalog(uri, hf_token=token)
+        catalog = RemoteCatalog(name=uri, hf_repo=uri, hf_token=token)
 
     ctx.ensure_object(dict)
     ctx.obj["catalog"] = catalog

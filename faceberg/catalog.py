@@ -124,12 +124,13 @@ class BaseCatalog(Catalog):
     - _persist_changes(): Persist staged changes to final storage
     """
 
-    def __init__(self, uri: str, hf_token: Optional[str] = None, **properties: str):
+    def __init__(self, name: str, uri: str, hf_token: Optional[str] = None, **properties: str):
         """Initialize base catalog.
 
         Args:
+            name: Catalog name (identifier)
             uri: Full catalog URI (e.g., "file:///path/to/catalog" or "hf://datasets/org/repo")
-            store: Optional catalog store (only needed for sync operations)
+            hf_token: Optional HuggingFace token for private datasets
             **properties: Additional catalog properties
         """
         # Set default properties for HuggingFace hf:// protocol support
@@ -141,13 +142,10 @@ class BaseCatalog(Catalog):
             "hf.endpoint": os.environ.get("HF_ENDPOINT", "https://huggingface.co"),
         }
 
-        # Remove 'name' from properties if present (we use uri as name)
-        properties_copy = {k: v for k, v in properties.items() if k != "name"}
-
         # Merge default properties with user properties (user properties take precedence)
-        merged_properties = {**default_properties, **properties_copy}
+        merged_properties = {**default_properties, **properties}
 
-        super().__init__(name=uri, **merged_properties)
+        super().__init__(name=name, **merged_properties)
         self.uri = uri
 
         # Initialize empty store if none provided
@@ -1130,19 +1128,27 @@ class LocalCatalog(BaseCatalog):
     Stores catalog metadata in a local directory.
     """
 
-    def __init__(self, path: str | Path, hf_token: Optional[str] = None, **properties: str):
+    def __init__(
+        self,
+        name: str,
+        path: str | Path,
+        *,
+        hf_token: Optional[str] = None,
+        **properties: str,
+    ):
         """Initialize local catalog.
 
         Args:
-            location: Local directory path for catalog storage
-            store: Optional catalog store (only needed for sync operations)
+            name: Catalog name
+            path: Catalog directory path
+            hf_token: Optional HuggingFace token for private datasets
             **properties: Additional catalog properties
         """
         # Convert path to absolute file:// URI
         self.catalog_dir = Path(path).resolve()
         path_str = self.catalog_dir.as_posix()
         catalog_uri = f"file:///{path_str.lstrip('/')}"
-        super().__init__(uri=catalog_uri, hf_token=hf_token, **properties)
+        super().__init__(name=name, uri=catalog_uri, hf_token=hf_token, **properties)
 
         # Ensure catalog directory exists
         self.catalog_dir.mkdir(parents=True, exist_ok=True)
@@ -1281,18 +1287,25 @@ class RemoteCatalog(BaseCatalog):
     - Atomic commits with all changes
     """
 
-    def __init__(self, hf_repo: str, hf_token: Optional[str] = None, **properties: str):
+    def __init__(
+        self,
+        name: str,
+        hf_repo: str,
+        *,
+        hf_token: Optional[str] = None,
+        **properties: str,
+    ):
         """Initialize remote catalog.
 
         Args:
-            location: HuggingFace URI in format "hf://datasets/org/repo"
+            name: Catalog name
+            hf_repo: HuggingFace repository (e.g., "org/repo")
             hf_token: HuggingFace authentication token (optional)
-            store: Optional catalog store (only needed for sync operations)
             **properties: Additional catalog properties
         """
         # Construct HuggingFace Hub URI
         uri = f"hf://datasets/{hf_repo}"
-        super().__init__(uri=uri, hf_token=hf_token, **properties)
+        super().__init__(name=name, uri=uri, hf_token=hf_token, **properties)
 
         # Hub-specific attributes
         self._hf_repo = hf_repo

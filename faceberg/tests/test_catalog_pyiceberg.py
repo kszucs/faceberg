@@ -7,7 +7,9 @@ PyIceberg's FsspecFileIO provides full support for the hf:// protocol,
 enabling both metadata reading and data scanning from HuggingFace datasets.
 """
 
+import pandas as pd
 import pyarrow as pa
+from pandas.api.types import is_string_dtype
 from pyiceberg.transforms import IdentityTransform
 
 # =============================================================================
@@ -69,8 +71,8 @@ def test_scan_to_pandas(catalog):
     # Verify split column exists
     assert "split" in df.columns
 
-    # Verify data types are reasonable
-    assert df["text"].dtype == object  # String type
+    # Verify data types are reasonable (accepts both object and StringDtype)
+    assert is_string_dtype(df["text"].dtype)
 
 
 def test_scan_with_selected_fields(catalog):
