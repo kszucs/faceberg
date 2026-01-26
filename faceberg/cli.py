@@ -301,5 +301,80 @@ def scan(ctx, table_name, limit):
         console.print(f"[bold red]Error:[/bold red] {e}")
 
 
+@main.command("remove")
+@click.argument("identifier")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def remove(ctx, identifier, yes):
+    """Remove a table or namespace from the catalog.
+
+    Automatically detects whether the identifier is a table (namespace.table)
+    or a namespace. For namespaces, they must be empty before removal.
+
+    Examples:
+        # Remove a table
+        faceberg catalog.db remove default.dataset1
+
+        # Remove a namespace (must be empty)
+        faceberg catalog.db remove myns
+
+        # Skip confirmation prompt
+        faceberg catalog.db remove default.dataset1 --yes
+    """
+    catalog = ctx.obj["catalog"]
+
+    # Determine if identifier is a table or namespace
+    if "." in identifier:
+        # Likely a table identifier (namespace.table)
+        if catalog.table_exists(identifier):
+            # It's a table
+            if not yes:
+                if not click.confirm(f"Are you sure you want to remove table '{identifier}'?"):
+                    console.print("[yellow]Aborted[/yellow]")
+                    return
+
+            try:
+                catalog.drop_table(identifier)
+                console.print(f"[green]✓ Removed table {identifier}[/green]")
+            except Exception as e:
+                console.print(f"[bold red]Error:[/bold red] {e}")
+                raise click.Abort()
+        else:
+            console.print(f"[bold red]Error:[/bold red] Table {identifier} does not exist")
+            raise click.Abort()
+    else:
+        # It's a namespace identifier
+        namespaces = catalog.list_namespaces()
+        namespace_tuple = tuple([identifier])
+
+        if namespace_tuple not in namespaces:
+            console.print(f"[bold red]Error:[/bold red] Namespace {identifier} does not exist")
+            raise click.Abort()
+
+        # Check if namespace has tables
+        tables = catalog.list_tables(identifier)
+        if tables:
+            console.print(f"[bold red]Error:[/bold red] Namespace {identifier} is not empty")
+            console.print(f"  Contains {len(tables)} table(s):")
+            for table in tables:
+                table_str = ".".join(table) if isinstance(table, tuple) else table
+                console.print(f"    • {table_str}")
+            console.print("\n[yellow]Remove all tables first before removing the namespace[/yellow]")
+            raise click.Abort()
+
+        # Prompt for confirmation
+        if not yes:
+            if not click.confirm(f"Are you sure you want to remove namespace '{identifier}'?"):
+                console.print("[yellow]Aborted[/yellow]")
+                return
+
+        try:
+            catalog.drop_namespace(identifier)
+            console.print(f"[green]✓ Removed namespace {identifier}[/green]")
+        except Exception as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise click.Abort()
+
+
 if __name__ == "__main__":
     main()
