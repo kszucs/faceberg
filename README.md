@@ -28,157 +28,161 @@ pip install -e .
 
 ## Quick Start
 
-### Option 1: Read from Remote Catalog (HuggingFace Hub)
+Choose your path:
 
-Connect to an existing catalog hosted on HuggingFace:
+- **[Local Catalog Quickstart](QUICKSTART_LOCAL.md)** - Create a local Iceberg catalog using the CLI
+- **[Remote Catalog Quickstart](QUICKSTART_REMOTE.md)** - Create a remote catalog on HuggingFace Hub using the CLI
 
-```python
-from faceberg.catalog import RemoteCatalog
+## How It Works
 
-# Connect to remote catalog (no config needed for reading)
-catalog = RemoteCatalog(
-    hf_repo="your-org/your-catalog-dataset",
-    hf_token=None,  # Or your HF token for private repos
-)
+Faceberg bridges HuggingFace datasets with Apache Iceberg by creating lightweight metadata tables that reference the original dataset files. Here's what happens under the hood:
 
-# Load and query a table
-table = catalog.load_table("default.my_table")
-df = table.scan().to_pandas()
-print(df.head())
+### The Sync Process
+
+1. **Fetch Dataset Info**: Faceberg downloads the dataset metadata from HuggingFace (schema, splits, file locations)
+2. **Create Iceberg Metadata**: Generates Iceberg table metadata (schema, manifest lists, manifest files) that point to the original Parquet files
+3. **Store Metadata**: Saves the Iceberg metadata locally or on HuggingFace Hub
+4. **No Data Duplication**: The actual dataset files remain on HuggingFace; only lightweight metadata is stored in your catalog
+
+### Metadata Separation
+
+```
+HuggingFace Dataset Repo              Your Catalog (Local or HF)
+┌───────────────────────┐            ┌──────────────────────────┐
+│ org/dataset-name/     │            │ mycatalog/               │
+│ ├── data/             │            │ ├── faceberg.yml         │
+│ │   ├── train-*.pq ◄──┼────────────┼─│ └── default/           │
+│ │   └── test-*.pq  ◄──┼────────────┼─│     └── my_table/      │
+│ └── ...               │            │ │         └── metadata/  │
+└───────────────────────┘            │ │             ├── v1.metadata.json
+                                     │ │             ├── snap-*.avro  ◄─┐
+                                     │ │             └── *.avro  ◄──────┤
+                                     └─┴───────────────────────────────┘│
+                                                                         │
+                         Avro manifest files contain hf:// URIs ────────┘
+                         pointing to original Parquet files
 ```
 
-### Option 2: Create Remote Catalog (HuggingFace Hub)
+The Iceberg metadata structure:
+- **v1.metadata.json**: Table schema, current snapshot ID, and table properties
+- **snap-\*.avro** (manifest lists): Track which manifest files belong to each snapshot
+- **\*.avro** (manifest files): Contain `hf://` URIs pointing to original Parquet files, plus partition info and file statistics
+- **version-hint.text**: Quick reference to the latest metadata version
 
-Initialize a new catalog on HuggingFace and sync datasets:
+This design enables:
+- **Zero data duplication**: Original files stay where they are
+- **Efficient queries**: Iceberg's metadata allows predicate pushdown and partition pruning
+- **Standard tooling**: Query with DuckDB, PyIceberg, Spark, or any Iceberg-compatible engine
+- **Versioning**: Track dataset revisions via Iceberg snapshots
 
-```python
-from faceberg.catalog import RemoteCatalog
-import os
+## Usage Patterns
 
-# Create faceberg.yml config file first:
-# uri: hf://datasets/your-org/your-catalog-dataset
-#
-# default:
-#   imdb:
-#     dataset: stanfordnlp/imdb
-#     config: plain_text
+Faceberg supports both CLI and programmatic workflows:
 
-# Create remote catalog (initializes HF dataset repository)
-catalog = RemoteCatalog(
-    hf_repo="your-org/your-catalog-dataset",
-    hf_token=os.getenv("HF_TOKEN"),  # Required for creating repos
-)
+### CLI Workflow
 
-# Initialize the catalog (creates empty HF repo)
-catalog.init()
+Best for quick exploration and automation:
 
-# Sync datasets to create Iceberg tables
-tables = catalog.sync_datasets()
-print(f"Synced {len(tables)} tables")
+```bash
+# Initialize catalog
+faceberg mycatalog init
 
-# Query the table
-table = catalog.load_table("default.imdb")
-df = table.scan().to_pandas()
-print(df.head())
+# Add datasets
+faceberg mycatalog add org/dataset-name --config default
+
+# Sync to create Iceberg metadata
+faceberg mycatalog sync
+
+# Query
+faceberg mycatalog scan default.dataset_name
 ```
 
-### Option 3: Create Local Catalog from HuggingFace Datasets
+### Programmatic Workflow (Local Catalog)
 
-Sync HuggingFace datasets to a local Iceberg catalog:
+Best for notebooks and custom pipelines:
 
 ```python
 from faceberg.catalog import LocalCatalog
 from faceberg.database import Catalog, Namespace, Table
 
-# Create faceberg.yml config file first:
-# uri: mycatalog
-#
-# default:
-#   imdb:
-#     dataset: stanfordnlp/imdb
-#     config: plain_text
-
-# Or create programmatically and save
-catalog_dir = "mycatalog"
+# Define catalog configuration
 config = Catalog(
-    uri=f"file:///{catalog_dir}",
+    uri="file:///mycatalog",
     namespaces={
         "default": Namespace(
             tables={
                 "imdb": Table(
                     dataset="stanfordnlp/imdb",
-                    uri="",  # Empty until synced
                     config="plain_text",
                 ),
             }
         )
     },
 )
-config.to_yaml(f"{catalog_dir}/faceberg.yml")
 
-# Create local catalog
-catalog = LocalCatalog(path=catalog_dir)
+# Save and sync
+config.to_yaml("mycatalog/faceberg.yml")
+catalog = LocalCatalog(path="mycatalog")
+catalog.sync_datasets()
 
-# Sync datasets to create Iceberg tables
-tables = catalog.sync_datasets()
-print(f"Synced {len(tables)} tables")
-
-# Query the table
+# Query with PyIceberg
 table = catalog.load_table("default.imdb")
 df = table.scan().to_pandas()
 print(df.head())
 ```
 
-### Option 4: Read Existing Local Catalog
+### Programmatic Workflow (Remote Catalog)
 
-Read from a local catalog without syncing:
+Share catalogs on HuggingFace:
 
 ```python
-from faceberg.catalog import LocalCatalog
+from faceberg.catalog import RemoteCatalog
+import os
 
-# Open existing local catalog (no config needed)
-catalog = LocalCatalog(path="mycatalog/")
+# Create and sync remote catalog
+catalog = RemoteCatalog(
+    hf_repo="your-org/your-catalog",
+    hf_token=os.getenv("HF_TOKEN"),
+)
+catalog.init()
 
-# List available tables
-for ns in catalog.list_namespaces():
-    print(f"Namespace: {ns}")
-    for table_id in catalog.list_tables(ns):
-        print(f"  - {table_id}")
+# Add tables via config or programmatically
+# (config editing same as local, just with hf:// URIs)
 
-# Load and query a table
-table = catalog.load_table("default.imdb")
-df = table.scan().to_pandas()
+catalog.sync_datasets()
+
+# Anyone can now read your catalog
+public_catalog = RemoteCatalog(hf_repo="your-org/your-catalog")
+table = public_catalog.load_table("default.my_table")
 ```
 
-### Option 5: Query with DuckDB
+### Query with DuckDB
 
-DuckDB can read Iceberg tables created by Faceberg:
+Use standard Iceberg tooling:
 
 ```python
 import duckdb
 
-# Create DuckDB connection and load extensions
 conn = duckdb.connect()
-conn.execute("INSTALL httpfs")
-conn.execute("LOAD httpfs")
-conn.execute("INSTALL iceberg")
-conn.execute("LOAD iceberg")
+conn.execute("INSTALL httpfs; LOAD httpfs")
+conn.execute("INSTALL iceberg; LOAD iceberg")
 
-# Query the Iceberg table
-metadata_path = "mycatalog/default/imdb/metadata/v1.metadata.json"
-result = conn.execute(f"""
-    SELECT split, COUNT(*) as count
-    FROM iceberg_scan('{metadata_path}')
-    GROUP BY split
-    ORDER BY split
+# Query local catalog
+result = conn.execute("""
+    SELECT * FROM iceberg_scan('mycatalog/default/my_table/metadata/v1.metadata.json')
+    LIMIT 10
 """).fetchall()
 
-print(result)
+# Query remote catalog (works with hf:// URIs)
+result = conn.execute("""
+    SELECT * FROM iceberg_scan('hf://datasets/org/catalog/default/my_table/metadata/v1.metadata.json')
+    LIMIT 10
+""").fetchall()
 ```
 
-## CLI Usage
+## CLI Reference
 
-The CLI operates on catalog URIs. Use local paths for local catalogs or `hf://` URIs for remote catalogs:
+The CLI operates on catalog URIs. Use local paths for local catalogs or `org/repo` format for remote catalogs on HuggingFace:
 
 ```bash
 # Initialize a new local catalog
@@ -186,7 +190,11 @@ faceberg mycatalog init
 
 # Initialize a new remote catalog (creates HF dataset repository)
 export HF_TOKEN=your_token
-faceberg hf://datasets/org/catalog-repo init
+faceberg org/catalog-repo init
+
+# Add datasets to catalog
+faceberg mycatalog add openai/gsm8k --config main
+faceberg org/catalog-repo add deepmind/code_contests --config default
 
 # Sync datasets to local catalog (reads faceberg.yml from catalog directory)
 faceberg mycatalog sync
@@ -195,13 +203,13 @@ faceberg mycatalog sync
 faceberg mycatalog sync default.my_table
 
 # Sync to remote catalog (automatically pushes to HuggingFace)
-faceberg hf://datasets/org/catalog-repo sync
+faceberg org/catalog-repo sync
 
 # List tables in local catalog
 faceberg mycatalog list
 
 # List tables in remote catalog
-faceberg hf://datasets/org/catalog-repo list
+faceberg org/catalog-repo list
 
 # Show table info
 faceberg mycatalog info default.my_table
@@ -209,42 +217,6 @@ faceberg mycatalog info default.my_table
 # Scan and display sample data from a table
 faceberg mycatalog scan default.my_table
 faceberg mycatalog scan default.my_table --limit=10
-```
-
-### Config File Format
-
-Create a `faceberg.yml` file in your catalog directory (only needed for syncing):
-
-```yaml
-# Absolute Catalog URI (required)
-uri: file://path/to/mycatalog  # For local catalogs
-# uri: hf://datasets/org/repo  # For remote catalogs
-
-# Namespaces (dict of namespace_name -> tables)
-default:
-  imdb:
-    dataset: stanfordnlp/imdb
-    config: plain_text
-  glue:
-    dataset: glue
-    config: mrpc
-
-analytics:
-  sales:
-    dataset: your-org/sales-data
-    config: default
-```
-
-After syncing, the `uri` field in each table will be automatically populated with the metadata location:
-
-```yaml
-uri: mycatalog
-
-default:
-  imdb:
-    dataset: stanfordnlp/imdb
-    config: plain_text
-    uri: file:///mycatalog/default/imdb/metadata/v1.metadata.json
 ```
 
 ## Features
