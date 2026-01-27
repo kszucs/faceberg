@@ -1,5 +1,5 @@
 ---
-title: {space_display_name}
+title: Faceberg REST Catalog
 emoji: 🗃️
 colorFrom: blue
 colorTo: purple
@@ -7,77 +7,16 @@ sdk: docker
 app_port: 7860
 ---
 
-# Faceberg REST Catalog: {space_display_name}
+# Faceberg REST Catalog
 
-This Space serves an Apache Iceberg REST catalog powered by [Faceberg](https://github.com/kszucs/faceberg).
+An Apache Iceberg REST catalog that syncs table metadata from Hugging Face datasets using [Faceberg](https://github.com/kszucs/faceberg).
 
-## Configuration
+This Space provides a read-only REST API for querying Iceberg tables stored as datasets on Hugging Face Hub. Connect using any Iceberg-compatible client (PyIceberg, Spark, etc.) to access your data.
 
-This Space is configured with the following environment variables:
+## About
 
-- `CATALOG_URI`: `{catalog_uri}`
-- `HF_TOKEN`: (set as secret if needed for private catalogs)
+Faceberg enables storing Apache Iceberg table metadata directly on Hugging Face Hub as datasets, making your data lake tables easily shareable and version-controlled.
 
-## API Endpoints
-
-The catalog is accessible at:
-```
-https://{api_url}.hf.space/v1
-```
-
-### Available Endpoints
-
-- `GET /v1/config` - Get catalog configuration
-- `GET /v1/namespaces` - List all namespaces
-- `GET /v1/namespaces/{{namespace}}` - Load namespace properties
-- `HEAD /v1/namespaces/{{namespace}}` - Check if namespace exists
-- `GET /v1/namespaces/{{namespace}}/tables` - List tables in namespace
-- `GET /v1/namespaces/{{namespace}}/tables/{{table}}` - Load table metadata
-- `HEAD /v1/namespaces/{{namespace}}/tables/{{table}}` - Check if table exists
-
-## Usage Example
-
-### Connect with PyIceberg
-
-```python
-from pyiceberg.catalog.rest import RestCatalog
-
-# Connect to the catalog
-catalog = RestCatalog(
-    name="faceberg",
-    uri="https://{api_url}.hf.space",
-)
-
-# List namespaces
-namespaces = catalog.list_namespaces()
-print(f"Namespaces: {{namespaces}}")
-
-# List tables
-for ns in namespaces:
-    tables = catalog.list_tables(ns)
-    print(f"Tables in {{ns}}: {{tables}}")
-```
-
-### Test with curl
-
-```bash
-# Get catalog configuration
-curl https://{api_url}.hf.space/v1/config
-
-# List namespaces
-curl https://{api_url}.hf.space/v1/namespaces
-
-# List tables in a namespace
-curl https://{api_url}.hf.space/v1/namespaces/my_namespace/tables
-```
-
-## About Faceberg
-
-Faceberg is a lightweight Python library for working with Apache Iceberg catalogs on HuggingFace Hub.
-
-- **GitHub**: [https://github.com/kszucs/faceberg](https://github.com/kszucs/faceberg)
-- **Apache Iceberg**: [https://iceberg.apache.org/](https://iceberg.apache.org/)
-
----
-
-*Server listening on 0.0.0.0:7860*
+Learn more:
+- [Faceberg on GitHub](https://github.com/kszucs/faceberg)
+- [Apache Iceberg](https://iceberg.apache.org/)

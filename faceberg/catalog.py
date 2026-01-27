@@ -1386,22 +1386,13 @@ class RemoteCatalog(BaseCatalog):
         )
 
     def _init_spaces(self) -> None:
-        variables = {
-            "space_display_name": self._hf_repo.split("/")[1].replace("-", " ").title(),
-            "catalog_uri": self.uri,
-            "api_url": self._hf_repo.replace("/", "-"),
-        }
-
         spaces_dir = Path(__file__).parent / "spaces"
         # iterate over all files in the spaces_dir
         for path in spaces_dir.rglob("*"):
             path_in_repo = str(path.relative_to(spaces_dir))
             if path.is_file():
-                content = path.read_text().format(**variables)
-                rendered = self._staging_dir / path_in_repo
-                rendered.write_text(content)
                 self._staged_changes.append(
-                    CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=rendered)
+                    CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=path)
                 )
 
     def _load_database(self) -> db.Catalog:

@@ -7,4 +7,4 @@ RUN uv pip install --system --no-cache \
 
 EXPOSE 7860
 
-CMD sh -c 'faceberg hf://spaces/${{SPACE_ID}} serve --host 0.0.0.0 --port 7860'
+CMD sh -c 'faceberg hf://spaces/${SPACE_ID} serve --host 0.0.0.0 --port 7860'
