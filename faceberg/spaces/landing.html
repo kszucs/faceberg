@@ -660,8 +660,8 @@
             if (shellInitialized) return;
 
             try {
-                // Load DuckDB modules using proper bundle
-                const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-esm.js');
+                // Load DuckDB modules using jsdelivr +esm (handles dependencies automatically)
+                const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.1-dev35.0/+esm');
 
                 // Get shell container
                 const container = document.getElementById('shell-container');
@@ -697,8 +697,10 @@
                 await conn.close();
 
                 // Load XTerm.js for terminal UI
-                const { Terminal } = await import('https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js');
-                const { FitAddon } = await import('https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js');
+                const xtermModule = await import('https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm');
+                const Terminal = xtermModule.Terminal;
+                const fitModule = await import('https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm');
+                const FitAddon = fitModule.FitAddon;
 
                 // Create terminal
                 const terminal = new Terminal({
@@ -723,7 +725,7 @@
 
                 const prompt = () => terminal.write('\r\n\x1b[32mD\x1b[0m ');
 
-                terminal.writeln('DuckDB v1.29.0 Shell');
+                terminal.writeln('DuckDB v1.31.1 Shell (WASM)');
                 terminal.writeln('Connected to in-memory database');
                 terminal.writeln('Extensions loaded: iceberg, httpfs');
                 terminal.writeln('Catalog attached: Use catalog.namespace.table to query');
