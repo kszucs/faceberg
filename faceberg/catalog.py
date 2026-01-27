@@ -1375,7 +1375,11 @@ class RemoteCatalog(BaseCatalog):
         """
         if self._hf_repo_type == "space":
             # Initialize Spaces repository with README and Dockerfile
-            self._init_spaces()
+            spaces_dir = Path(__file__).parent / "spaces"
+            self._staged_changes.extend([
+                CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=spaces_dir / "README.md"),
+                CommitOperationAdd(path_in_repo="Dockerfile", path_or_fileobj=spaces_dir / "Dockerfile"),
+            ])
 
         # Create the repository
         self._hf_api.create_repo(
@@ -1384,16 +1388,6 @@ class RemoteCatalog(BaseCatalog):
             space_sdk="docker",
             exist_ok=False,
         )
-
-    def _init_spaces(self) -> None:
-        spaces_dir = Path(__file__).parent / "spaces"
-        # iterate over all files in the spaces_dir
-        for path in spaces_dir.rglob("*"):
-            path_in_repo = str(path.relative_to(spaces_dir))
-            if path.is_file():
-                self._staged_changes.append(
-                    CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=path)
-                )
 
     def _load_database(self) -> db.Catalog:
         """Load catalog from HuggingFace Hub.

@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ catalog_uri }} - Faceberg Catalog</title>
+    <meta name="description" content="Interactive Apache Iceberg catalog browser with DuckDB-WASM query capabilities">
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- XTerm.js CSS for DuckDB shell -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .gradient-header {
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            flex-shrink: 0;
+        }
+
+        /* Main layout container */
+        .main-container {
+            display: flex;
+            height: calc(100vh - 80px);
+            overflow: hidden;
+        }
+
+        /* Left sidebar - 1/3 width */
+        .left-sidebar {
+            width: 33.333%;
+            display: flex;
+            flex-direction: column;
+            border-right: 2px solid #e5e7eb;
+            background: #f9fafb;
+        }
+
+        /* Right sidebar - 2/3 width */
+        .right-sidebar {
+            width: 66.667%;
+            display: flex;
+            flex-direction: column;
+            background: #ffffff;
+        }
+
+        /* Catalog hierarchy section */
+        .catalog-hierarchy {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+
+        /* Table details section */
+        .table-details {
+            height: 40%;
+            border-top: 2px solid #e5e7eb;
+            overflow-y: auto;
+            padding: 1rem;
+            background: #ffffff;
+        }
+
+        /* Shell container */
+        #shell-container {
+            flex: 1;
+            background-color: #1e1e1e;
+            overflow: hidden;
+        }
+
+        /* XTerm.js overrides */
+        .xterm {
+            height: 100%;
+            padding: 10px;
+        }
+
+        .xterm .xterm-viewport {
+            overflow-y: auto;
+        }
+
+        /* Collapsible sections */
+        details > summary {
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            list-style: none;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+
+        details > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        details > summary:hover {
+            background-color: #e5e7eb;
+        }
+
+        details > summary::before {
+            content: '▶ ';
+            display: inline-block;
+            transition: transform 0.2s ease;
+        }
+
+        details[open] > summary::before {
+            transform: rotate(90deg);
+        }
+
+        /* Table item styling */
+        .table-item {
+            cursor: pointer;
+            padding: 0.5rem;
+            margin: 0.25rem 0;
+            border-radius: 4px;
+            transition: background-color 0.2s ease;
+        }
+
+        .table-item:hover {
+            background-color: #dbeafe;
+        }
+
+        .table-item.selected {
+            background-color: #3b82f6;
+            color: white;
+        }
+
+        /* Schema table */
+        .schema-table {
+            font-size: 14px;
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        .schema-table th,
+        .schema-table td {
+            padding: 8px 12px;
+            border: 1px solid #e5e7eb;
+            text-align: left;
+        }
+
+        .schema-table th {
+            background-color: #f9fafb;
+            font-weight: 600;
+        }
+
+        /* Quick tips section */
+        .quick-tips {
+            background: #eff6ff;
+            border: 1px solid #3b82f6;
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem;
+            flex-shrink: 0;
+        }
+
+        /* Loading spinner */
+        .spinner {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #8b5cf6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="gradient-header text-white shadow-lg">
+        <div class="px-4 py-4">
+            <h1 class="text-2xl font-bold mb-1">🗃️ Faceberg - Interactive Iceberg Catalog</h1>
+            <div class="text-sm text-blue-100 flex gap-4">
+                <span><strong>Catalog:</strong> <code class="bg-blue-800 bg-opacity-50 px-2 py-0.5 rounded text-xs">{{ catalog_uri }}</code></span>
+                <span><strong>Namespaces:</strong> {{ namespaces|length }}</span>
+                <span><strong>Tables:</strong> {{ total_tables }}</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Left Sidebar: Catalog Hierarchy + Table Details -->
+        <div class="left-sidebar">
+            <!-- Catalog Hierarchy -->
+            <div class="catalog-hierarchy">
+                <h2 class="text-lg font-bold mb-3 text-gray-800">📚 Catalog Hierarchy</h2>
+
+                {% if namespaces|length == 0 %}
+                <div class="text-center py-8 text-gray-500">
+                    <p>No namespaces found</p>
+                    <p class="text-sm mt-2">Add datasets using <code class="bg-gray-200 px-2 py-1 rounded">faceberg add</code></p>
+                </div>
+                {% else %}
+                <div class="space-y-2">
+                    {% for namespace in namespaces %}
+                    <details open>
+                        <summary class="font-semibold text-gray-700">
+                            {{ namespace.name }} <span class="text-sm font-normal text-gray-500">({{ namespace.table_count }})</span>
+                        </summary>
+                        <div class="ml-4 mt-1 space-y-1">
+                            {% for table in namespace.tables %}
+                            <div class="table-item"
+                                 onclick="selectTable('{{ namespace.name }}.{{ table.name }}')"
+                                 data-table-id="{{ namespace.name }}.{{ table.name }}">
+                                <div class="font-medium">{{ table.name }}</div>
+                                <div class="text-xs text-gray-600">{{ table.row_count }} rows</div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </details>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Table Details -->
+            <div class="table-details" id="table-details">
+                <div class="text-center text-gray-500 py-8">
+                    <p>Select a table to view details</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Sidebar: DuckDB Shell -->
+        <div class="right-sidebar">
+            <!-- Quick Tips -->
+            <div class="quick-tips">
+                <div class="flex items-start gap-2">
+                    <div class="flex-1">
+                        <p class="font-semibold text-blue-900 mb-2">💡 DuckDB Shell with Iceberg Support</p>
+                        <p class="text-sm text-gray-700 mb-2">Query Iceberg tables using SQL. Extensions loaded: <code class="bg-white px-1 rounded">iceberg</code>, <code class="bg-white px-1 rounded">httpfs</code></p>
+                        <p class="text-xs text-gray-600">
+                            <strong>Quick tips:</strong> Use ↑↓ for history, Tab for autocomplete, Ctrl+C to cancel
+                        </p>
+                    </div>
+                </div>
+                {% if namespaces|length > 0 %}
+                <div class="mt-2 pt-2 border-t border-blue-200">
+                    <p class="text-xs font-semibold text-gray-700 mb-1">Example query:</p>
+                    <code class="block bg-gray-900 text-green-400 px-2 py-1 rounded text-xs">
+                        {% set first_table = namespaces[0].tables[0] %}
+SELECT * FROM iceberg_scan('{{ first_table.metadata_location }}') LIMIT 10;
+                    </code>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Shell Container -->
+            <div id="shell-container"></div>
+        </div>
+    </div>
+
+    <!-- Table data as JSON -->
+    <script id="tables-data" type="application/json">
+{
+{% set comma = joiner(",") %}
+{% for namespace in namespaces %}
+{% for table in namespace.tables %}
+{{ comma() }}"{{ namespace.name }}.{{ table.name }}": {{ table|tojson }}
+{% endfor %}
+{% endfor %}
+}
+    </script>
+
+    <!-- JavaScript -->
+    <script type="module">
+        // Global state
+        let shellInitialized = false;
+        let selectedTableId = null;
+
+        // Parse table data from JSON script
+        const tablesData = JSON.parse(document.getElementById('tables-data').textContent);
+
+        // Select table and show details
+        window.selectTable = function(tableId) {
+            const tableData = tablesData[tableId];
+            if (!tableData) return;
+
+            // Update UI selection
+            document.querySelectorAll('.table-item').forEach(item => {
+                if (item.dataset.tableId === tableId) {
+                    item.classList.add('selected');
+                    selectedTableId = tableId;
+                } else {
+                    item.classList.remove('selected');
+                }
+            });
+
+            // Show table details
+            showTableDetails(tableData);
+        };
+
+        // Show table details in bottom left panel
+        function showTableDetails(table) {
+            const detailsPanel = document.getElementById('table-details');
+
+            let html = `
+                <div>
+                    <h3 class="font-bold text-lg mb-3 text-gray-800">${table.identifier}</h3>
+
+                    <!-- Metadata Grid -->
+                    <div class="grid grid-cols-2 gap-2 text-sm mb-4">
+                        <div>
+                            <span class="font-semibold text-gray-700">Rows:</span>
+                            <span class="ml-1">${table.row_count}</span>
+                        </div>
+                        <div>
+                            <span class="font-semibold text-gray-700">Files:</span>
+                            <span class="ml-1">${table.file_count}</span>
+                        </div>
+                        <div class="col-span-2">
+                            <span class="font-semibold text-gray-700">Columns:</span>
+                            <span class="ml-1">${table.columns.length}</span>
+                        </div>
+            `;
+
+            if (table.dataset_repo) {
+                html += `
+                        <div class="col-span-2">
+                            <span class="font-semibold text-gray-700">Dataset:</span>
+                            <a href="https://huggingface.co/datasets/${table.dataset_repo}"
+                               target="_blank"
+                               class="text-blue-600 hover:underline ml-1 text-xs">
+                                ${table.dataset_repo}
+                            </a>
+                        </div>
+                `;
+            }
+
+            html += `
+                    </div>
+
+                    <!-- Schema Table -->
+                    <div>
+                        <div class="font-semibold text-gray-700 mb-2 text-sm">Schema:</div>
+                        <div class="overflow-x-auto">
+                            <table class="schema-table">
+                                <thead>
+                                    <tr>
+                                        <th>Column</th>
+                                        <th>Type</th>
+                                        <th>Required</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+            `;
+
+            table.columns.forEach(col => {
+                html += `
+                                    <tr>
+                                        <td class="font-mono text-sm">${escapeHtml(col.name)}</td>
+                                        <td class="text-gray-600 text-sm">${escapeHtml(col.type)}</td>
+                                        <td>${col.required ? '<span class="text-green-600">✓</span>' : '<span class="text-gray-400">-</span>'}</td>
+                                    </tr>
+                `;
+            });
+
+            html += `
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Query Button -->
+                    <button onclick="insertQuery('${table.metadata_location}')"
+                            class="mt-4 w-full bg-purple-600 hover:bg-purple-700 text-white font-medium px-4 py-2 rounded transition">
+                        🔍 Insert Query for this Table
+                    </button>
+                </div>
+            `;
+
+            detailsPanel.innerHTML = html;
+        }
+
+        // Insert query into shell
+        window.insertQuery = function(metadataLocation) {
+            // This will insert the query into the terminal
+            // Note: Direct insertion into xterm is complex, so we'll copy to clipboard
+            const query = `SELECT * FROM iceberg_scan('${metadataLocation}') LIMIT 10;`;
+            navigator.clipboard.writeText(query).then(() => {
+                alert('Query copied to clipboard! Paste it into the shell with Cmd/Ctrl+V');
+            }).catch(err => {
+                console.error('Failed to copy query:', err);
+            });
+        };
+
+        // Initialize DuckDB Shell
+        async function initializeShell() {
+            if (shellInitialized) return;
+
+            try {
+                // Load DuckDB modules
+                const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@latest/+esm');
+                const shell = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm-shell@latest/+esm');
+
+                // Get shell container
+                const container = document.getElementById('shell-container');
+
+                // Fetch the shell WASM module as ArrayBuffer
+                const shellWasmUrl = 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm-shell@latest/dist/shell_bg.wasm';
+                const shellWasmResponse = await fetch(shellWasmUrl);
+                const shellWasmBuffer = await shellWasmResponse.arrayBuffer();
+
+                // Embed shell with DuckDB initialization
+                await shell.embed({
+                    shellModule: shellWasmBuffer,
+                    container: container,
+                    resolveDatabase: async (shellProgress) => {
+                        // Initialize DuckDB
+                        const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+                        const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+
+                        const worker_url = URL.createObjectURL(
+                            new Blob([`importScripts("${bundle.mainWorker}");`], {type: 'text/javascript'})
+                        );
+                        const worker = new Worker(worker_url);
+                        const logger = new duckdb.ConsoleLogger();
+
+                        const db = new duckdb.AsyncDuckDB(logger, worker);
+                        // Don't pass the shell's progress callback directly to avoid postMessage cloning errors
+                        await db.instantiate(bundle.mainModule);
+                        URL.revokeObjectURL(worker_url);
+
+                        // Install extensions
+                        const conn = await db.connect();
+                        await conn.query(`INSTALL iceberg; LOAD iceberg;`);
+                        await conn.query(`INSTALL httpfs; LOAD httpfs;`);
+                        await conn.close();
+
+                        return db;
+                    },
+                    backgroundColor: '#1e1e1e',
+                    fontFamily: 'monospace',
+                });
+
+                shellInitialized = true;
+            } catch (error) {
+                console.error('Shell initialization error:', error);
+                document.getElementById('shell-container').innerHTML = `
+                    <div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">
+                        <strong>Error initializing shell:</strong> ${error.message}
+                        <p class="text-sm mt-2">Please refresh the page and try again.</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Utility: Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Auto-initialize shell on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            await initializeShell();
+        });
+    </script>
+</body>
+</html>

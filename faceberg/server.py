@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Disable Litestar warnings about sync handlers - all catalog operations are blocking I/O
@@ -25,9 +26,11 @@ os.environ.setdefault("LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD", "0")
 
 from litestar import Controller, Litestar, Request, get, head
 from litestar.config.cors import CORSConfig
+from litestar.contrib.jinja import JinjaTemplateEngine
 from litestar.datastructures import State
 from litestar.params import Parameter
-from litestar.response import Response
+from litestar.response import Response, Template
+from litestar.template.config import TemplateConfig
 from pyiceberg.catalog import URI, WAREHOUSE_LOCATION
 from pyiceberg.catalog.rest import (
     PREFIX,
@@ -92,9 +95,105 @@ _EXCEPTION_HANDLERS: Dict[int | type[Exception], Any] = {
     Exception: _handle_exception,  # Catch-all for consistent error format
 }
 
-# TODO(kszucs): https://{user}-{repo}.hf.space should render a html page
-# showing the namespaces and tables and maybe the ability to run simple
-# queries against the tables using DuckDB in the browser
+# =========================================================================
+# Template Configuration
+# =========================================================================
+
+template_config = TemplateConfig(
+    directory=Path(__file__).parent / "spaces",
+    engine=JinjaTemplateEngine,
+)
+
+# =========================================================================
+# Landing Page
+# =========================================================================
+
+
+@get("/", sync_to_thread=False)
+def landing_page(state: State) -> Template:
+    """Render HTML landing page with catalog contents."""
+    catalog = state["catalog"]
+
+    # Gather all namespaces and their tables
+    namespaces_data = []
+
+    for namespace_tuple in catalog.list_namespaces():
+        namespace_name = namespace_tuple[0]
+
+        # Get all tables in this namespace
+        tables_data = []
+        for table_identifier in catalog.list_tables(namespace_name):
+            table_name = table_identifier[1]
+
+            try:
+                # Load full table metadata
+                table = catalog.load_table(f"{namespace_name}.{table_name}")
+
+                # Extract schema information
+                schema = table.schema()
+                columns = [
+                    {
+                        "name": field.name,
+                        "type": str(field.field_type),
+                        "required": field.required,
+                    }
+                    for field in schema.fields
+                ]
+
+                # Extract snapshot summary (row counts, file counts)
+                snapshot = table.current_snapshot()
+                row_count = "Unknown"
+                file_count = "Unknown"
+                if snapshot:
+                    summary = snapshot.summary
+                    row_count = summary.get("total-records", "Unknown")
+                    file_count = summary.get("total-data-files", "Unknown")
+
+                # Extract HuggingFace dataset info from properties
+                props = table.properties
+                dataset_repo = props.get("huggingface.dataset.repo", "")
+                dataset_config = props.get("huggingface.dataset.config", "")
+
+                # Build table data structure
+                table_data = {
+                    "name": table_name,
+                    "namespace": namespace_name,
+                    "identifier": f"{namespace_name}.{table_name}",
+                    "columns": columns,
+                    "row_count": row_count,
+                    "file_count": file_count,
+                    "dataset_repo": dataset_repo,
+                    "dataset_config": dataset_config,
+                    "metadata_location": table.metadata_location,
+                }
+
+                tables_data.append(table_data)
+
+            except Exception as e:
+                # Log error but continue processing other tables
+                print(f"Error loading table {namespace_name}.{table_name}: {e}")
+                continue
+
+        # Only include namespace if it has tables
+        if tables_data:
+            namespaces_data.append(
+                {
+                    "name": namespace_name,
+                    "table_count": len(tables_data),
+                    "tables": tables_data,
+                }
+            )
+
+    # Render template
+    return Template(
+        template_name="landing.html",
+        context={
+            "catalog_uri": catalog.properties.get("uri", str(catalog)),
+            "namespaces": namespaces_data,
+            "total_tables": sum(ns["table_count"] for ns in namespaces_data),
+        },
+    )
+
 
 # =========================================================================
 # Config Endpoint
@@ -263,8 +362,9 @@ def create_app(
 
     # Create Litestar app
     app = Litestar(
-        route_handlers=[get_config_handler, NamespaceController, TablesController],
+        route_handlers=[landing_page, get_config_handler, NamespaceController, TablesController],
         state=app_state,
+        template_config=template_config,
         exception_handlers=_EXCEPTION_HANDLERS,
         cors_config=CORSConfig(allow_origins=["*"]),  # Allow CORS for all origins
     )
