@@ -1,6 +1,6 @@
-<p align="center">
+<div align="center" style="background-color: white; width: 100%; padding: 20px 0;">
   <img src="faceberg.png" alt="Faceberg" width="400"/>
-</p>
+</div>
 
 # Faceberg
 
