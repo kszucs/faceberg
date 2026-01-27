@@ -17,8 +17,8 @@ Initial implementation supports read-only operations:
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Disable Litestar warnings about sync handlers - all catalog operations are blocking I/O
@@ -50,7 +50,6 @@ from pyiceberg.exceptions import (
 )
 
 from .catalog import catalog as create_catalog
-
 
 # =========================================================================
 # Error Handling
@@ -187,9 +186,7 @@ class TablesController(Controller):
             else:
                 # Handle case where namespace has multiple parts
                 *ns_parts, table_name = identifier
-                entries.append(
-                    ListTableResponseEntry(namespace=tuple(ns_parts), name=table_name)
-                )
+                entries.append(ListTableResponseEntry(namespace=tuple(ns_parts), name=table_name))
 
         return ListTablesResponse(identifiers=entries).model_dump()
 
@@ -250,10 +247,12 @@ def create_app(
     catalog = create_catalog(catalog_uri, hf_token=hf_token)
 
     # Application state
-    app_state = State({
-        "catalog": catalog,
-        "prefix": prefix.strip("/"),
-    })
+    app_state = State(
+        {
+            "catalog": catalog,
+            "prefix": prefix.strip("/"),
+        }
+    )
 
     # Create Litestar app
     app = Litestar(
@@ -298,6 +297,7 @@ def deploy_app(
         ... )
     """
     import tempfile
+
     from huggingface_hub import CommitOperationAdd
 
     api = HfApi(token=hf_token)

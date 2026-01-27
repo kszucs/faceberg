@@ -7,7 +7,6 @@ with Iceberg catalogs using DuckDB.
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 
 try:
@@ -15,7 +14,6 @@ try:
 except ImportError:
     pass  # readline not available on this platform
 
-import duckdb
 from rich.console import Console
 
 console = Console()

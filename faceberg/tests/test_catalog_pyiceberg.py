@@ -313,7 +313,7 @@ def rest_catalog(rest_server):
         uri=rest_server,
         **{
             "py-io-impl": "faceberg.catalog.HfFileIO",
-        }
+        },
     )
     return catalog
 

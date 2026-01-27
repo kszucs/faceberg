@@ -1,10 +1,9 @@
 """Tests for REST catalog server."""
 
-import pytest
 from litestar.testing import TestClient
 
 from faceberg.database import Catalog as CatalogDB
-from faceberg.database import Namespace, Table
+from faceberg.database import Namespace
 from faceberg.server import create_app
 
 
@@ -326,9 +325,9 @@ class TestSyncedCatalogDataIntegrity:
 
             # Must have metadata location and metadata
             assert "metadata" in data, "Table response must include metadata"
-            assert (
-                "metadata-location" in data or "metadata_location" in data
-            ), "Table response must include metadata location"
+            assert "metadata-location" in data or "metadata_location" in data, (
+                "Table response must include metadata location"
+            )
 
             metadata = data["metadata"]
 

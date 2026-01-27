@@ -389,8 +389,7 @@ def quack(endpoint):
         quack_fn(endpoint=endpoint, catalog_name="faceberg")
     except ImportError:
         console.print(
-            "[bold red]Error:[/bold red] DuckDB not installed. "
-            "Install with: pip install duckdb"
+            "[bold red]Error:[/bold red] DuckDB not installed. Install with: pip install duckdb"
         )
         raise click.Abort()
     except KeyboardInterrupt:
@@ -432,6 +431,7 @@ def serve(ctx, host, port, reload, prefix):
     """
     try:
         import uvicorn
+
         from faceberg.server import create_app
     except ImportError:
         console.print(
@@ -492,16 +492,16 @@ def deploy(ctx, space_name):
         )
         api_url = f"https://{space_name.replace('/', '-')}.hf.space"
 
-        console.print(f"\n[bold green]✓ Deployed successfully![/bold green]")
+        console.print("\n[bold green]✓ Deployed successfully![/bold green]")
         console.print(f"\n[bold]Space URL:[/bold] {space_url}")
         console.print(f"[bold]API URL:[/bold] {api_url}")
-        console.print(f"[bold]Server:[/bold] Listening on 0.0.0.0:7860")
+        console.print("[bold]Server:[/bold] Listening on 0.0.0.0:7860")
 
-        console.print(f"\n[bold]Connect with PyIceberg:[/bold]")
+        console.print("\n[bold]Connect with PyIceberg:[/bold]")
         console.print("  from pyiceberg.catalog.rest import RestCatalog")
         console.print(f"  catalog = RestCatalog(name='faceberg', uri='{api_url}')")
 
-        console.print(f"\n[dim]The Space will build and become available in 1-2 minutes.[/dim]")
+        console.print("\n[dim]The Space will build and become available in 1-2 minutes.[/dim]")
     except Exception as e:
         console.print(f"\n[bold red]Deployment failed:[/bold red] {e}")
         raise click.Abort()

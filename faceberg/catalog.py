@@ -1467,7 +1467,9 @@ class RemoteCatalog(BaseCatalog):
         return Path(metadata_file).parent.parent
 
 
-def catalog(uri: str, *, hf_token: Optional[str] = None, **properties: str) -> Union[LocalCatalog, RemoteCatalog]:
+def catalog(
+    uri: str, *, hf_token: Optional[str] = None, **properties: str
+) -> Union[LocalCatalog, RemoteCatalog]:
     """Create a catalog instance based on URI.
 
     Factory function that determines catalog type from URI and creates
@@ -1502,6 +1504,7 @@ def catalog(uri: str, *, hf_token: Optional[str] = None, **properties: str) -> U
         # Convert file:// URI to filesystem path
         # file:///path/to/dir -> /path/to/dir
         from urllib.parse import urlparse
+
         parsed = urlparse(uri)
         path = parsed.path
         return LocalCatalog(name=uri, path=path, hf_token=hf_token, **properties)
