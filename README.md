@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="faceberg.png" alt="Faceberg"/>
-</p>
+![Faceberg](faceberg.png)
 
 # Faceberg
 
