@@ -631,7 +631,7 @@
                     <span class="extension-badge">httpfs</span>
                 </span>
                 {% if namespaces|length > 0 %}
-                • Example: <code class="example-query-code">{% set first_ns = namespaces[0] %}{% set first_table = first_ns.tables[0] %}SELECT * FROM {{ first_ns.name }}.{{ first_table.name }} LIMIT 10;</code>
+                • Example: <code class="example-query-code">{% set first_ns = namespaces[0] %}{% set first_table = first_ns.tables[0] %}SELECT * FROM catalog.{{ first_ns.name }}.{{ first_table.name }} LIMIT 10;</code>
                 {% endif %}
             </div>
 
@@ -640,15 +640,6 @@
         </div>
     </div>
 
-    <!-- Import map to redirect /npm/ paths to CDN -->
-    <script type="importmap">
-    {
-        "imports": {
-            "/npm/": "https://cdn.jsdelivr.net/npm/"
-        }
-    }
-    </script>
-
     <!-- JavaScript -->
     <script type="module">
         // Global state
@@ -656,7 +647,7 @@
 
         // Insert query into shell
         window.insertQuery = function(tableName) {
-            const query = `SELECT * FROM ${tableName} LIMIT 10;`;
+            const query = `SELECT * FROM catalog.${tableName} LIMIT 10;`;
             navigator.clipboard.writeText(query).then(() => {
                 alert('Query copied to clipboard! Paste it into the shell with Cmd/Ctrl+V');
             }).catch(err => {
@@ -669,49 +660,121 @@
             if (shellInitialized) return;
 
             try {
-                // Load DuckDB modules
-                const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@latest/+esm');
-                const shell = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm-shell@latest/+esm');
+                // Load DuckDB modules using proper bundle
+                const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-esm.js');
 
                 // Get shell container
                 const container = document.getElementById('shell-container');
 
-                // Fetch the shell WASM module as ArrayBuffer
-                const shellWasmUrl = 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm-shell@latest/dist/shell_bg.wasm';
-                const shellWasmResponse = await fetch(shellWasmUrl);
-                const shellWasmBuffer = await shellWasmResponse.arrayBuffer();
+                // Initialize DuckDB
+                const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+                const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
 
-                // Embed shell with DuckDB initialization
-                await shell.embed({
-                    shellModule: shellWasmBuffer,
-                    container: container,
-                    resolveDatabase: async (shellProgress) => {
-                        // Initialize DuckDB
-                        const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-                        const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+                const worker_url = URL.createObjectURL(
+                    new Blob([`importScripts("${bundle.mainWorker}");`], {type: 'text/javascript'})
+                );
+                const worker = new Worker(worker_url);
+                const logger = new duckdb.ConsoleLogger();
 
-                        const worker_url = URL.createObjectURL(
-                            new Blob([`importScripts("${bundle.mainWorker}");`], {type: 'text/javascript'})
-                        );
-                        const worker = new Worker(worker_url);
-                        const logger = new duckdb.ConsoleLogger();
+                const db = new duckdb.AsyncDuckDB(logger, worker);
+                await db.instantiate(bundle.mainModule);
+                URL.revokeObjectURL(worker_url);
 
-                        const db = new duckdb.AsyncDuckDB(logger, worker);
-                        // Don't pass the shell's progress callback directly to avoid postMessage cloning errors
-                        await db.instantiate(bundle.mainModule);
-                        URL.revokeObjectURL(worker_url);
+                // Install extensions and attach catalog
+                const conn = await db.connect();
+                await conn.query(`INSTALL httpfs; LOAD httpfs;`);
+                await conn.query(`INSTALL iceberg; LOAD iceberg;`);
 
-                        // Install extensions
-                        const conn = await db.connect();
-                        await conn.query(`INSTALL iceberg; LOAD iceberg;`);
-                        await conn.query(`INSTALL httpfs; LOAD httpfs;`);
-                        await conn.close();
+                // Attach the REST catalog
+                const catalogEndpoint = window.location.origin;
+                await conn.query(`
+                    ATTACH 'warehouse' AS catalog (
+                        TYPE ICEBERG,
+                        ENDPOINT '${catalogEndpoint}',
+                        AUTHORIZATION_TYPE 'none'
+                    );
+                `);
+                await conn.close();
 
-                        return db;
-                    },
-                    backgroundColor: '#1e1e1e',
-                    fontFamily: 'monospace',
+                // Load XTerm.js for terminal UI
+                const { Terminal } = await import('https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js');
+                const { FitAddon } = await import('https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js');
+
+                // Create terminal
+                const terminal = new Terminal({
+                    cursorBlink: true,
+                    fontSize: 14,
+                    fontFamily: 'JetBrains Mono, monospace',
+                    theme: {
+                        background: '#0F1419',
+                        foreground: '#E6E1CF',
+                    }
                 });
+
+                const fitAddon = new FitAddon();
+                terminal.loadAddon(fitAddon);
+                terminal.open(container);
+                fitAddon.fit();
+
+                // Simple command prompt
+                let currentLine = '';
+                let historyIndex = -1;
+                const history = [];
+
+                const prompt = () => terminal.write('\r\n\x1b[32mD\x1b[0m ');
+
+                terminal.writeln('DuckDB v1.29.0 Shell');
+                terminal.writeln('Connected to in-memory database');
+                terminal.writeln('Extensions loaded: iceberg, httpfs');
+                terminal.writeln('Catalog attached: Use catalog.namespace.table to query');
+                terminal.writeln('');
+                prompt();
+
+                terminal.onData(async (data) => {
+                    const code = data.charCodeAt(0);
+
+                    // Handle Enter
+                    if (code === 13) {
+                        const query = currentLine.trim();
+                        if (query) {
+                            history.unshift(query);
+                            terminal.write('\r\n');
+
+                            try {
+                                const conn = await db.connect();
+                                const result = await conn.query(query);
+                                terminal.writeln(result.toString());
+                                await conn.close();
+                            } catch (err) {
+                                terminal.writeln(`\x1b[31mError: ${err.message}\x1b[0m`);
+                            }
+                        }
+                        currentLine = '';
+                        historyIndex = -1;
+                        prompt();
+                    }
+                    // Handle Backspace
+                    else if (code === 127) {
+                        if (currentLine.length > 0) {
+                            currentLine = currentLine.slice(0, -1);
+                            terminal.write('\b \b');
+                        }
+                    }
+                    // Handle Ctrl+C
+                    else if (code === 3) {
+                        terminal.write('^C');
+                        currentLine = '';
+                        prompt();
+                    }
+                    // Handle printable characters
+                    else if (code >= 32 && code <= 126) {
+                        currentLine += data;
+                        terminal.write(data);
+                    }
+                });
+
+                // Handle window resize
+                window.addEventListener('resize', () => fitAddon.fit());
 
                 shellInitialized = true;
             } catch (error) {
