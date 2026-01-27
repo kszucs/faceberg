@@ -365,6 +365,41 @@ def remove(ctx, identifier, yes):
 
 
 @main.command()
+@click.option("--endpoint", default="http://localhost:8181", help="REST catalog endpoint URL")
+def quack(endpoint):
+    """Open DuckDB shell with REST catalog attached.
+
+    Starts an interactive DuckDB session with the Iceberg REST catalog
+    pre-configured. The catalog must already be running (via 'faceberg serve').
+
+    Examples:
+        # Connect to local REST server
+        faceberg /tmp/catalog quack
+
+        # Connect to custom endpoint
+        faceberg /tmp/catalog quack --endpoint http://localhost:9000
+
+        # Use custom catalog name
+        faceberg /tmp/catalog quack --catalog-name my_catalog
+    """
+    try:
+        from faceberg.interactive import quack as quack_fn
+
+        quack_fn(endpoint=endpoint, catalog_name="faceberg")
+    except ImportError:
+        console.print(
+            "[bold red]Error:[/bold red] DuckDB not installed. "
+            "Install with: pip install duckdb"
+        )
+        raise click.Abort()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Goodbye![/dim]")
+    except Exception as e:
+        console.print(f"\n[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@main.command()
 @click.option("--host", default="0.0.0.0", help="Host to bind to")
 @click.option("--port", default=8181, type=int, help="Port to bind to")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for development")
@@ -397,7 +432,7 @@ def serve(ctx, host, port, reload, prefix):
     try:
         import uvicorn
         from faceberg.server import create_app
-    except ImportError as e:
+    except ImportError:
         console.print(
             "[bold red]Error:[/bold red] Server dependencies not installed. "
             "Install with: pip install 'faceberg[server]' or pip install litestar uvicorn"

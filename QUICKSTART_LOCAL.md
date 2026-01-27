@@ -152,6 +152,7 @@ catalog = RestCatalog(
     name="faceberg",
     uri="http://localhost:8181",
     **{
+        # can use FsspecFileIO as well
         "py-io-impl": "faceberg.catalog.HfFileIO",
     }
 )
@@ -175,78 +176,62 @@ print(df.head())
 
 ### Connect from DuckDB via REST
 
-> **Note:** DuckDB REST catalog support is still evolving. As of DuckDB 1.4.3, REST catalog configuration may not be fully supported. Check the [DuckDB documentation](https://duckdb.org/docs/extensions/iceberg) for the latest status.
+The easiest way to query your catalog is using the `quack` command, which opens an interactive DuckDB shell with the catalog pre-attached:
+
+```bash
+# Start the REST server first
+faceberg mycatalog serve
+
+# Start interactive DuckDB shell (by default connects to localhost:8181)
+faceberg mycatalog quack
+```
+
+This will launch the native DuckDB CLI (if installed) with the Iceberg REST catalog already configured. You can then run SQL queries directly:
+
+```sql
+-- Show all tables
+SHOW ALL TABLES;
+
+-- Query a table
+SELECT * FROM faceberg.deepmind.code_contests LIMIT 10;
+
+-- Describe table schema
+DESCRIBE faceberg.deepmind.code_contests;
+
+-- Exit
+.quit
+```
+
+**Python API:**
+
+You can also connect programmatically using the DuckDB Python API:
 
 ```python
 import duckdb
 
 # Connect to REST catalog via DuckDB
-# Note: This requires DuckDB >= 1.5.0 with full REST catalog support
 con = duckdb.connect()
 con.execute("""
+    INSTALL httpfs;
+    LOAD httpfs;
     INSTALL iceberg;
     LOAD iceberg;
 
-    CREATE OR REPLACE SECRET iceberg_rest (
+    ATTACH 'warehouse' AS faceberg (
         TYPE ICEBERG,
-        CATALOG_TYPE REST,
-        CATALOG_URL 'http://localhost:8181'
+        ENDPOINT 'http://localhost:8181',
+        AUTHORIZATION_TYPE 'none'
     );
 """)
 
 # Query tables via REST
 result = con.execute("""
-    SELECT * FROM default.code_contests LIMIT 10
+    SELECT * FROM faceberg.default.code_contests LIMIT 10
 """).fetchdf()
 
 print(result)
 ```
 
-### Connect from Spark
-
-```scala
-// Configure Spark to use REST catalog
-spark.conf.set("spark.sql.catalog.faceberg", "org.apache.iceberg.spark.SparkCatalog")
-spark.conf.set("spark.sql.catalog.faceberg.catalog-impl", "org.apache.iceberg.rest.RESTCatalog")
-spark.conf.set("spark.sql.catalog.faceberg.uri", "http://localhost:8181")
-
-// Query tables
-spark.sql("SELECT * FROM faceberg.default.code_contests LIMIT 10").show()
-```
-
-### REST API Endpoints
-
-The server exposes these endpoints following the Iceberg REST spec:
-
-**Catalog Configuration:**
-```bash
-# Get catalog configuration
-curl http://localhost:8181/v1/config
-```
-
-**Namespace Operations:**
-```bash
-# List all namespaces
-curl http://localhost:8181/v1/namespaces
-
-# Get namespace properties
-curl http://localhost:8181/v1/namespaces/default
-
-# Check if namespace exists (returns 204 or 404)
-curl -I http://localhost:8181/v1/namespaces/default
-```
-
-**Table Operations:**
-```bash
-# List tables in namespace
-curl http://localhost:8181/v1/namespaces/default/tables
-
-# Load table metadata
-curl http://localhost:8181/v1/namespaces/default/tables/code_contests
-
-# Check if table exists (returns 204 or 404)
-curl -I http://localhost:8181/v1/namespaces/default/tables/code_contests
-```
 
 ### API Documentation
 
