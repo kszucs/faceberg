@@ -57,6 +57,13 @@ Repository = "https://github.com/kszucs/faceberg"
 [tool.hatch.build.targets.wheel]
 packages = ["faceberg"]
 
+[tool.hatch.build]
+include = [
+    "faceberg/**/*.py",
+    "faceberg/spaces/Dockerfile",
+    "faceberg/spaces/README.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
