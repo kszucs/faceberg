@@ -41,10 +41,12 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "pytest-playwright>=0.7.0",  # For browser-based UI testing
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
     "duckdb>=0.10.0",  # For iceberg_scan testing
+    "requests>=2.31.0",  # For REST server testing
 ]
 
 [project.scripts]
