@@ -17,10 +17,8 @@ from pyiceberg.schema import Schema
 from pyiceberg.table import CommitTableRequest
 from pyiceberg.types import LongType, NestedField, StringType
 
-from faceberg.bridge import DatasetInfo
 from faceberg.catalog import HfFileIO, LocalCatalog, RemoteCatalog
 from faceberg.catalog import catalog as catalog_factory
-from faceberg.database import Catalog, Namespace, Table
 
 
 @pytest.fixture
@@ -651,7 +649,7 @@ class TestCatalogFactory:
 
         assert isinstance(cat, RemoteCatalog)
         assert cat._hf_repo == "my-org/my-space"
-        assert cat._hf_repo_type == "spaces"
+        assert cat._hf_repo_type == "space"
         assert cat.uri == "hf://spaces/my-org/my-space"
 
     def test_catalog_remote_models_explicit(self):
@@ -663,14 +661,14 @@ class TestCatalogFactory:
         assert cat._hf_repo_type == "models"
         assert cat.uri == "hf://models/my-org/my-model"
 
-    def test_catalog_remote_shorthand_defaults_to_datasets(self):
-        """Test creating RemoteCatalog with shorthand org/repo format defaults to datasets."""
+    def test_catalog_remote_shorthand_defaults_to_spaces(self):
+        """Test creating RemoteCatalog with shorthand org/repo format defaults to spaces."""
         cat = catalog_factory("my-org/my-repo", hf_token="test_token")
 
         assert isinstance(cat, RemoteCatalog)
         assert cat._hf_repo == "my-org/my-repo"
-        assert cat._hf_repo_type == "datasets"
-        assert cat.uri == "hf://datasets/my-org/my-repo"
+        assert cat._hf_repo_type == "space"
+        assert cat.uri == "hf://spaces/my-org/my-repo"
         assert cat.name == "my-org/my-repo"
 
     def test_catalog_remote_with_properties(self):

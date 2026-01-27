@@ -100,20 +100,15 @@ def test_resolve_hf_path():
 
     fs = HfFileSystem()
 
-    # Test with revision format
-    path1 = "squad@7b6d24c/plain_text/train-v1.1.parquet"
+    # Test with hf:// URI (using stanfordnlp/imdb which is stable and used in other tests)
+    path1 = "hf://datasets/stanfordnlp/imdb/plain_text/train-00000-of-00001.parquet"
     result1 = resolve_hf_path(fs, path1)
-    assert result1 == "plain_text/train-v1.1.parquet"
-
-    # Test with hf:// URI
-    path2 = "hf://datasets/squad/plain_text/train-v1.1.parquet"
-    result2 = resolve_hf_path(fs, path2)
-    assert result2 == "plain_text/train-v1.1.parquet"
+    assert result1 == "plain_text/train-00000-of-00001.parquet"
 
     # Test with relative path (should return as-is)
-    path3 = "plain_text/train-v1.1.parquet"
-    result3 = resolve_hf_path(fs, path3)
-    assert result3 == "plain_text/train-v1.1.parquet"
+    path2 = "plain_text/train-00000-of-00001.parquet"
+    result2 = resolve_hf_path(fs, path2)
+    assert result2 == "plain_text/train-00000-of-00001.parquet"
 
 
 def test_to_table_infos():

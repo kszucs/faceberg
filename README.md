@@ -27,10 +27,10 @@ faceberg mycatalog scan default.imdb --limit 5
 **Python API:**
 
 ```python
-from faceberg.catalog import LocalCatalog
+from faceberg.catalog import catalog
 
-catalog = LocalCatalog(path="mycatalog")
-table = catalog.load_table("default.imdb")
+cat = catalog("mycatalog")
+table = cat.load_table("default.imdb")
 df = table.scan().to_pandas()
 print(df.head())
 ```

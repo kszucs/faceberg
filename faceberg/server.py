@@ -18,13 +18,11 @@ from __future__ import annotations
 
 import os
 from http import HTTPStatus
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Disable Litestar warnings about sync handlers - all catalog operations are blocking I/O
 os.environ.setdefault("LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD", "0")
 
-from huggingface_hub import HfApi
 from litestar import Controller, Litestar, Request, get, head
 from litestar.config.cors import CORSConfig
 from litestar.datastructures import State
@@ -265,97 +263,4 @@ def create_app(
     return app
 
 
-def deploy_app(
-    space_name: str,
-    catalog_uri: str,
-    hf_token: Optional[str] = None,
-    github_repo: str = "kszucs/faceberg",
-) -> str:
-    """Deploy the catalog server to HF Spaces from GitHub.
-
-    The deployed server will listen on host 0.0.0.0 and port 7860 (HF Spaces default).
-    This installs faceberg from the specified GitHub repository.
-
-    Args:
-        space_name: Space name in format "username/space-name"
-        catalog_uri: Catalog URI to serve
-        hf_token: HuggingFace API token (or use HF_TOKEN env var)
-        github_repo: GitHub repository in format "owner/repo" (default: kszucs/faceberg)
-
-    Returns:
-        Space URL (e.g., "https://huggingface.co/spaces/user/my-catalog")
-
-    Examples:
-        >>> deploy_spaces_app("user/my-catalog", "hf://datasets/org/repo")
-        'https://huggingface.co/spaces/user/my-catalog'
-
-        Connect to the deployed catalog:
-        >>> from pyiceberg.catalog.rest import RestCatalog
-        >>> catalog = RestCatalog(
-        ...     name="my-catalog",
-        ...     uri="https://user-my-catalog.hf.space"
-        ... )
-    """
-    import tempfile
-
-    from huggingface_hub import CommitOperationAdd
-
-    api = HfApi(token=hf_token)
-    api.create_repo(
-        repo_id=space_name,
-        repo_type="space",
-        space_sdk="docker",
-        exist_ok=True,
-    )
-
-    # Get paths
-    spaces_dir = Path(__file__).parent / "spaces"
-
-    # Read templates
-    dockerfile_template = (spaces_dir / "Dockerfile").read_text()
-    readme_template = (spaces_dir / "README.md").read_text()
-
-    # Format templates
-    dockerfile_content = dockerfile_template.format(github_repo=github_repo)
-
-    space_display_name = space_name.split("/")[1].replace("-", " ").title()
-    api_url = space_name.replace("/", "-")
-    readme_content = readme_template.format(
-        space_display_name=space_display_name,
-        catalog_uri=catalog_uri,
-        api_url=api_url,
-    )
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-
-        # Write Dockerfile
-        dockerfile_path = tmpdir / "Dockerfile"
-        dockerfile_path.write_text(dockerfile_content)
-
-        # Write README
-        readme_path = tmpdir / "README.md"
-        readme_path.write_text(readme_content)
-
-        # Upload files
-        operations = [
-            CommitOperationAdd(path_in_repo="Dockerfile", path_or_fileobj=str(dockerfile_path)),
-            CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=str(readme_path)),
-        ]
-
-        api.create_commit(
-            repo_id=space_name,
-            repo_type="space",
-            operations=operations,
-            commit_message="Deploy Faceberg catalog server",
-        )
-
-    # Set environment variables
-    api.add_space_secret(repo_id=space_name, key="CATALOG_URI", value=catalog_uri)
-    if catalog_uri.startswith("hf://") and hf_token:
-        api.add_space_secret(repo_id=space_name, key="HF_TOKEN", value=hf_token)
-
-    return f"https://huggingface.co/spaces/{space_name}"
-
-
-__all__ = ["create_app", "deploy_app"]
+__all__ = ["create_app"]

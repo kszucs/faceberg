@@ -55,7 +55,7 @@ def synced_catalog(synced_catalog_dir):
     store_obj.to_yaml(config_file)
 
     # Create catalog instance (hf:// protocol support is built-in)
-    catalog = LocalCatalog(name=str(synced_catalog_dir), path=str(synced_catalog_dir))
+    catalog = LocalCatalog(name=str(synced_catalog_dir), uri=catalog_uri)
 
     # Sync all tables (token=None works for public datasets)
     synced_tables = catalog.sync_datasets()

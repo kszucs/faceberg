@@ -4,8 +4,7 @@ import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from faceberg.catalog import catalog
-from faceberg.server import deploy_app
+from faceberg.catalog import RemoteCatalog, catalog
 
 console = Console()
 
@@ -157,7 +156,7 @@ def init(ctx):
         faceberg --config=faceberg.yml init
     """
     catalog = ctx.obj["catalog"]
-    is_remote = catalog.uri.startswith("hf://")
+    is_remote = isinstance(catalog, RemoteCatalog)
 
     if is_remote:
         console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog.uri}")
@@ -168,15 +167,10 @@ def init(ctx):
         catalog.init()
         console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
 
-        if is_remote:
-            console.print("\n[dim]Next steps:[/dim]")
-            console.print("  1. Ensure faceberg.yml config file is configured")
-            console.print("  2. Run: faceberg --config=faceberg.yml sync")
-        else:
-            console.print("\n[dim]Next steps:[/dim]")
-            console.print("  1. Ensure faceberg.yml config file is configured")
-            console.print("  2. Run: faceberg --config=faceberg.yml sync")
-    except ValueError as e:
+        console.print("\n[dim]Next steps:[/dim]")
+        console.print("  1. Ensure faceberg.yml config file is configured")
+        console.print("  2. Run: faceberg --config=faceberg.yml sync")
+    except Exception as e:
         # Handle "repository already exists" error
         if "already exists" in str(e):
             console.print(f"[bold yellow]Warning:[/bold yellow] {e}")
@@ -184,9 +178,6 @@ def init(ctx):
         else:
             console.print(f"[bold red]Error:[/bold red] {e}")
             raise click.Abort()
-    except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        raise click.Abort()
 
 
 @main.command("list")
@@ -459,52 +450,6 @@ def serve(ctx, host, port, reload, prefix):
         reload=reload,
         log_level="info",
     )
-
-
-@main.command()
-@click.argument("space_name")
-@click.pass_context
-def deploy(ctx, space_name):
-    """Deploy catalog server to Hugging Face Spaces.
-
-    SPACE_NAME: Space name in format "username/space-name"
-
-    Deploys the catalog server from GitHub (kszucs/faceberg) to HF Spaces.
-
-    Examples:
-        # Deploy catalog server
-        faceberg hf://datasets/org/repo deploy username/my-catalog-server
-
-        # Deploy local catalog
-        faceberg /path/to/catalog deploy username/my-catalog-server
-    """
-    catalog = ctx.obj["catalog"]
-    token = ctx.obj.get("token")
-
-    console.print(f"[bold blue]Deploying to Space:[/bold blue] {space_name}")
-    console.print(f"  Catalog: {catalog.uri}")
-
-    try:
-        space_url = deploy_app(
-            space_name=space_name,
-            catalog_uri=catalog.uri,
-            hf_token=token,
-        )
-        api_url = f"https://{space_name.replace('/', '-')}.hf.space"
-
-        console.print("\n[bold green]✓ Deployed successfully![/bold green]")
-        console.print(f"\n[bold]Space URL:[/bold] {space_url}")
-        console.print(f"[bold]API URL:[/bold] {api_url}")
-        console.print("[bold]Server:[/bold] Listening on 0.0.0.0:7860")
-
-        console.print("\n[bold]Connect with PyIceberg:[/bold]")
-        console.print("  from pyiceberg.catalog.rest import RestCatalog")
-        console.print(f"  catalog = RestCatalog(name='faceberg', uri='{api_url}')")
-
-        console.print("\n[dim]The Space will build and become available in 1-2 minutes.[/dim]")
-    except Exception as e:
-        console.print(f"\n[bold red]Deployment failed:[/bold red] {e}")
-        raise click.Abort()
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ def test_read_iceberg_with_catalog_properties(synced_catalog):
         catalog_name="test_catalog",  # Name doesn't matter when passing properties
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         limit=10,
     )
@@ -43,24 +43,24 @@ def test_read_iceberg_with_env_vars(synced_catalog):
     """Test reading table using pandas with environment variables.
 
     Note: catalog_properties is the recommended approach for programmatic usage.
-    This test demonstrates that env vars can provide the path, combined with
+    This test demonstrates that env vars can provide the URI, combined with
     catalog_properties for py-catalog-impl to bypass PyIceberg's URI inference.
     """
     catalog_path = synced_catalog.catalog_dir
 
     # Set environment variables
     os.environ["PYICEBERG_CATALOG__TEST_CATALOG__PY_CATALOG_IMPL"] = "faceberg.catalog.LocalCatalog"
-    os.environ["PYICEBERG_CATALOG__TEST_CATALOG__PATH"] = str(catalog_path)
+    os.environ["PYICEBERG_CATALOG__TEST_CATALOG__URI"] = f"file:///{catalog_path.as_posix()}"
 
     try:
-        # Pass py-catalog-impl and path in catalog_properties
+        # Pass py-catalog-impl and uri in catalog_properties
         # Env vars can also be used, but catalog_properties takes precedence
         df = pd.read_iceberg(
             table_identifier="default.imdb_plain_text",
             catalog_name="test_catalog",
             catalog_properties={
                 "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-                "path": str(catalog_path),  # Explicit path needed
+                "uri": f"file:///{catalog_path.as_posix()}",  # Explicit URI needed
             },
             limit=10,
         )
@@ -72,7 +72,7 @@ def test_read_iceberg_with_env_vars(synced_catalog):
     finally:
         # Clean up environment variables
         os.environ.pop("PYICEBERG_CATALOG__TEST_CATALOG__PY_CATALOG_IMPL", None)
-        os.environ.pop("PYICEBERG_CATALOG__TEST_CATALOG__PATH", None)
+        os.environ.pop("PYICEBERG_CATALOG__TEST_CATALOG__URI", None)
 
 
 def test_read_iceberg_all_rows(synced_catalog):
@@ -84,7 +84,7 @@ def test_read_iceberg_all_rows(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
     )
 
@@ -111,7 +111,7 @@ def test_read_iceberg_select_columns(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         columns=["text", "label"],
         limit=5,
@@ -132,7 +132,7 @@ def test_read_iceberg_single_column(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         columns=["split"],
         limit=10,
@@ -157,7 +157,7 @@ def test_read_iceberg_filter_partition(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         row_filter="split = 'train'",
         limit=20,
@@ -177,7 +177,7 @@ def test_read_iceberg_filter_multiple_values(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         row_filter="split IN ('train', 'test')",
         limit=30,
@@ -199,7 +199,7 @@ def test_read_iceberg_filter_label(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         row_filter="label = 0",
         limit=10,
@@ -224,7 +224,7 @@ def test_read_iceberg_filter_and_select(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         columns=["text", "label"],
         row_filter="split = 'train'",
@@ -247,7 +247,7 @@ def test_read_iceberg_multiple_filters_and_columns(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         columns=["text"],
         row_filter="split = 'train' AND label = 1",
@@ -274,7 +274,7 @@ def test_read_iceberg_empty_result(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         row_filter="split = 'nonexistent'",
     )
@@ -296,7 +296,7 @@ def test_read_iceberg_invalid_table(synced_catalog):
             catalog_name="test",
             catalog_properties={
                 "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-                "path": str(catalog_path),
+                "uri": f"file:///{catalog_path.as_posix()}",
             },
         )
 
@@ -311,7 +311,7 @@ def test_read_iceberg_invalid_column(synced_catalog):
             catalog_name="test",
             catalog_properties={
                 "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-                "path": str(catalog_path),
+                "uri": f"file:///{catalog_path.as_posix()}",
             },
             columns=["nonexistent_column"],
             limit=5,
@@ -332,7 +332,7 @@ def test_read_iceberg_case_sensitive_true(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         columns=["text", "label"],
         case_sensitive=True,
@@ -351,7 +351,7 @@ def test_read_iceberg_case_sensitive_false(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         columns=["TEXT", "LABEL"],  # Uppercase column names
         case_sensitive=False,
@@ -377,7 +377,7 @@ def test_read_iceberg_data_types(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         limit=5,
     )
@@ -400,7 +400,7 @@ def test_read_iceberg_content_validation(synced_catalog):
         catalog_name="test",
         catalog_properties={
             "py-catalog-impl": "faceberg.catalog.LocalCatalog",
-            "path": str(catalog_path),
+            "uri": f"file:///{catalog_path.as_posix()}",
         },
         limit=10,
     )
