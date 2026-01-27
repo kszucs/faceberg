@@ -8,7 +8,9 @@ enabling both metadata reading and data scanning from HuggingFace datasets.
 """
 
 import pyarrow as pa
+import pytest
 from pandas.api.types import is_string_dtype
+from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.transforms import IdentityTransform
 
 # =============================================================================
@@ -293,3 +295,165 @@ def test_multiple_scans_same_table(catalog):
 
     assert len(df2) == 3
     assert all(df2["split"] == "test")
+
+
+# =============================================================================
+# E. REST Catalog Tests
+# =============================================================================
+
+
+@pytest.fixture
+def rest_catalog(rest_server):
+    """Create PyIceberg RestCatalog connected to test server.
+
+    Configures the catalog to use HfFileIO for handling hf:// URIs.
+    """
+    catalog = RestCatalog(
+        name="faceberg_rest",
+        uri=rest_server,
+        **{
+            "py-io-impl": "faceberg.catalog.HfFileIO",
+        }
+    )
+    return catalog
+
+
+def test_rest_list_namespaces(rest_catalog):
+    """Test listing namespaces via REST catalog."""
+    namespaces = rest_catalog.list_namespaces()
+
+    # Verify we got namespaces
+    assert len(namespaces) > 0
+
+    # Verify default namespace exists
+    namespace_strs = [".".join(ns) if isinstance(ns, tuple) else ns for ns in namespaces]
+    assert "default" in namespace_strs
+
+
+def test_rest_list_tables(rest_catalog):
+    """Test listing tables via REST catalog."""
+    tables = rest_catalog.list_tables("default")
+
+    # Verify we got tables
+    assert len(tables) > 0
+
+    # Verify imdb_plain_text table exists
+    table_names = [t[1] if isinstance(t, tuple) and len(t) > 1 else str(t) for t in tables]
+    assert "imdb_plain_text" in table_names
+
+
+def test_rest_load_table(rest_catalog):
+    """Test loading a table via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Verify table loaded successfully
+    assert table is not None
+
+    # Verify table has schema
+    schema = table.schema()
+    assert schema is not None
+    assert len(schema.fields) > 0
+
+
+def test_rest_scan_to_arrow(rest_catalog):
+    """Test scanning table to Arrow via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+    scan = table.scan()
+
+    # Convert to Arrow table
+    arrow_table = scan.to_arrow()
+
+    # Verify it's an Arrow table
+    assert isinstance(arrow_table, pa.Table)
+
+    # Verify we have rows
+    assert arrow_table.num_rows > 0
+
+    # Verify expected columns
+    column_names = arrow_table.schema.names
+    assert "split" in column_names
+    assert "text" in column_names
+    assert "label" in column_names
+
+
+def test_rest_scan_to_pandas(rest_catalog):
+    """Test scanning table to Pandas via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+    scan = table.scan()
+
+    # Convert to Pandas DataFrame
+    df = scan.to_pandas()
+
+    # Verify DataFrame shape
+    assert len(df) > 0
+    assert len(df.columns) > 0
+
+    # Verify split column exists
+    assert "split" in df.columns
+
+
+def test_rest_partition_filter(rest_catalog):
+    """Test partition filtering via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Scan with split filter
+    scan = table.scan().filter("split = 'train'")
+    arrow_table = scan.to_arrow()
+
+    # Verify all rows have split == "train"
+    split_values = arrow_table["split"].unique().to_pylist()
+    assert split_values == ["train"]
+
+    # Verify we got some rows
+    assert arrow_table.num_rows > 0
+
+
+def test_rest_read_schema(rest_catalog):
+    """Test reading table schema via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+    schema = table.schema()
+
+    # Verify schema has expected fields
+    field_names = [field.name for field in schema.fields]
+    assert "split" in field_names
+    assert "text" in field_names
+    assert "label" in field_names
+
+
+def test_rest_read_properties(rest_catalog):
+    """Test reading table properties via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+    properties = table.properties
+
+    # Verify HuggingFace properties exist
+    assert "huggingface.dataset.repo" in properties
+    assert properties["huggingface.dataset.repo"] == "stanfordnlp/imdb"
+
+
+def test_rest_read_snapshots(rest_catalog):
+    """Test reading table snapshots via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+    snapshots = list(table.snapshots())
+
+    # Verify at least one snapshot exists
+    assert len(snapshots) > 0
+
+    # Verify snapshot has expected attributes
+    snapshot = snapshots[0]
+    assert hasattr(snapshot, "snapshot_id")
+    assert snapshot.snapshot_id > 0
+
+
+def test_rest_column_projection(rest_catalog):
+    """Test column projection via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Scan with only specific columns selected
+    scan = table.scan().select("text", "label")
+    arrow_table = scan.to_arrow()
+
+    # Verify only selected columns are present
+    column_names = arrow_table.schema.names
+    assert "text" in column_names
+    assert "label" in column_names
+    assert "split" not in column_names

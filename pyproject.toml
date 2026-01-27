@@ -32,6 +32,8 @@ dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0.0",  # For nice CLI output
     "pyarrow>=21.0.0",
+    "litestar>=2.0.0",  # REST API server
+    "uvicorn[standard]>=0.27.0",  # ASGI server
 ]
 
 [project.optional-dependencies]

@@ -1,9 +1,16 @@
 """Shared pytest fixtures for catalog tests."""
 
+import socket
+import threading
+import time
+
 import pytest
+import requests
+import uvicorn
 
 from faceberg.catalog import LocalCatalog
 from faceberg.database import Catalog, Namespace, Table
+from faceberg.server import create_app
 
 
 @pytest.fixture(scope="session")
@@ -67,3 +74,41 @@ def catalog(synced_catalog):
     synced catalog. The catalog has built-in hf:// protocol support via HfFileIO.
     """
     return synced_catalog
+
+
+@pytest.fixture(scope="session")
+def rest_server(synced_catalog):
+    """Start REST catalog server for testing (session-scoped).
+
+    Returns the base URL of the server (e.g., http://localhost:8181).
+    The server runs in a background thread and is shared across all tests.
+    """
+    # Find available port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    base_url = f"http://127.0.0.1:{port}"
+    app = create_app(str(synced_catalog.catalog_dir))
+
+    # Start server in background thread
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    # Wait for server to be ready
+    for _ in range(50):
+        try:
+            if requests.get(f"{base_url}/v1/config", timeout=1).status_code == 200:
+                break
+        except Exception:
+            time.sleep(0.1)
+    else:
+        pytest.fail("REST server failed to start")
+
+    yield base_url
+
+    # Cleanup
+    server.should_exit = True
+    thread.join(timeout=5)

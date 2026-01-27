@@ -1,12 +1,10 @@
 """Command-line interface for Faceberg."""
 
-from pathlib import Path
-
 import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from faceberg.catalog import LocalCatalog, RemoteCatalog
+from faceberg.catalog import catalog
 
 console = Console()
 
@@ -29,21 +27,11 @@ def main(ctx, uri, token):
     A command-line tool to expose HuggingFace datasets as Iceberg tables,
     enabling powerful analytics and time-travel capabilities.
     """
-    # Create catalog instance based on URI
-    if uri.startswith("hf://"):
-        # Explicit HuggingFace protocol: hf://datasets/org/repo
-        hf_repo = uri.replace("hf://datasets/", "")
-        catalog = RemoteCatalog(name=hf_repo, hf_repo=hf_repo, hf_token=token)
-    elif uri.startswith("file://"):
-        # Explicit protocol or existing local path
-        catalog = LocalCatalog(name=uri, path=uri, hf_token=token)
-    elif Path(uri).is_dir():
-        catalog = LocalCatalog(name=uri, path=uri, hf_token=token)
-    else:
-        catalog = RemoteCatalog(name=uri, hf_repo=uri, hf_token=token)
+    # Create catalog instance using factory function
+    cat = catalog(uri, hf_token=token)
 
     ctx.ensure_object(dict)
-    ctx.obj["catalog"] = catalog
+    ctx.obj["catalog"] = cat
     ctx.obj["token"] = token
 
 
@@ -374,6 +362,67 @@ def remove(ctx, identifier, yes):
         except Exception as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
             raise click.Abort()
+
+
+@main.command()
+@click.option("--host", default="0.0.0.0", help="Host to bind to")
+@click.option("--port", default=8181, type=int, help="Port to bind to")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development")
+@click.option("--prefix", default="", help="URL prefix for REST API")
+@click.pass_context
+def serve(ctx, host, port, reload, prefix):
+    """Start REST catalog server.
+
+    Exposes the catalog via HTTP endpoints following the Apache Iceberg
+    REST catalog specification. Supports both LocalCatalog and RemoteCatalog.
+
+    The server provides read-only operations:
+    - List and load namespaces
+    - List and load tables
+    - Check existence of namespaces and tables
+
+    Examples:
+        # Serve local catalog
+        faceberg /path/to/catalog serve --port 8181
+
+        # Serve remote catalog on HuggingFace Hub
+        faceberg hf://datasets/org/repo serve --token $HF_TOKEN
+
+        # Enable auto-reload for development
+        faceberg /tmp/catalog serve --reload
+
+        # Use custom URL prefix
+        faceberg /tmp/catalog serve --prefix my-catalog
+    """
+    try:
+        import uvicorn
+        from faceberg.server import create_app
+    except ImportError as e:
+        console.print(
+            "[bold red]Error:[/bold red] Server dependencies not installed. "
+            "Install with: pip install 'faceberg[server]' or pip install litestar uvicorn"
+        )
+        raise click.Abort()
+
+    catalog = ctx.obj["catalog"]
+    token = ctx.obj.get("token")
+
+    console.print("[bold green]Starting REST catalog server...[/bold green]")
+    console.print(f"  Catalog: {catalog.uri}")
+    console.print(f"  Listening on: http://{host}:{port}")
+    console.print(f"  API docs: http://{host}:{port}/schema")
+    if prefix:
+        console.print(f"  URL prefix: /{prefix}")
+
+    app = create_app(catalog.uri, hf_token=token, prefix=prefix)
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":

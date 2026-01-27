@@ -1144,11 +1144,19 @@ class LocalCatalog(BaseCatalog):
             hf_token: Optional HuggingFace token for private datasets
             **properties: Additional catalog properties
         """
-        # Convert path to absolute file:// URI
+        # Convert path to absolute path and file:// URI
         self.catalog_dir = Path(path).resolve()
         path_str = self.catalog_dir.as_posix()
         catalog_uri = f"file:///{path_str.lstrip('/')}"
-        super().__init__(name=name, uri=catalog_uri, hf_token=hf_token, **properties)
+
+        # Set warehouse property to absolute path (not file:// URI)
+        # PyIceberg expects warehouse to be a path, not a URI
+        properties_with_warehouse = {
+            "warehouse": str(self.catalog_dir),
+            **properties,
+        }
+
+        super().__init__(name=name, uri=catalog_uri, hf_token=hf_token, **properties_with_warehouse)
 
         # Ensure catalog directory exists
         self.catalog_dir.mkdir(parents=True, exist_ok=True)
@@ -1305,7 +1313,14 @@ class RemoteCatalog(BaseCatalog):
         """
         # Construct HuggingFace Hub URI
         uri = f"hf://datasets/{hf_repo}"
-        super().__init__(name=name, uri=uri, hf_token=hf_token, **properties)
+
+        # Set warehouse property to hf:// URI for remote catalogs
+        properties_with_warehouse = {
+            "warehouse": uri,
+            **properties,
+        }
+
+        super().__init__(name=name, uri=uri, hf_token=hf_token, **properties_with_warehouse)
 
         # Hub-specific attributes
         self._hf_repo = hf_repo
@@ -1450,6 +1465,53 @@ class RemoteCatalog(BaseCatalog):
         )
         # The metadata file is in the table directory
         return Path(metadata_file).parent.parent
+
+
+def catalog(uri: str, *, hf_token: Optional[str] = None, **properties: str) -> Union[LocalCatalog, RemoteCatalog]:
+    """Create a catalog instance based on URI.
+
+    Factory function that determines catalog type from URI and creates
+    the appropriate LocalCatalog or RemoteCatalog instance.
+
+    Args:
+        uri: Catalog URI. Can be:
+            - HuggingFace Hub: "hf://datasets/org/repo" or "org/repo"
+            - Local file system: "/path/to/catalog" or "file:///path/to/catalog"
+        hf_token: HuggingFace API token (optional for public repos)
+        **properties: Additional catalog properties
+
+    Returns:
+        LocalCatalog or RemoteCatalog instance
+
+    Examples:
+        >>> # Local catalog
+        >>> cat = catalog("/path/to/catalog")
+        >>> cat = catalog("file:///path/to/catalog")
+
+        >>> # Remote catalog on HuggingFace Hub
+        >>> cat = catalog("hf://datasets/org/repo", hf_token="hf_...")
+        >>> cat = catalog("org/repo", hf_token="hf_...")
+    """
+    # HuggingFace Hub with explicit protocol
+    if uri.startswith("hf://"):
+        hf_repo = uri.replace("hf://datasets/", "")
+        return RemoteCatalog(name=hf_repo, hf_repo=hf_repo, hf_token=hf_token, **properties)
+
+    # Local catalog with explicit file:// protocol
+    if uri.startswith("file://"):
+        # Convert file:// URI to filesystem path
+        # file:///path/to/dir -> /path/to/dir
+        from urllib.parse import urlparse
+        parsed = urlparse(uri)
+        path = parsed.path
+        return LocalCatalog(name=uri, path=path, hf_token=hf_token, **properties)
+
+    # Local catalog with directory path
+    if Path(uri).is_dir():
+        return LocalCatalog(name=uri, path=uri, hf_token=hf_token, **properties)
+
+    # Assume it's a HuggingFace repo ID (org/repo format)
+    return RemoteCatalog(name=uri, hf_repo=uri, hf_token=hf_token, **properties)
 
 
 # Alias for main API

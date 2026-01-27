@@ -217,13 +217,37 @@ faceberg mycatalog info default.my_table
 # Scan and display sample data from a table
 faceberg mycatalog scan default.my_table
 faceberg mycatalog scan default.my_table --limit=10
+
+# Start REST catalog server (exposes catalog via HTTP)
+faceberg mycatalog serve --port 8181
+
+# Start server with auto-reload for development
+faceberg mycatalog serve --reload
+
+# Serve remote catalog from HuggingFace Hub
+faceberg org/catalog-repo serve --token $HF_TOKEN
 ```
 
 ## Features
 
 - **Flexible catalogs**: Local directories or HuggingFace repositories
+- **REST API server**: Expose catalogs via HTTP following Iceberg REST spec
 - **Config-driven syncing**: Define datasets to sync in YAML
 - **Read without config**: Open existing catalogs without configuration
 - **Remote-first**: Catalogs on HuggingFace can be read by anyone
 - **Dataset-aware**: Handles multiple configs and splits
 - **hf:// protocol**: Leverages HF dataset storage efficiently
+
+
+### REST API Features
+
+**Read-Only Operations (Current):**
+- ✅ List and load namespaces
+- ✅ List and load tables
+- ✅ Check existence of namespaces and tables
+- ✅ Get catalog configuration
+
+**Planned Features:**
+- Create/update/delete namespaces
+- Create/update/delete tables
+- Commit table changes
