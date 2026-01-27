@@ -92,6 +92,9 @@ _EXCEPTION_HANDLERS: Dict[int | type[Exception], Any] = {
     Exception: _handle_exception,  # Catch-all for consistent error format
 }
 
+# TODO(kszucs): https://{user}-{repo}.hf.space should render a html page
+# showing the namespaces and tables and maybe the ability to run simple
+# queries against the tables using DuckDB in the browser
 
 # =========================================================================
 # Config Endpoint
@@ -108,8 +111,14 @@ def get_config_handler(
     catalog = state["catalog"]
     warehouse = warehouse_param or catalog.properties.get(WAREHOUSE_LOCATION, "")
 
+    # Use X-Forwarded-Proto if behind a proxy, otherwise use request scheme
+    base_url = str(request.base_url)
+    forwarded_proto = request.headers.get("X-Forwarded-Proto")
+    if forwarded_proto and base_url.startswith("http://"):
+        base_url = base_url.replace("http://", f"{forwarded_proto}://", 1)
+
     overrides: Dict[str, Any] = {
-        URI: str(request.base_url),
+        URI: base_url,
         WAREHOUSE_LOCATION: warehouse,
     }
 

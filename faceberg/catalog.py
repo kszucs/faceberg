@@ -160,6 +160,10 @@ class BaseCatalog(Catalog):
     # Catalog initialization
     # =========================================================================
 
+    # TODO(kszucs): allow passing a config object which is an incomplete
+    # db.Catalog instance without uri and revisions set, then initialization
+    # should sync as well given the provided config; this should be accessible
+    # through the cli as well
     def init(self) -> None:
         """Initialize the catalog storage.
 
@@ -1382,33 +1386,23 @@ class RemoteCatalog(BaseCatalog):
         )
 
     def _init_spaces(self) -> None:
-        def render(template, **kwargs) -> str:
-            template_path = Path(__file__).parent / "spaces" / template
-            template_content = template_path.read_text()
-            rendered_content = template_content.format(**kwargs)
-            rendered_path = self._staging_dir / template
-            rendered_path.write_text(rendered_content)
-            return rendered_path
+        variables = {
+            "space_display_name": self._hf_repo.split("/")[1].replace("-", " ").title(),
+            "catalog_uri": self.uri,
+            "api_url": self._hf_repo.replace("/", "-"),
+        }
 
-        space_display_name = self._hf_repo.split("/")[1].replace("-", " ").title()
-        api_url = self._hf_repo.replace("/", "-")
-
-        # Generate README and Dockerfile for the repository
-        dockerfile_path = render("Dockerfile")
-        readme_path = render(
-            "README.md",
-            space_display_name=space_display_name,
-            catalog_uri=self.uri,
-            api_url=api_url,
-        )
-
-        # Stage README and Dockerfile for commit
-        self._staged_changes.extend(
-            [
-                CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=readme_path),
-                CommitOperationAdd(path_in_repo="Dockerfile", path_or_fileobj=dockerfile_path),
-            ]
-        )
+        spaces_dir = Path(__file__).parent / "spaces"
+        # iterate over all files in the spaces_dir
+        for path in spaces_dir.rglob("*"):
+            path_in_repo = str(path.relative_to(spaces_dir))
+            if path.is_file():
+                content = path.read_text().format(**variables)
+                rendered = self._staging_dir / path_in_repo
+                rendered.write_text(content)
+                self._staged_changes.append(
+                    CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=rendered)
+                )
 
     def _load_database(self) -> db.Catalog:
         """Load catalog from HuggingFace Hub.
@@ -1500,16 +1494,14 @@ class RemoteCatalog(BaseCatalog):
         return Path(metadata_file).parent.parent
 
 
-def catalog(
-    uri: str, *, hf_token: Optional[str] = None, **properties: str
-) -> Union[LocalCatalog, RemoteCatalog]:
+def catalog(uri: str, *, hf_token: Optional[str] = None, **properties: str) -> Union[LocalCatalog, RemoteCatalog]:
     """Create a catalog instance based on URI.
 
     Factory function that determines catalog type from URI and creates
     the appropriate LocalCatalog or RemoteCatalog instance.
 
     Args:
-        uri: Catalog URI. Can be:
+        uri: Catalog URI
             - HuggingFace Hub: "hf://{repo_type}/org/repo" (e.g., "hf://datasets/org/repo", "hf://spaces/org/repo")
             - HuggingFace Hub (shorthand): "org/repo" (defaults to spaces repo type)
             - Local file system: "/path/to/catalog" or "file:///path/to/catalog"

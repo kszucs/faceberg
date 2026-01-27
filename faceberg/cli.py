@@ -163,21 +163,11 @@ def init(ctx):
     else:
         console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog.uri}")
 
-    try:
-        catalog.init()
-        console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
+    catalog.init()
+    console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
 
-        console.print("\n[dim]Next steps:[/dim]")
-        console.print("  1. Ensure faceberg.yml config file is configured")
-        console.print("  2. Run: faceberg --config=faceberg.yml sync")
-    except Exception as e:
-        # Handle "repository already exists" error
-        if "already exists" in str(e):
-            console.print(f"[bold yellow]Warning:[/bold yellow] {e}")
-            console.print("[dim]Catalog already initialized. Use 'sync' to add tables.[/dim]")
-        else:
-            console.print(f"[bold red]Error:[/bold red] {e}")
-            raise click.Abort()
+    # TODO(kszucs): display additional info such as repo URL for remote catalogs
+    # TODO(kszucs): recommend next steps e.g. add datasets, scan and quack
 
 
 @main.command("list")
@@ -357,25 +347,41 @@ def remove(ctx, identifier, yes):
 
 
 @main.command()
-@click.option("--endpoint", default="http://localhost:8181", help="REST catalog endpoint URL")
-def quack(endpoint):
+@click.option("--endpoint", default=None, help="REST catalog endpoint URL")
+@click.pass_context
+def quack(ctx, endpoint):
     """Open DuckDB shell with REST catalog attached.
 
     Starts an interactive DuckDB session with the Iceberg REST catalog
-    pre-configured. The catalog must already be running (via 'faceberg serve').
+    pre-configured. For remote catalogs on HuggingFace Spaces, automatically
+    connects to the Space's REST endpoint. For local catalogs, connects to
+    localhost:8181 by default.
 
     Examples:
-        # Connect to local REST server
+        # Connect to remote catalog (auto-detects Space URL)
+        faceberg user/catalog quack
+
+        # Connect to local REST server (uses localhost:8181 by default)
         faceberg /tmp/catalog quack
 
         # Connect to custom endpoint
         faceberg /tmp/catalog quack --endpoint http://localhost:9000
-
-        # Use custom catalog name
-        faceberg /tmp/catalog quack --catalog-name my_catalog
     """
     try:
         from faceberg.interactive import quack as quack_fn
+
+        # Auto-detect endpoint if not specified
+        if endpoint is None:
+            catalog = ctx.obj["catalog"]
+            if isinstance(catalog, RemoteCatalog) and catalog._hf_repo_type == "space":
+                # Construct Space URL from repo ID (e.g., "user/catalog" -> "user-catalog.hf.space")
+                space_url = catalog._hf_repo.replace("/", "-")
+                endpoint = f"https://{space_url}.hf.space"
+                console.print(f"[dim]Connecting to Space: {endpoint}[/dim]")
+            else:
+                # Local catalog - use localhost
+                endpoint = "http://localhost:8181"
+                console.print(f"[dim]Connecting to local server: {endpoint}[/dim]")
 
         quack_fn(endpoint=endpoint, catalog_name="faceberg")
     except ImportError:

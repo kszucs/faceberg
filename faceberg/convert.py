@@ -38,6 +38,8 @@ from faceberg.bridge import FileInfo
 logger = logging.getLogger(__name__)
 
 
+# TODO(kszucs): parallelize metadata creation for large number of files
+
 class IcebergMetadataWriter:
     """Writes Iceberg metadata files in metadata-only mode.
 

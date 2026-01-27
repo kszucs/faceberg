@@ -18,13 +18,23 @@ Get your token from [HuggingFace Settings](https://huggingface.co/settings/token
 
 ## Step 1: Initialize Remote Catalog
 
-Create a new remote catalog on HuggingFace Hub:
+Create a new remote catalog on HuggingFace Hub (you can use any repository name):
 
 ```bash
-faceberg your-username/testcatalog init
+faceberg user/catalog init
 ```
 
-This creates a new dataset repository on HuggingFace that will store your Iceberg catalog metadata.
+This creates a HuggingFace Space at:
+```
+https://user-catalog.hf.space
+```
+
+The Space automatically deploys a REST server that exposes your catalog following the Apache Iceberg REST specification. The API is accessible at endpoints like:
+- `https://user-catalog.hf.space/v1/config` - Catalog configuration
+- `https://user-catalog.hf.space/v1/namespaces` - List namespaces
+- `https://user-catalog.hf.space/v1/namespaces/{namespace}/tables` - List tables
+
+The Space also stores all your Iceberg catalog metadata files.
 
 ## Step 2: Add HuggingFace Datasets
 
@@ -32,13 +42,13 @@ Add three tables to your remote catalog using the CLI. The `add` command automat
 
 ```bash
 # Add DeepMind Code Contests
-faceberg your-username/testcatalog add deepmind/code_contests --config default
+faceberg user/catalog add deepmind/code_contests --config default
 
 # Add OpenAI HumanEval
-faceberg your-username/testcatalog add openai/openai_humaneval --config openai_humaneval
+faceberg user/catalog add openai/openai_humaneval --config openai_humaneval
 
 # Add GSM8K
-faceberg your-username/testcatalog add openai/gsm8k --config main
+faceberg user/catalog add openai/gsm8k --config main
 ```
 
 ## Step 3: Sync Datasets
@@ -46,7 +56,7 @@ faceberg your-username/testcatalog add openai/gsm8k --config main
 Sync the datasets to create Iceberg table metadata and push to HuggingFace:
 
 ```bash
-faceberg your-username/testcatalog sync
+faceberg user/catalog sync
 ```
 
 This downloads dataset metadata, creates Iceberg table files, and automatically pushes them to your HuggingFace repository.
@@ -56,40 +66,43 @@ This downloads dataset metadata, creates Iceberg table files, and automatically 
 List available tables:
 
 ```bash
-faceberg your-username/testcatalog list
+faceberg user/catalog list
 ```
 
 Scan tables to see sample data:
 
 ```bash
 # View first 10 rows of Code Contests
-faceberg your-username/testcatalog scan default.code_contests --limit 10
+faceberg user/catalog scan default.code_contests --limit 10
 
 # View first 10 rows of HumanEval
-faceberg your-username/testcatalog scan default.openai_humaneval --limit 10
+faceberg user/catalog scan default.openai_humaneval --limit 10
 
 # View first 10 rows of GSM8K
-faceberg your-username/testcatalog scan default.gsm8k --limit 10
+faceberg user/catalog scan default.gsm8k --limit 10
 ```
 
 ## Step 5: Query with DuckDB
 
-You can query the remote Iceberg tables directly with DuckDB using the explicit `hf://` metadata.json paths:
+You can query the remote Iceberg tables directly with DuckDB using the REST API deployed to your Space:
 
 ```python
 import duckdb
 
-# Create DuckDB connection and load extensions
+# Create DuckDB connection and load Iceberg extension
 conn = duckdb.connect()
-conn.execute("INSTALL httpfs")
-conn.execute("LOAD httpfs")
 conn.execute("INSTALL iceberg")
 conn.execute("LOAD iceberg")
 
-# Query Code Contests table from HuggingFace
+# Attach the REST catalog from your Space
+conn.execute("""
+    ATTACH 'https://user-catalog.hf.space' AS faceberg (TYPE ICEBERG)
+""")
+
+# Query Code Contests table
 result = conn.execute("""
     SELECT name, description, difficulty
-    FROM iceberg_scan('hf://datasets/your-username/testcatalog/default/code_contests/metadata/v1.metadata.json')
+    FROM faceberg.default.code_contests
     LIMIT 5
 """).fetchall()
 
@@ -97,10 +110,10 @@ print("Code Contests Sample:")
 for row in result:
     print(row)
 
-# Query OpenAI HumanEval table from HuggingFace
+# Query OpenAI HumanEval table
 result = conn.execute("""
     SELECT task_id, prompt
-    FROM iceberg_scan('hf://datasets/your-username/testcatalog/default/openai_humaneval/metadata/v1.metadata.json')
+    FROM faceberg.default.openai_humaneval
     LIMIT 5
 """).fetchall()
 
@@ -108,10 +121,10 @@ print("\nHumanEval Sample:")
 for row in result:
     print(row)
 
-# Query GSM8K table from HuggingFace
+# Query GSM8K table
 result = conn.execute("""
     SELECT question, answer
-    FROM iceberg_scan('hf://datasets/your-username/testcatalog/default/gsm8k/metadata/v1.metadata.json')
+    FROM faceberg.default.gsm8k
     LIMIT 5
 """).fetchall()
 
@@ -120,12 +133,22 @@ for row in result:
     print(row)
 ```
 
+Alternatively, you can use the Faceberg CLI's interactive DuckDB shell:
+
+```bash
+faceberg user/catalog quack
+```
+
+This automatically connects to your Space's REST endpoint and opens an interactive session.
+
 ## What's on HuggingFace?
 
-After syncing, your HuggingFace dataset repository contains:
+After syncing, your HuggingFace Space contains:
 
 ```
-your-username/testcatalog/
+user/catalog/
+├── Dockerfile             # Space container configuration
+├── README.md              # Space documentation with API endpoints
 ├── faceberg.yml           # Catalog configuration
 └── default/               # Namespace
     ├── code_contests/     # Table directory
@@ -154,43 +177,59 @@ Each table's metadata directory contains:
 - **\*.avro**: Manifest files containing references to the actual data files (Parquet files on HuggingFace)
 - **version-hint.text**: Tracks the current metadata version for quick lookups
 
-The `faceberg.yml` file in your HuggingFace repository contains:
+The `faceberg.yml` file in your Space contains:
 
 ```yaml
-uri: hf://datasets/your-username/testcatalog
+uri: hf://spaces/user/catalog
 
 default:
   code_contests:
     dataset: deepmind/code_contests
     revision: <commit-sha>
     config: default
-    uri: hf://datasets/your-username/testcatalog/default/code_contests/metadata/v1.metadata.json
+    uri: hf://spaces/user/catalog/default/code_contests/metadata/v1.metadata.json
   openai_humaneval:
     dataset: openai/openai_humaneval
     revision: <commit-sha>
     config: openai_humaneval
-    uri: hf://datasets/your-username/testcatalog/default/openai_humaneval/metadata/v1.metadata.json
+    uri: hf://spaces/user/catalog/default/openai_humaneval/metadata/v1.metadata.json
   gsm8k:
     dataset: openai/gsm8k
     revision: <commit-sha>
     config: main
-    uri: hf://datasets/your-username/testcatalog/default/gsm8k/metadata/v1.metadata.json
+    uri: hf://spaces/user/catalog/default/gsm8k/metadata/v1.metadata.json
 ```
 
 ## Sharing Your Catalog
 
-Since your catalog is hosted on HuggingFace, anyone can read it without authentication:
+Since your catalog is hosted on HuggingFace Spaces, anyone can access it through the REST API without authentication:
 
 ```python
-from faceberg.catalog import RemoteCatalog
+from pyiceberg.catalog.rest import RestCatalog
 
-# Anyone can read your public catalog
-catalog = RemoteCatalog(hf_repo="your-username/testcatalog")
+# Anyone can connect to your public catalog via REST
+catalog = RestCatalog(
+    name="faceberg",
+    uri="https://user-catalog.hf.space",
+)
+
+# Load and query tables
 table = catalog.load_table("default.code_contests")
 df = table.scan().to_pandas()
 ```
 
-To make it private, set your HuggingFace repository to private.
+Alternatively, use Faceberg's RemoteCatalog to work with the Space directly:
+
+```python
+from faceberg.catalog import RemoteCatalog
+
+# Load catalog from Space
+catalog = RemoteCatalog("user/catalog")
+table = catalog.load_table("default.code_contests")
+df = table.scan().to_pandas()
+```
+
+To make your catalog private, set your HuggingFace Space to private.
 
 ## Next Steps
 
