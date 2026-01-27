@@ -6,6 +6,7 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any, List, Optional, Set, Union
 
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
@@ -169,19 +170,23 @@ class BaseCatalog(Catalog):
         Raises:
             Exception: Implementation-specific exceptions (e.g., repository already exists)
         """
-        self._init_database()
+        # Initialize catalog storage, local directory or remote huggingface repository
+        self._init_catalog()
+
+        with self._staging_changes():
+            self._db = db.Catalog(uri=self.uri, namespaces={})
 
     # =========================================================================
     # Internal helper methods (catalog persistence and utilities)
     # =========================================================================
     # Subclasses must implement these methods
 
-    def _init_database(self) -> None:
+    def _init_catalog(self) -> None:
         """Initialize catalog-specific storage.
 
         Subclasses must implement this method.
         """
-        raise NotImplementedError("Subclasses must implement _init_database()")
+        raise NotImplementedError("Subclasses must implement _init_catalog()")
 
     def _load_database(self) -> db.Catalog:
         """Load catalog from storage.
@@ -199,15 +204,27 @@ class BaseCatalog(Catalog):
 
         Serializes self._db to staging_dir/faceberg.yml and appends the
         change to self._staged_changes.
-        Must be called within _staging() context.
-        Subclasses must implement this method.
+        Must be called within _staging_changes() context.
         """
-        raise NotImplementedError("Subclasses must implement _save_database()")
+        if self._staging_dir is None:
+            raise RuntimeError("_save_database() must be called within _staging_changes() context")
+        if self._db is None:
+            raise RuntimeError("no database loaded to save")
+
+        catalog_file = self._staging_dir / "faceberg.yml"
+
+        # Save catalog store to YAML
+        self._db.to_yaml(catalog_file)
+
+        # Record the change
+        self._staged_changes.append(
+            CommitOperationAdd(path_in_repo="faceberg.yml", path_or_fileobj=str(catalog_file))
+        )
 
     def _persist_changes(self) -> None:
         """Persist staged changes to final storage.
 
-        Must be called within _staging() context.
+        Must be called within _staging_changes() context.
         Subclasses must implement this method.
         """
         raise NotImplementedError("Subclasses must implement _persist_changes()")
@@ -233,14 +250,20 @@ class BaseCatalog(Catalog):
         raise NotImplementedError("Subclasses must implement _load_table_locally()")
 
     @contextmanager
-    def _staging(self):
+    def _staging_changes(self):
         """Context manager for staging catalog operations.
 
-        Creates a temporary staging directory, loads catalog, and provides
-        staging context for modifications. On exit, saves catalog, persists changes, and cleans up.
+        Creates a temporary staging directory and provides staging context
+        for modifications. On exit, persists changes and cleans up.
+
+        The caller is responsible for:
+        - Loading the database before or within the staging context
+        - Modifying self._db as needed
+        - Persisting changes happens automatically on exit
 
         Usage:
-            with self._staging():
+            self._load_database()  # Load database first
+            with self._staging_changes():
                 # self._staging_dir is available
                 # self._db contains loaded catalog
                 # self._staged_changes tracks all modifications
@@ -255,20 +278,16 @@ class BaseCatalog(Catalog):
         # Initialize staged changes list
         self._staged_changes = []
 
-        # Load catalog from storage (sets self._db)
-        self._load_database()
-
         try:
             yield
         finally:
-            # Save catalog to staging (serializes self._db to staging_dir/faceberg.yml)
-            # This also records the faceberg.yml change in self._staged_changes
+            # Save database to staging
             self._save_database()
 
             # Persist changes to storage
             self._persist_changes()
 
-            # Clean up
+            # Clean up both the staging directory and internal state
             self._staged_changes = None
             self._staging_dir = None
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -328,7 +347,10 @@ class BaseCatalog(Catalog):
         else:
             ns_str = ".".join(namespace)
 
-        with self._staging():
+        # Load database
+        self._load_database()
+
+        with self._staging_changes():
             # Check if namespace already exists
             if ns_str in self._db.namespaces:
                 raise NamespaceAlreadyExistsError(f"Namespace {ns_str} already exists")
@@ -356,7 +378,10 @@ class BaseCatalog(Catalog):
         else:
             ns_str = ".".join(namespace)
 
-        with self._staging():
+        # Load database
+        self._load_database()
+
+        with self._staging_changes():
             # Check if namespace exists and has tables
             ns = self._db.namespaces.get(ns_str)
             if ns and len(ns.tables) > 0:
@@ -443,7 +468,10 @@ class BaseCatalog(Catalog):
         """
         namespace, table_name = self._parse_identifier(identifier)
 
-        with self._staging():
+        # Load database
+        self._load_database()
+
+        with self._staging_changes():
             # Check if table already exists
             if self._db.has_table(namespace, table_name):
                 raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
@@ -583,7 +611,10 @@ class BaseCatalog(Catalog):
         """
         namespace, table_name = self._parse_identifier(identifier)
 
-        with self._staging():
+        # Load database
+        self._load_database()
+
+        with self._staging_changes():
             # Check if table already exists
             if self._db.has_table(namespace, table_name):
                 raise TableAlreadyExistsError(f"Table {namespace}.{table_name} already exists")
@@ -649,7 +680,10 @@ class BaseCatalog(Catalog):
         """
         namespace, table_name = self._parse_identifier(identifier)
 
-        with self._staging():
+        # Load database
+        self._load_database()
+
+        with self._staging_changes():
             # Check if table exists and remove it
             if not self._db.delete_table(namespace, table_name):
                 raise NoSuchTableError(f"Table {namespace}.{table_name} not found")
@@ -677,7 +711,10 @@ class BaseCatalog(Catalog):
         from_namespace, from_table_name = self._parse_identifier(from_identifier)
         to_namespace, to_table_name = self._parse_identifier(to_identifier)
 
-        with self._staging():
+        # Load database
+        self._load_database()
+
+        with self._staging_changes():
             # Check if source table exists
             try:
                 from_table = self._db.get_table(from_namespace, from_table_name)
@@ -821,7 +858,7 @@ class BaseCatalog(Catalog):
         Raises:
             ValueError: If database is not set at initialization, or if table is invalid
         """
-        # Load the database
+        # Load the database once at the start
         db = self._load_database()
 
         # Validate store is provided
@@ -829,8 +866,6 @@ class BaseCatalog(Catalog):
             raise ValueError(
                 "No database available. Initialize the catalog first by calling catalog.init()"
             )
-
-        created_tables = []
 
         # Determine which tables to process
         if table_name:
@@ -858,7 +893,9 @@ class BaseCatalog(Catalog):
                 for table_name, table in namespace.tables.items()
             ]
 
-        # Create tables (each method manages its own staging)
+        tables = []
+
+        # Process each table with its own staging context
         for namespace, table_name, store_table in tables_to_process:
             # Discover dataset (only for the specific config needed)
             dataset_info = DatasetInfo.discover(
@@ -875,14 +912,19 @@ class BaseCatalog(Catalog):
                 token=self._hf_token,
             )
 
-            # Sync table (create new or update existing)
-            table = self._sync_dataset(table_info)
-            if table is not None:
+            # Sync table in its own staging context
+            with self._staging_changes():
+                # Sync table (create new or update existing)
+                metadata_uri = self._sync_dataset(table_info)
                 # Update store with metadata URI
-                store_table.uri = table.metadata_location
-                created_tables.append(table)
+                store_table.uri = metadata_uri
+                store_table.revision = table_info.source_revision or ""
 
-        return created_tables
+            # Load the table after persistence
+            table = self.load_table(table_info.identifier)
+            tables.append(table)
+
+        return tables
 
     def add_dataset(
         self, identifier: Union[str, Identifier], dataset: str, config: str = "default"
@@ -906,11 +948,16 @@ class BaseCatalog(Catalog):
         """
         namespace, table_name = self._parse_identifier(identifier)
 
-        # Check if table already exists
-        if self.table_exists(identifier):
-            raise TableAlreadyExistsError(
-                f"Table {namespace}.{table_name} already exists in catalog"
-            )
+        # Load database to check if table exists
+        db = self._load_database()
+
+        # Check if table already exists with metadata
+        if db.has_table(namespace, table_name):
+            store_table = db.get_table(namespace, table_name)
+            if store_table.uri and store_table.uri != "":
+                raise TableAlreadyExistsError(
+                    f"Table {namespace}.{table_name} already exists in catalog"
+                )
 
         # Discover dataset
         dataset_info = DatasetInfo.discover(
@@ -927,24 +974,30 @@ class BaseCatalog(Catalog):
             token=self._hf_token,
         )
 
-        # Create the table with full metadata
-        return self._add_dataset(table_info)
+        # Create the table with full metadata in staging context
+        with self._staging_changes():
+            self._add_dataset(table_info)
 
-    def _sync_dataset(self, table_info: TableInfo) -> Optional[Table]:
+        # Load and return table after persistence
+        return self.load_table(identifier)
+
+    def _sync_dataset(self, table_info: TableInfo) -> str:
         """Sync a table by creating it or checking if it needs updates.
+
+        Must be called within a _staging_changes() context.
 
         Args:
             table_info: TableInfo containing all metadata needed for table creation/update
 
         Returns:
-            Table object (created), or None if no sync needed
+            Metadata URI (either existing or newly created)
         """
+        namespace, table_name = self._parse_identifier(table_info.identifier)
+
         # Check if table entry exists in database
-        if self.table_exists(table_info.identifier):
+        if self._db.has_table(namespace, table_name):
             # Get table entry to check if it has been synced (has metadata uri)
-            namespace, table_name = self._parse_identifier(table_info.identifier)
-            catalog = self._load_database()
-            store_table = catalog.get_table(namespace, table_name)
+            store_table = self._db.get_table(namespace, table_name)
 
             # If table hasn't been synced yet (empty uri), create it
             if not store_table.uri or store_table.uri == "":
@@ -954,17 +1007,17 @@ class BaseCatalog(Catalog):
             current_revision = store_table.revision
             new_revision = table_info.source_revision
 
-            # If revisions match, no sync needed
+            # If revisions match, no sync needed - return existing metadata URI
             if current_revision == new_revision and new_revision is not None and current_revision:
-                return None
+                return store_table.uri
 
             # Revision changed or not set - update the table snapshot
             return self._update_dataset(table_info)
+        else:
+            # Table doesn't exist - create it
+            return self._add_dataset(table_info)
 
-        # Table doesn't exist - create it
-        return self._add_dataset(table_info)
-
-    def _add_dataset(self, table_info: TableInfo) -> Table:
+    def _add_dataset(self, table_info: TableInfo) -> str:
         """Create Iceberg table from TableInfo using metadata-only mode.
 
         This method creates an Iceberg table by:
@@ -973,153 +1026,149 @@ class BaseCatalog(Catalog):
         3. Using IcebergMetadataWriter to write Iceberg metadata files
         4. Registering the table in the catalog
 
+        Must be called within a _staging_changes() context.
+
         Args:
             table_info: TableInfo containing all metadata needed for table creation
 
         Returns:
-            Created Table object
+            Metadata URI of the created table
 
         Raises:
-            TableAlreadyExistsError: If table already exists
+            TableAlreadyExistsError: If table already exists with metadata
         """
-        with self._staging():
-            # Parse identifier
-            namespace, table = self._parse_identifier(table_info.identifier)
+        # Parse identifier
+        namespace, table = self._parse_identifier(table_info.identifier)
 
-            # Create namespace directory on-demand
-            ns_dir = self._staging_dir / namespace
-            ns_dir.mkdir(parents=True, exist_ok=True)
+        # Create namespace directory on-demand
+        ns_dir = self._staging_dir / namespace
+        ns_dir.mkdir(parents=True, exist_ok=True)
 
-            # Check if table already exists with metadata (has been synced)
-            try:
-                existing_table = self._db.get_table(namespace, table)
-                # Only raise error if table has already been synced (has non-empty uri)
-                if existing_table.uri and existing_table.uri != "":
-                    raise TableAlreadyExistsError(f"Table {table_info.identifier} already exists")
-                # Table exists but hasn't been synced - OK to proceed with creation
-            except KeyError:
-                pass  # Table doesn't exist in database, continue
+        # Check if table already exists with metadata (has been synced)
+        try:
+            existing_table = self._db.get_table(namespace, table)
+            # Only raise error if table has already been synced (has non-empty uri)
+            if existing_table.uri and existing_table.uri != "":
+                raise TableAlreadyExistsError(f"Table {table_info.identifier} already exists")
+            # Table exists but hasn't been synced - OK to proceed with creation
+        except KeyError:
+            pass  # Table doesn't exist in database, continue
 
-            # Create local metadata directory
-            metadata_path = self._staging_dir / namespace / table
-            metadata_path.mkdir(parents=True, exist_ok=True)
+        # Create local metadata directory
+        metadata_path = self._staging_dir / namespace / table
+        metadata_path.mkdir(parents=True, exist_ok=True)
 
-            # Create table URI for metadata
-            table_uri = f"{self.uri.rstrip('/')}/{namespace}/{table}"
+        # Create table URI for metadata
+        table_uri = f"{self.uri.rstrip('/')}/{namespace}/{table}"
 
-            # Create metadata writer
-            metadata_writer = IcebergMetadataWriter(
-                table_path=metadata_path,
-                schema=table_info.schema,
-                partition_spec=table_info.partition_spec,
-                base_uri=table_uri,
-            )
+        # Create metadata writer
+        metadata_writer = IcebergMetadataWriter(
+            table_path=metadata_path,
+            schema=table_info.schema,
+            partition_spec=table_info.partition_spec,
+            base_uri=table_uri,
+        )
 
-            # Generate table UUID
-            table_uuid = str(uuid.uuid4())
+        # Generate table UUID
+        table_uuid = str(uuid.uuid4())
 
-            # Write Iceberg metadata files (manifest, manifest list, table metadata)
-            metadata_file_path = metadata_writer.create_metadata_from_files(
-                file_infos=table_info.files,
-                table_uuid=table_uuid,
-                properties=table_info.get_table_properties(),
-            )
+        # Write Iceberg metadata files (manifest, manifest list, table metadata)
+        metadata_file_path = metadata_writer.create_metadata_from_files(
+            file_infos=table_info.files,
+            table_uuid=table_uuid,
+            properties=table_info.get_table_properties(),
+        )
 
-            # Record all created files in the table directory
-            for file_path in metadata_path.rglob("*"):
-                if file_path.is_file():
-                    rel_path = file_path.relative_to(self._staging_dir)
-                    self._staged_changes.append(
-                        CommitOperationAdd(
-                            path_in_repo=str(rel_path), path_or_fileobj=str(file_path)
-                        )
-                    )
+        # Record all created files in the table directory
+        for file_path in metadata_path.rglob("*"):
+            if file_path.is_file():
+                rel_path = file_path.relative_to(self._staging_dir)
+                self._staged_changes.append(
+                    CommitOperationAdd(path_in_repo=str(rel_path), path_or_fileobj=str(file_path))
+                )
 
-            # Register table in store with full metadata URI
-            rel_path = metadata_file_path.relative_to(self._staging_dir)
-            metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
+        # Register table in store with full metadata URI
+        rel_path = metadata_file_path.relative_to(self._staging_dir)
+        metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
 
-            # Create and set table entry
-            self._db.set_table(
-                namespace,
-                table,
-                db.Table(
-                    dataset=table_info.source_repo,
-                    uri=metadata_uri,
-                    revision=table_info.source_revision or "",  # Empty if revision not available
-                    config=table_info.source_config,
-                ),
-            )
+        # Create and set table entry
+        self._db.set_table(
+            namespace,
+            table,
+            db.Table(
+                dataset=table_info.source_repo,
+                uri=metadata_uri,
+                revision=table_info.source_revision or "",  # Empty if revision not available
+                config=table_info.source_config,
+            ),
+        )
 
-        # Load and return table after staging context exits and persists
-        return self.load_table(table_info.identifier)
+        return metadata_uri
 
-    def _update_dataset(self, table_info: TableInfo) -> Table:
+    def _update_dataset(self, table_info: TableInfo) -> str:
         """Update existing table with a new snapshot for the updated dataset revision.
+
+        Must be called within a _staging_changes() context.
 
         Args:
             table_info: TableInfo with updated revision and file information
 
         Returns:
-            Updated Table object
+            Metadata URI of the updated table
         """
         # Load existing table to get current metadata
         table = self.load_table(table_info.identifier)
 
-        with self._staging():
-            # Parse identifier and create paths
-            namespace, table = self._parse_identifier(table_info.identifier)
+        # Parse identifier and create paths
+        namespace, table_name = self._parse_identifier(table_info.identifier)
 
-            # Create local metadata directory
-            metadata_path = self._staging_dir / namespace / table
-            metadata_path.mkdir(parents=True, exist_ok=True)
+        # Create local metadata directory
+        metadata_path = self._staging_dir / namespace / table_name
+        metadata_path.mkdir(parents=True, exist_ok=True)
 
-            # Create table URI for metadata
-            table_uri = f"{self.uri.rstrip('/')}/{namespace}/{table}"
+        # Create table URI for metadata
+        table_uri = f"{self.uri.rstrip('/')}/{namespace}/{table_name}"
 
-            # Create metadata writer
-            metadata_writer = IcebergMetadataWriter(
-                table_path=metadata_path,
-                schema=table_info.schema,
-                partition_spec=table_info.partition_spec,
-                base_uri=table_uri,
-            )
+        # Create metadata writer
+        metadata_writer = IcebergMetadataWriter(
+            table_path=metadata_path,
+            schema=table_info.schema,
+            partition_spec=table_info.partition_spec,
+            base_uri=table_uri,
+        )
 
-            # Append new snapshot with updated files
-            metadata_file_path = metadata_writer.append_snapshot_from_files(
-                file_infos=table_info.files,
-                current_metadata=table.metadata,
-                properties=table_info.get_table_properties(),
-            )
+        # Append new snapshot with updated files
+        metadata_file_path = metadata_writer.append_snapshot_from_files(
+            file_infos=table_info.files,
+            current_metadata=table.metadata,
+            properties=table_info.get_table_properties(),
+        )
 
-            # Record all files in the table directory (including new manifest/metadata files)
-            for file_path in metadata_path.rglob("*"):
-                if file_path.is_file():
-                    rel_path = file_path.relative_to(self._staging_dir)
-                    self._staged_changes.append(
-                        CommitOperationAdd(
-                            path_in_repo=str(rel_path), path_or_fileobj=str(file_path)
-                        )
-                    )
+        # Record all files in the table directory (including new manifest/metadata files)
+        for file_path in metadata_path.rglob("*"):
+            if file_path.is_file():
+                rel_path = file_path.relative_to(self._staging_dir)
+                self._staged_changes.append(
+                    CommitOperationAdd(path_in_repo=str(rel_path), path_or_fileobj=str(file_path))
+                )
 
-            # Update store with full metadata URI
-            rel_path = metadata_file_path.relative_to(self._staging_dir)
-            metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
+        # Update store with full metadata URI
+        rel_path = metadata_file_path.relative_to(self._staging_dir)
+        metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
 
-            # Update table entry with new snapshot
-            self._db.set_table(
-                namespace,
-                table,
-                db.Table(
-                    dataset=table_info.source_repo,
-                    uri=metadata_uri,
-                    revision=table_info.source_revision or "",  # Empty if revision not available
-                    config=table_info.source_config,
-                ),
-            )
+        # Update table entry with new snapshot
+        self._db.set_table(
+            namespace,
+            table_name,
+            db.Table(
+                dataset=table_info.source_repo,
+                uri=metadata_uri,
+                revision=table_info.source_revision or "",  # Empty if revision not available
+                config=table_info.source_config,
+            ),
+        )
 
-        # Reload and return table after staging context exits and persists
-        return self.load_table(table_info.identifier)
+        return metadata_uri
 
 
 class LocalCatalog(BaseCatalog):
@@ -1150,8 +1199,6 @@ class LocalCatalog(BaseCatalog):
             raise ValueError(f"LocalCatalog requires file:// URI, got: {uri}")
 
         # Convert file:// URI to filesystem path
-        from urllib.parse import urlparse
-
         parsed = urlparse(uri)
         path = parsed.path
 
@@ -1164,29 +1211,15 @@ class LocalCatalog(BaseCatalog):
             "warehouse": str(self.catalog_dir),
             **properties,
         }
-
         super().__init__(name=name, uri=uri, hf_token=hf_token, **properties_with_warehouse)
 
-        # Ensure catalog directory exists
-        self.catalog_dir.mkdir(parents=True, exist_ok=True)
-
-        # Auto-initialize if faceberg.yml doesn't exist
-        catalog_file = self.catalog_dir / "faceberg.yml"
-        if not catalog_file.exists():
-            self._init_database()
-
-    def _init_database(self) -> None:
+    def _init_catalog(self) -> None:
         """Initialize local catalog storage.
 
         Ensures the catalog directory exists and creates an empty faceberg.yml file.
         """
         # Ensure catalog directory exists
         self.catalog_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create empty catalog store
-        catalog_file = self.catalog_dir / "faceberg.yml"
-        empty_catalog = db.Catalog(uri=self.uri, namespaces={})
-        empty_catalog.to_yaml(catalog_file)
 
     def _load_database(self) -> db.Catalog:
         """Load catalog from catalog directory.
@@ -1213,25 +1246,6 @@ class LocalCatalog(BaseCatalog):
         self._db = db.Catalog.from_yaml(catalog_file)
         return self._db
 
-    def _save_database(self) -> None:
-        """Save catalog to staging directory and record the change.
-
-        Serializes self._db to staging_dir/faceberg.yml and appends to staged_changes.
-        Must be called within _staging() context.
-        """
-        if self._staging_dir is None:
-            raise RuntimeError("_save_database() must be called within _staging() context")
-
-        catalog_file = self._staging_dir / "faceberg.yml"
-
-        # Save catalog store to YAML
-        self._db.to_yaml(catalog_file)
-
-        # Record the change
-        self._staged_changes.append(
-            CommitOperationAdd(path_in_repo="faceberg.yml", path_or_fileobj=str(catalog_file))
-        )
-
     def _persist_changes(self) -> None:
         """Persist staged changes to catalog directory.
 
@@ -1239,10 +1253,12 @@ class LocalCatalog(BaseCatalog):
         - CommitOperationAdd: moves file from staging to catalog_dir
         - CommitOperationDelete: removes directory from catalog_dir
 
-        Must be called within _staging() context.
+        Must be called within _staging_changes() context.
         """
         if self._staging_dir is None:
-            raise RuntimeError("_persist_changes() must be called within _staging() context")
+            raise RuntimeError(
+                "_persist_changes() must be called within _staging_changes() context"
+            )
 
         # Apply each operation
         for operation in self._staged_changes:
@@ -1333,23 +1349,19 @@ class RemoteCatalog(BaseCatalog):
                 f"Expected format: hf://{{repo_type}}/{{org}}/{{repo}}"
             )
 
-        hf_repo_type, hf_repo = parts
+        # Hub-specific attributes
+        self._hf_api = HfApi(token=hf_token)
+        self._hf_repo_type, self._hf_repo = parts
+        self._loaded_revision = None  # Track revision loaded from hub
 
         # Set warehouse property to hf:// URI for remote catalogs
         properties_with_warehouse = {
             "warehouse": uri,
             **properties,
         }
-
         super().__init__(name=name, uri=uri, hf_token=hf_token, **properties_with_warehouse)
 
-        # Hub-specific attributes
-        self._hf_repo = hf_repo
-        self._hf_repo_type = hf_repo_type
-        self._hf_api = HfApi(token=hf_token)
-        self._loaded_revision = None  # Track revision loaded from hub
-
-    def _init_database(self) -> None:
+    def _init_catalog(self) -> None:
         """Initialize remote catalog storage.
 
         Creates a new HuggingFace dataset repository with an empty faceberg.yml.
@@ -1361,23 +1373,9 @@ class RemoteCatalog(BaseCatalog):
         self._hf_api.create_repo(
             repo_id=self._hf_repo,
             repo_type=self._hf_repo_type,
+            space_sdk="docker",
             exist_ok=False,
         )
-
-        # Create empty catalog store in a temporary directory
-        with tempfile.TemporaryDirectory(prefix="faceberg_init_") as temp_dir:
-            catalog_file = Path(temp_dir) / "faceberg.yml"
-            empty_catalog = db.Catalog(uri=self.uri, namespaces={})
-            empty_catalog.to_yaml(catalog_file)
-
-            # Upload the empty catalog to the repository
-            self._hf_api.upload_file(
-                path_or_fileobj=str(catalog_file),
-                path_in_repo="faceberg.yml",
-                repo_id=self._hf_repo,
-                repo_type=self._hf_repo_type,
-                commit_message="Initialize catalog",
-            )
 
     def _load_database(self) -> db.Catalog:
         """Load catalog from HuggingFace Hub.
@@ -1425,26 +1423,6 @@ class RemoteCatalog(BaseCatalog):
             self._loaded_revision = None
 
         return self._db
-
-    def _save_database(self) -> None:
-        """Save catalog to staging directory and record the change.
-
-        Serializes self._db to staging_dir/faceberg.yml
-        and appends to staged_changes.
-        Must be called within _staging() context.
-        """
-        if self._staging_dir is None:
-            raise RuntimeError("_save_database() must be called within _staging() context")
-
-        catalog_file = self._staging_dir / "faceberg.yml"
-
-        # Save catalog store to YAML
-        self._db.to_yaml(catalog_file)
-
-        # Record the change
-        self._staged_changes.append(
-            CommitOperationAdd(path_in_repo="faceberg.yml", path_or_fileobj=str(catalog_file))
-        )
 
     def _persist_changes(self) -> None:
         """Persist staged changes to HuggingFace Hub.

@@ -36,7 +36,9 @@ def test_dir(tmp_path):
 def catalog(test_dir):
     """Create a test catalog."""
     uri = f"file:///{test_dir.as_posix()}"
-    return LocalCatalog(name=str(test_dir), uri=uri)
+    catalog = LocalCatalog(name=str(test_dir), uri=uri)
+    catalog.init()
+    return catalog
 
 
 @pytest.fixture
@@ -156,6 +158,8 @@ def test_catalog_persistence(test_dir, test_schema):
     # Create catalog and table
     uri = f"file:///{test_dir.as_posix()}"
     catalog1 = LocalCatalog(name=str(test_dir), uri=uri)
+    catalog1.init()
+
     catalog1.create_namespace("default")
     catalog1.create_table("default.test_table", test_schema)
     # Changes are automatically persisted via context manager
@@ -198,23 +202,6 @@ def test_catalog_json_format(catalog, test_schema):
 def faceberg_test_dir(tmp_path):
     """Create temporary test directory for FacebergCatalog."""
     return tmp_path / "faceberg_test"
-
-
-@pytest.fixture
-def faceberg_config():
-    """Create test Catalog."""
-    return Catalog(
-        uri=".faceberg",
-        namespaces={
-            "default": Namespace(
-                tables={
-                    "imdb_plain_text": Table(
-                        dataset="stanfordnlp/imdb", uri="", revision="", config="plain_text"
-                    ),
-                }
-            )
-        },
-    )
 
 
 @pytest.fixture
@@ -265,7 +252,7 @@ def test_faceberg_lazy_namespace_creation(faceberg_catalog):
     assert len(synced_tables) > 0
 
 
-def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config):
+def test_faceberg_create_tables_from_datasets(faceberg_catalog):
     """Test creating tables from datasets in FacebergCatalog."""
     # Sync tables (token=None works for public datasets, namespaces created on-demand)
     synced_tables = faceberg_catalog.sync_datasets()
@@ -282,7 +269,7 @@ def test_faceberg_create_tables_from_datasets(faceberg_catalog, faceberg_config)
     assert any("imdb" in name for name in table_names)
 
 
-def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
+def test_faceberg_create_specific_table(faceberg_catalog):
     """Test creating a specific table in FacebergCatalog."""
     # Sync specific table (token=None works for public datasets, namespace created on-demand)
     synced_tables = faceberg_catalog.sync_datasets(
@@ -296,46 +283,28 @@ def test_faceberg_create_specific_table(faceberg_catalog, faceberg_config):
     assert faceberg_catalog.table_exists("default.imdb_plain_text")
 
 
-def test_faceberg_create_table_already_exists(faceberg_catalog, faceberg_config):
+def test_faceberg_create_table_already_exists(faceberg_catalog):
     """Test creating a table that already exists raises error in FacebergCatalog."""
-    # Discover dataset (token=None works for public datasets)
-    dataset_info = DatasetInfo.discover(
-        repo_id="stanfordnlp/imdb",
-        configs=["plain_text"],
-    )
-
-    # Convert to TableInfo
-    table_info = dataset_info.to_table_info(
-        namespace="default",
-        table_name="imdb_plain_text",
-        config="plain_text",
-    )
-
     # Create table first time
-    faceberg_catalog._add_dataset(table_info)
+    faceberg_catalog.add_dataset("default.imdb_plain_text", "stanfordnlp/imdb", config="plain_text")
 
     # Try to create again - should raise
     with pytest.raises(TableAlreadyExistsError):
-        faceberg_catalog._add_dataset(table_info)
+        faceberg_catalog.add_dataset(
+            "default.imdb_plain_text",
+            "stanfordnlp/imdb",
+            config="plain_text",
+        )
 
 
-def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
+def test_faceberg_create_table_for_config(faceberg_catalog):
     """Test creating a table for a specific config in FacebergCatalog."""
-    # Discover dataset (token=None works for public datasets, namespace created on-demand)
-    dataset_info = DatasetInfo.discover(
-        repo_id="stanfordnlp/imdb",
-        configs=["plain_text"],
-    )
-
-    # Convert to TableInfo
-    table_info = dataset_info.to_table_info(
-        namespace="default",
-        table_name="imdb_plain_text",
+    # Create table
+    table = faceberg_catalog.add_dataset(
+        "default.imdb_plain_text",
+        "stanfordnlp/imdb",
         config="plain_text",
     )
-
-    # Create table
-    table = faceberg_catalog._add_dataset(table_info)
 
     # Verify table
     assert table is not None
@@ -350,7 +319,7 @@ def test_faceberg_create_table_for_config(faceberg_catalog, faceberg_config):
     assert props["huggingface.dataset.config"] == "plain_text"
 
 
-def test_faceberg_invalid_table_name_format(faceberg_catalog, faceberg_config):
+def test_faceberg_invalid_table_name_format(faceberg_catalog):
     """Test invalid table name format raises error in FacebergCatalog."""
     with pytest.raises(ValueError, match="Invalid table name"):
         faceberg_catalog.sync_datasets(
@@ -478,13 +447,13 @@ def test_commit_table_not_implemented(catalog):
 
 def test_save_catalog_outside_staging_context(catalog):
     """Test that _save_database raises error outside staging context."""
-    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
+    with pytest.raises(RuntimeError, match="must be called within _staging_changes\\(\\) context"):
         catalog._save_database()
 
 
 def test_persist_changes_outside_staging_context(catalog):
     """Test that _persist_changes raises error outside staging context."""
-    with pytest.raises(RuntimeError, match="must be called within _staging\\(\\) context"):
+    with pytest.raises(RuntimeError, match="must be called within _staging_changes\\(\\) context"):
         catalog._persist_changes()
 
 
@@ -563,7 +532,7 @@ def test_staging_context_cleanup_on_error(catalog, test_schema):
     catalog.create_namespace("default")
 
     try:
-        with catalog._staging():
+        with catalog._staging_changes():
             # Try to create duplicate namespace (will fail)
             raise ValueError("Simulated error")
     except ValueError:
