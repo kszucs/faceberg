@@ -18,7 +18,8 @@ from pyiceberg.table import CommitTableRequest
 from pyiceberg.types import LongType, NestedField, StringType
 
 from faceberg.bridge import DatasetInfo
-from faceberg.catalog import HfFileIO, LocalCatalog
+from faceberg.catalog import HfFileIO, LocalCatalog, RemoteCatalog
+from faceberg.catalog import catalog as catalog_factory
 from faceberg.database import Catalog, Namespace, Table
 
 
@@ -34,7 +35,8 @@ def test_dir(tmp_path):
 @pytest.fixture
 def catalog(test_dir):
     """Create a test catalog."""
-    return LocalCatalog(name=str(test_dir), path=str(test_dir))
+    uri = f"file:///{test_dir.as_posix()}"
+    return LocalCatalog(name=str(test_dir), uri=uri)
 
 
 @pytest.fixture
@@ -48,7 +50,8 @@ def test_schema():
 
 def test_create_catalog(test_dir):
     """Test catalog creation."""
-    catalog = LocalCatalog(name=str(test_dir), path=test_dir)
+    uri = f"file:///{test_dir.as_posix()}"
+    catalog = LocalCatalog(name=str(test_dir), uri=uri)
 
     # catalog.name is derived from path
     assert catalog.name == str(test_dir)
@@ -151,13 +154,14 @@ def test_rename_table(catalog, test_schema):
 def test_catalog_persistence(test_dir, test_schema):
     """Test that catalog persists across instances."""
     # Create catalog and table
-    catalog1 = LocalCatalog(name=str(test_dir), path=str(test_dir))
+    uri = f"file:///{test_dir.as_posix()}"
+    catalog1 = LocalCatalog(name=str(test_dir), uri=uri)
     catalog1.create_namespace("default")
     catalog1.create_table("default.test_table", test_schema)
     # Changes are automatically persisted via context manager
 
     # Create new catalog instance
-    catalog2 = LocalCatalog(name=str(test_dir), path=str(test_dir))
+    catalog2 = LocalCatalog(name=str(test_dir), uri=uri)
 
     # Table should still exist
     assert catalog2.table_exists("default.test_table")
@@ -234,12 +238,14 @@ def faceberg_catalog(faceberg_config_file, faceberg_test_dir):
     # Create catalog and ensure the database file exists
     faceberg_test_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(faceberg_config_file, faceberg_test_dir / "faceberg.yml")
-    return LocalCatalog(name=str(faceberg_test_dir), path=str(faceberg_test_dir))
+    uri = f"file:///{faceberg_test_dir.as_posix()}"
+    return LocalCatalog(name=str(faceberg_test_dir), uri=uri)
 
 
 def test_faceberg_from_local(faceberg_config_file, faceberg_test_dir):
     """Test creating LocalCatalog from local config file."""
-    catalog = LocalCatalog(name=str(faceberg_test_dir), path=faceberg_test_dir)
+    uri = f"file:///{faceberg_test_dir.as_posix()}"
+    catalog = LocalCatalog(name=str(faceberg_test_dir), uri=uri)
 
     assert catalog.uri.startswith("file:///")
     assert catalog.uri.endswith(str(faceberg_test_dir.name))
@@ -628,3 +634,157 @@ class TestHfFileIO:
         assert hasattr(io, "new_output")
         assert hasattr(io, "delete")
         assert hasattr(io, "get_fs")
+
+
+# =============================================================================
+# catalog() Factory Function Tests
+# =============================================================================
+
+
+class TestCatalogFactory:
+    """Tests for the catalog() factory function."""
+
+    def test_catalog_local_directory_path(self, tmp_path):
+        """Test creating LocalCatalog from directory path."""
+        catalog_dir = tmp_path / "test_catalog"
+        catalog_dir.mkdir()
+
+        cat = catalog_factory(str(catalog_dir))
+
+        assert isinstance(cat, LocalCatalog)
+        assert cat.catalog_dir == catalog_dir
+        assert cat.uri.startswith("file:///")
+
+    def test_catalog_local_file_uri(self, tmp_path):
+        """Test creating LocalCatalog from file:// URI."""
+        catalog_dir = tmp_path / "test_catalog"
+        catalog_dir.mkdir()
+        uri = f"file:///{catalog_dir.as_posix()}"
+
+        cat = catalog_factory(uri)
+
+        assert isinstance(cat, LocalCatalog)
+        assert cat.catalog_dir.as_posix() == catalog_dir.as_posix()
+        assert cat.uri.startswith("file:///")
+
+    def test_catalog_remote_datasets_explicit(self):
+        """Test creating RemoteCatalog with explicit hf://datasets/ URI."""
+        cat = catalog_factory("hf://datasets/my-org/my-repo", hf_token="test_token")
+
+        assert isinstance(cat, RemoteCatalog)
+        assert cat._hf_repo == "my-org/my-repo"
+        assert cat._hf_repo_type == "datasets"
+        assert cat.uri == "hf://datasets/my-org/my-repo"
+
+    def test_catalog_remote_spaces_explicit(self):
+        """Test creating RemoteCatalog with explicit hf://spaces/ URI."""
+        cat = catalog_factory("hf://spaces/my-org/my-space", hf_token="test_token")
+
+        assert isinstance(cat, RemoteCatalog)
+        assert cat._hf_repo == "my-org/my-space"
+        assert cat._hf_repo_type == "spaces"
+        assert cat.uri == "hf://spaces/my-org/my-space"
+
+    def test_catalog_remote_models_explicit(self):
+        """Test creating RemoteCatalog with explicit hf://models/ URI."""
+        cat = catalog_factory("hf://models/my-org/my-model", hf_token="test_token")
+
+        assert isinstance(cat, RemoteCatalog)
+        assert cat._hf_repo == "my-org/my-model"
+        assert cat._hf_repo_type == "models"
+        assert cat.uri == "hf://models/my-org/my-model"
+
+    def test_catalog_remote_shorthand_defaults_to_datasets(self):
+        """Test creating RemoteCatalog with shorthand org/repo format defaults to datasets."""
+        cat = catalog_factory("my-org/my-repo", hf_token="test_token")
+
+        assert isinstance(cat, RemoteCatalog)
+        assert cat._hf_repo == "my-org/my-repo"
+        assert cat._hf_repo_type == "datasets"
+        assert cat.uri == "hf://datasets/my-org/my-repo"
+        assert cat.name == "my-org/my-repo"
+
+    def test_catalog_remote_with_properties(self):
+        """Test creating RemoteCatalog with additional properties."""
+        cat = catalog_factory(
+            "hf://spaces/my-org/my-space",
+            hf_token="test_token",
+            custom_prop="custom_value",
+        )
+
+        assert isinstance(cat, RemoteCatalog)
+        assert cat.properties["custom_prop"] == "custom_value"
+
+    def test_catalog_local_with_hf_token(self, tmp_path):
+        """Test creating LocalCatalog with hf_token (for accessing datasets)."""
+        catalog_dir = tmp_path / "test_catalog"
+        catalog_dir.mkdir()
+
+        cat = catalog_factory(str(catalog_dir), hf_token="test_token")
+
+        assert isinstance(cat, LocalCatalog)
+        assert cat._hf_token == "test_token"
+
+    def test_catalog_name_extraction_from_hf_uri(self):
+        """Test that catalog name is correctly extracted from hf:// URI."""
+        # Datasets
+        cat1 = catalog_factory("hf://datasets/org/repo")
+        assert cat1.name == "org/repo"
+
+        # Spaces
+        cat2 = catalog_factory("hf://spaces/org/space")
+        assert cat2.name == "org/space"
+
+        # Models
+        cat3 = catalog_factory("hf://models/org/model")
+        assert cat3.name == "org/model"
+
+    def test_catalog_warehouse_property_set_correctly(self, tmp_path):
+        """Test that warehouse property is set correctly for different catalog types."""
+        # Local catalog
+        catalog_dir = tmp_path / "test_catalog"
+        catalog_dir.mkdir()
+        local_cat = catalog_factory(str(catalog_dir))
+        assert local_cat.properties["warehouse"] == str(catalog_dir)
+
+        # Remote catalog
+        remote_cat = catalog_factory("hf://datasets/org/repo")
+        assert remote_cat.properties["warehouse"] == "hf://datasets/org/repo"
+
+    def test_local_catalog_requires_file_uri(self, tmp_path):
+        """Test that LocalCatalog requires file:// URI."""
+        catalog_dir = tmp_path / "test_catalog"
+        catalog_dir.mkdir()
+
+        # Should raise ValueError when given a plain path
+        with pytest.raises(ValueError, match="LocalCatalog requires file:// URI"):
+            LocalCatalog(name="test", uri=str(catalog_dir))
+
+        # Should work with file:// URI
+        uri = f"file:///{catalog_dir.as_posix()}"
+        cat = LocalCatalog(name="test", uri=uri)
+        assert isinstance(cat, LocalCatalog)
+
+    def test_remote_catalog_requires_hf_uri(self):
+        """Test that RemoteCatalog requires hf:// URI."""
+        # Should raise ValueError when given an invalid URI
+        with pytest.raises(ValueError, match="RemoteCatalog requires hf:// URI"):
+            RemoteCatalog(name="test", uri="file:///path/to/catalog")
+
+        with pytest.raises(ValueError, match="RemoteCatalog requires hf:// URI"):
+            RemoteCatalog(name="test", uri="org/repo")
+
+        # Should work with hf:// URI
+        cat = RemoteCatalog(name="test", uri="hf://datasets/org/repo")
+        assert isinstance(cat, RemoteCatalog)
+
+    def test_catalog_factory_handles_path_conversion(self, tmp_path):
+        """Test that catalog() factory converts paths to file:// URIs."""
+        catalog_dir = tmp_path / "test_catalog"
+        catalog_dir.mkdir()
+
+        # Factory should accept plain path and convert to file:// URI
+        cat = catalog_factory(str(catalog_dir))
+        assert isinstance(cat, LocalCatalog)
+        assert cat.uri.startswith("file:///")
+        assert cat.catalog_dir == catalog_dir.resolve()
