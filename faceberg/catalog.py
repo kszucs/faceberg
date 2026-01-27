@@ -1376,10 +1376,16 @@ class RemoteCatalog(BaseCatalog):
         if self._hf_repo_type == "space":
             # Initialize Spaces repository with README and Dockerfile
             spaces_dir = Path(__file__).parent / "spaces"
-            self._staged_changes.extend([
-                CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=spaces_dir / "README.md"),
-                CommitOperationAdd(path_in_repo="Dockerfile", path_or_fileobj=spaces_dir / "Dockerfile"),
-            ])
+            self._staged_changes.extend(
+                [
+                    CommitOperationAdd(
+                        path_in_repo="README.md", path_or_fileobj=spaces_dir / "README.md"
+                    ),
+                    CommitOperationAdd(
+                        path_in_repo="Dockerfile", path_or_fileobj=spaces_dir / "Dockerfile"
+                    ),
+                ]
+            )
 
         # Create the repository
         self._hf_api.create_repo(
@@ -1479,7 +1485,9 @@ class RemoteCatalog(BaseCatalog):
         return Path(metadata_file).parent.parent
 
 
-def catalog(uri: str, *, hf_token: Optional[str] = None, **properties: str) -> Union[LocalCatalog, RemoteCatalog]:
+def catalog(
+    uri: str, *, hf_token: Optional[str] = None, **properties: str
+) -> Union[LocalCatalog, RemoteCatalog]:
     """Create a catalog instance based on URI.
 
     Factory function that determines catalog type from URI and creates

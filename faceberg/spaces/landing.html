@@ -10,66 +10,159 @@
     <!-- XTerm.js CSS for DuckDB shell -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
 
+    <!-- Google Fonts: DM Sans -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
     <style>
+        :root {
+            --primary-blue: #1E88E5;
+            --primary-blue-dark: #1565C0;
+            --primary-blue-darker: #0D47A1;
+            --primary-blue-light: #64B5F6;
+            --accent-yellow: #FFC107;
+            --accent-yellow-dark: #FFA000;
+            --light-blue-bg: #E3F2FD;
+            --light-blue: #90CAF9;
+            --gray-50: #FAFAFA;
+            --gray-100: #F3F4F6;
+            --gray-200: #E5E7EB;
+            --gray-300: #D1D5DB;
+            --gray-600: #4B5563;
+            --gray-700: #374151;
+            --gray-800: #1F2937;
+            --gray-900: #111827;
+            --terminal-bg: #0F1419;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
             overflow: hidden;
             height: 100vh;
             display: flex;
             flex-direction: column;
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
         }
 
         /* Header */
-        .gradient-header {
-            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        .app-header {
+            background: var(--primary-blue);
             flex-shrink: 0;
+            border-bottom: 2px solid var(--accent-yellow);
+        }
+
+        .header-content {
+            padding: 0.5rem 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: white;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .logo-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: white;
+            border-radius: 50%;
+            overflow: hidden;
+            padding: 2px;
+            flex-shrink: 0;
+        }
+
+        .logo-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .header-meta {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            font-size: 0.75rem;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .header-catalog-badge {
+            background: rgba(255, 193, 7, 0.2);
+            color: var(--accent-yellow);
+            padding: 0.125rem 0.375rem;
+            border-radius: 3px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.625rem;
+            border: 1px solid rgba(255, 193, 7, 0.4);
         }
 
         /* Main layout container */
         .main-container {
             display: flex;
-            height: calc(100vh - 80px);
+            height: calc(100vh - 48px);
             overflow: hidden;
+            gap: 0;
         }
 
         /* Left sidebar - 1/3 width */
         .left-sidebar {
-            width: 33.333%;
+            width: 35%;
             display: flex;
             flex-direction: column;
-            border-right: 2px solid #e5e7eb;
-            background: #f9fafb;
+            background: white;
+            border-right: 1px solid var(--gray-200);
+            overflow-y: auto;
         }
 
         /* Right sidebar - 2/3 width */
         .right-sidebar {
-            width: 66.667%;
+            width: 65%;
             display: flex;
             flex-direction: column;
-            background: #ffffff;
+            background: var(--light-blue-bg);
         }
 
         /* Catalog hierarchy section */
         .catalog-hierarchy {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem;
+            padding: 0.75rem;
         }
 
-        /* Table details section */
-        .table-details {
-            height: 40%;
-            border-top: 2px solid #e5e7eb;
-            overflow-y: auto;
-            padding: 1rem;
-            background: #ffffff;
+        .section-title {
+            font-size: 0.6875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--primary-blue-dark);
+            margin-bottom: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            background: var(--light-blue-bg);
+            border-radius: 4px;
         }
 
         /* Shell container */
         #shell-container {
             flex: 1;
-            background-color: #1e1e1e;
+            background-color: var(--terminal-bg);
             overflow: hidden;
+            border-radius: 6px;
+            margin: 0.5rem;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
 
         /* XTerm.js overrides */
@@ -82,88 +175,291 @@
             overflow-y: auto;
         }
 
-        /* Collapsible sections */
-        details > summary {
-            cursor: pointer;
-            transition: background-color 0.2s ease;
-            list-style: none;
-            padding: 0.5rem;
-            border-radius: 4px;
+        /* Table list item */
+        details.table-item {
+            margin-bottom: 0.25rem;
         }
 
-        details > summary::-webkit-details-marker {
+        details.table-item > summary {
+            cursor: pointer;
+            transition: all 0.15s ease;
+            list-style: none;
+            padding: 0.375rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 500;
+            font-size: 0.75rem;
+            color: var(--gray-800);
+            background: white;
+            border: 1px solid var(--gray-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        details.table-item > summary::-webkit-details-marker {
             display: none;
         }
 
-        details > summary:hover {
-            background-color: #e5e7eb;
+        details.table-item > summary:hover {
+            background-color: #FFF9E6;
+            border-color: var(--accent-yellow);
         }
 
-        details > summary::before {
-            content: '▶ ';
+        details.table-item > summary::before {
+            content: '▶';
             display: inline-block;
-            transition: transform 0.2s ease;
+            transition: transform 0.15s ease;
+            margin-right: 0.375rem;
+            color: var(--accent-yellow-dark);
+            font-size: 0.5rem;
         }
 
-        details[open] > summary::before {
+        details.table-item[open] > summary::before {
             transform: rotate(90deg);
         }
 
-        /* Table item styling */
-        .table-item {
-            cursor: pointer;
-            padding: 0.5rem;
-            margin: 0.25rem 0;
-            border-radius: 4px;
-            transition: background-color 0.2s ease;
-        }
-
-        .table-item:hover {
-            background-color: #dbeafe;
-        }
-
-        .table-item.selected {
-            background-color: #3b82f6;
+        details.table-item[open] > summary {
+            background: var(--primary-blue);
             color: white;
+            border-color: var(--primary-blue-dark);
+            margin-bottom: 0.375rem;
         }
+
+        .table-name {
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .table-row-count {
+            font-size: 0.625rem;
+            opacity: 0.7;
+        }
+
+        details.table-item[open] > summary .table-row-count {
+            opacity: 0.9;
+        }
+
+        /* Table content area */
+        .table-content {
+            padding: 0.5rem;
+            background: var(--light-blue-bg);
+            border-radius: 4px;
+            border: 1px solid var(--light-blue);
+            margin-bottom: 0.25rem;
+        }
+
 
         /* Schema table */
         .schema-table {
-            font-size: 14px;
-            border-collapse: collapse;
+            font-size: 0.6875rem;
+            border-collapse: separate;
+            border-spacing: 0;
             width: 100%;
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid var(--gray-200);
+            margin-bottom: 0.5rem;
         }
 
         .schema-table th,
         .schema-table td {
-            padding: 8px 12px;
-            border: 1px solid #e5e7eb;
+            padding: 0.25rem 0.375rem;
             text-align: left;
         }
 
         .schema-table th {
-            background-color: #f9fafb;
+            background: var(--primary-blue-darker);
+            color: white;
             font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.5625rem;
+            letter-spacing: 0.05em;
+        }
+
+        .schema-table th:first-child {
+            border-top-left-radius: 4px;
+        }
+
+        .schema-table th:last-child {
+            border-top-right-radius: 4px;
+        }
+
+        .schema-table td {
+            background: white;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .schema-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .schema-table tbody tr:hover td {
+            background: var(--light-blue-bg);
+        }
+
+        .column-name {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.625rem;
+            color: var(--gray-900);
+            font-weight: 500;
+        }
+
+        .column-type {
+            color: var(--gray-600);
+            font-size: 0.625rem;
         }
 
         /* Quick tips section */
         .quick-tips {
-            background: #eff6ff;
-            border: 1px solid #3b82f6;
-            border-radius: 8px;
-            padding: 1rem;
-            margin: 1rem;
+            background: linear-gradient(135deg, #FFF9E6 0%, #FFECB3 100%);
+            border: 1px solid var(--accent-yellow);
+            border-radius: 4px;
+            padding: 0.5rem;
+            margin: 0.5rem;
             flex-shrink: 0;
+            font-size: 0.6875rem;
+            color: var(--gray-700);
+            line-height: 1.3;
+        }
+
+        .tips-extensions {
+            display: inline-flex;
+            gap: 0.25rem;
+        }
+
+        .extension-badge {
+            background: white;
+            padding: 0.0625rem 0.25rem;
+            border-radius: 2px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.625rem;
+            color: var(--primary-blue-dark);
+            border: 1px solid var(--primary-blue-light);
+        }
+
+        .example-query-code {
+            display: inline;
+            background: var(--gray-900);
+            color: #A3E635;
+            padding: 0.125rem 0.25rem;
+            border-radius: 2px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.625rem;
+            border: 1px solid var(--gray-700);
+        }
+
+        /* Metadata grid */
+        .metadata-grid {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.5rem;
+            padding: 0.375rem;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid var(--gray-200);
+            font-size: 0.625rem;
+        }
+
+        .metadata-item {
+            display: flex;
+            align-items: baseline;
+            gap: 0.25rem;
+        }
+
+        .metadata-label {
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+            color: var(--primary-blue-dark);
+        }
+
+        .metadata-value {
+            font-weight: 600;
+            color: var(--gray-900);
+        }
+
+        .dataset-link {
+            color: var(--primary-blue);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s ease;
+        }
+
+        .dataset-link:hover {
+            color: var(--primary-blue-dark);
+            text-decoration: underline;
+        }
+
+        /* Action button */
+        .action-button {
+            width: 100%;
+            background: linear-gradient(135deg, var(--accent-yellow) 0%, var(--accent-yellow-dark) 100%);
+            color: var(--gray-900);
+            font-weight: 600;
+            padding: 0.375rem 0.5rem;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-size: 0.6875rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+            box-shadow: 0 1px 3px rgba(255, 193, 7, 0.3);
+        }
+
+        .action-button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(255, 193, 7, 0.4);
+        }
+
+        .action-button:active {
+            transform: translateY(0);
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 1.5rem 1rem;
+            color: var(--gray-600);
+        }
+
+        .empty-state-icon {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+            opacity: 0.5;
+        }
+
+        .empty-state-title {
+            font-size: 0.8125rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+            color: var(--primary-blue-dark);
+        }
+
+        .empty-state-text {
+            font-size: 0.6875rem;
+            margin-top: 0.25rem;
+        }
+
+        .empty-state-code {
+            background: var(--light-blue-bg);
+            padding: 0.0625rem 0.25rem;
+            border-radius: 2px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.625rem;
         }
 
         /* Loading spinner */
         .spinner {
-            border: 3px solid #f3f4f6;
-            border-top: 3px solid #8b5cf6;
+            border: 3px solid var(--gray-200);
+            border-top: 3px solid var(--primary-blue);
             border-radius: 50%;
             width: 24px;
             height: 24px;
-            animation: spin 1s linear infinite;
+            animation: spin 0.8s linear infinite;
             display: inline-block;
         }
 
@@ -174,78 +470,154 @@
 
         /* Scrollbar styling */
         ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
+            width: 10px;
+            height: 10px;
         }
 
         ::-webkit-scrollbar-track {
-            background: #f1f1f1;
+            background: var(--gray-100);
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 4px;
+            background: var(--primary-blue-light);
+            border-radius: 5px;
+            border: 2px solid var(--gray-100);
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #555;
+            background: var(--primary-blue);
+        }
+
+        /* Subsection title within table details */
+        .subsection-title {
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--primary-blue-dark);
+            margin-bottom: 0.375rem;
+            padding: 0.125rem 0.25rem;
+            background: white;
+            border-radius: 3px;
+            display: inline-block;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 1024px) {
+            .left-sidebar {
+                width: 40%;
+            }
+            .right-sidebar {
+                width: 60%;
+            }
         }
     </style>
 </head>
 <body>
     <!-- Header -->
-    <header class="gradient-header text-white shadow-lg">
-        <div class="px-4 py-4">
-            <h1 class="text-2xl font-bold mb-1">🗃️ Faceberg - Interactive Iceberg Catalog</h1>
-            <div class="text-sm text-blue-100 flex gap-4">
-                <span><strong>Catalog:</strong> <code class="bg-blue-800 bg-opacity-50 px-2 py-0.5 rounded text-xs">{{ catalog_uri }}</code></span>
-                <span><strong>Namespaces:</strong> {{ namespaces|length }}</span>
-                <span><strong>Tables:</strong> {{ total_tables }}</span>
+    <header class="app-header">
+        <div class="header-content">
+            <h1 class="header-title">
+                <span class="logo-icon">
+                    <img src="https://raw.githubusercontent.com/kszucs/faceberg/main/faceberg.png" alt="Faceberg Logo">
+                </span>
+                <span>Faceberg</span>
+            </h1>
+            <div class="header-meta">
+                <code class="header-catalog-badge">{{ catalog_uri }}</code>
+                <span>{{ total_tables }} tables</span>
             </div>
         </div>
     </header>
 
     <!-- Main Container -->
     <div class="main-container">
-        <!-- Left Sidebar: Catalog Hierarchy + Table Details -->
+        <!-- Left Sidebar: Table List -->
         <div class="left-sidebar">
-            <!-- Catalog Hierarchy -->
             <div class="catalog-hierarchy">
-                <h2 class="text-lg font-bold mb-3 text-gray-800">📚 Catalog Hierarchy</h2>
+                <h2 class="section-title">Tables ({{ total_tables }})</h2>
 
                 {% if namespaces|length == 0 %}
-                <div class="text-center py-8 text-gray-500">
-                    <p>No namespaces found</p>
-                    <p class="text-sm mt-2">Add datasets using <code class="bg-gray-200 px-2 py-1 rounded">faceberg add</code></p>
+                <div class="empty-state">
+                    <div class="empty-state-icon">📂</div>
+                    <div class="empty-state-title">No tables found</div>
+                    <p class="empty-state-text">Add datasets using <code class="empty-state-code">faceberg add</code></p>
                 </div>
                 {% else %}
-                <div class="space-y-2">
+                <div>
                     {% for namespace in namespaces %}
-                    <details open>
-                        <summary class="font-semibold text-gray-700">
-                            {{ namespace.name }} <span class="text-sm font-normal text-gray-500">({{ namespace.table_count }})</span>
-                        </summary>
-                        <div class="ml-4 mt-1 space-y-1">
-                            {% for table in namespace.tables %}
-                            <div class="table-item"
-                                 onclick="selectTable('{{ namespace.name }}.{{ table.name }}')"
-                                 data-table-id="{{ namespace.name }}.{{ table.name }}">
-                                <div class="font-medium">{{ table.name }}</div>
-                                <div class="text-xs text-gray-600">{{ table.row_count }} rows</div>
+                        {% for table in namespace.tables %}
+                        <details class="table-item" data-table-id="{{ namespace.name }}.{{ table.name }}">
+                            <summary>
+                                <span class="table-name">{{ namespace.name }}.{{ table.name }}</span>
+                                <span class="table-row-count">{{ table.row_count }} rows</span>
+                            </summary>
+                            <div class="table-content">
+                                <!-- Metadata -->
+                                <div class="metadata-grid">
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">Rows:</span>
+                                        <span class="metadata-value">{{ table.row_count }}</span>
+                                    </div>
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">Files:</span>
+                                        <span class="metadata-value">{{ table.file_count }}</span>
+                                    </div>
+                                    <div class="metadata-item">
+                                        <span class="metadata-label">Cols:</span>
+                                        <span class="metadata-value">{{ table.columns|length }}</span>
+                                    </div>
+                                    {% if table.dataset_repo %}
+                                    <div class="metadata-item">
+                                        <a href="https://huggingface.co/datasets/{{ table.dataset_repo }}"
+                                           target="_blank"
+                                           class="dataset-link">
+                                            {{ table.dataset_repo }} →
+                                        </a>
+                                    </div>
+                                    {% endif %}
+                                </div>
+
+                                <!-- Schema -->
+                                <div class="subsection-title">Schema</div>
+                                <div style="overflow-x: auto;">
+                                    <table class="schema-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Column</th>
+                                                <th>Type</th>
+                                                <th>Req</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for col in table.columns %}
+                                            <tr>
+                                                <td class="column-name">{{ col.name }}</td>
+                                                <td class="column-type">{{ col.type }}</td>
+                                                <td style="text-align: center;">
+                                                    {% if col.required %}
+                                                    <span style="color: #10B981; font-weight: 600;">✓</span>
+                                                    {% else %}
+                                                    <span style="color: var(--gray-400);">-</span>
+                                                    {% endif %}
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <!-- Query Button -->
+                                <button onclick="insertQuery('{{ namespace.name }}.{{ table.name }}')" class="action-button">
+                                    <span>🔍</span>
+                                    <span>Query</span>
+                                </button>
                             </div>
-                            {% endfor %}
-                        </div>
-                    </details>
+                        </details>
+                        {% endfor %}
                     {% endfor %}
                 </div>
                 {% endif %}
-            </div>
-
-            <!-- Table Details -->
-            <div class="table-details" id="table-details">
-                <div class="text-center text-gray-500 py-8">
-                    <p>Select a table to view details</p>
-                </div>
             </div>
         </div>
 
@@ -253,23 +625,13 @@
         <div class="right-sidebar">
             <!-- Quick Tips -->
             <div class="quick-tips">
-                <div class="flex items-start gap-2">
-                    <div class="flex-1">
-                        <p class="font-semibold text-blue-900 mb-2">💡 DuckDB Shell with Iceberg Support</p>
-                        <p class="text-sm text-gray-700 mb-2">Query Iceberg tables using SQL. Extensions loaded: <code class="bg-white px-1 rounded">iceberg</code>, <code class="bg-white px-1 rounded">httpfs</code></p>
-                        <p class="text-xs text-gray-600">
-                            <strong>Quick tips:</strong> Use ↑↓ for history, Tab for autocomplete, Ctrl+C to cancel
-                        </p>
-                    </div>
-                </div>
+                <strong>💡 DuckDB Shell</strong> • Extensions:
+                <span class="tips-extensions">
+                    <span class="extension-badge">iceberg</span>
+                    <span class="extension-badge">httpfs</span>
+                </span>
                 {% if namespaces|length > 0 %}
-                <div class="mt-2 pt-2 border-t border-blue-200">
-                    <p class="text-xs font-semibold text-gray-700 mb-1">Example query:</p>
-                    <code class="block bg-gray-900 text-green-400 px-2 py-1 rounded text-xs">
-                        {% set first_table = namespaces[0].tables[0] %}
-SELECT * FROM iceberg_scan('{{ first_table.metadata_location }}') LIMIT 10;
-                    </code>
-                </div>
+                • Example: <code class="example-query-code">{% set first_ns = namespaces[0] %}{% set first_table = first_ns.tables[0] %}SELECT * FROM {{ first_ns.name }}.{{ first_table.name }} LIMIT 10;</code>
                 {% endif %}
             </div>
 
@@ -278,133 +640,23 @@ SELECT * FROM iceberg_scan('{{ first_table.metadata_location }}') LIMIT 10;
         </div>
     </div>
 
-    <!-- Table data as JSON -->
-    <script id="tables-data" type="application/json">
-{
-{% set comma = joiner(",") %}
-{% for namespace in namespaces %}
-{% for table in namespace.tables %}
-{{ comma() }}"{{ namespace.name }}.{{ table.name }}": {{ table|tojson }}
-{% endfor %}
-{% endfor %}
-}
+    <!-- Import map to redirect /npm/ paths to CDN -->
+    <script type="importmap">
+    {
+        "imports": {
+            "/npm/": "https://cdn.jsdelivr.net/npm/"
+        }
+    }
     </script>
 
     <!-- JavaScript -->
     <script type="module">
         // Global state
         let shellInitialized = false;
-        let selectedTableId = null;
-
-        // Parse table data from JSON script
-        const tablesData = JSON.parse(document.getElementById('tables-data').textContent);
-
-        // Select table and show details
-        window.selectTable = function(tableId) {
-            const tableData = tablesData[tableId];
-            if (!tableData) return;
-
-            // Update UI selection
-            document.querySelectorAll('.table-item').forEach(item => {
-                if (item.dataset.tableId === tableId) {
-                    item.classList.add('selected');
-                    selectedTableId = tableId;
-                } else {
-                    item.classList.remove('selected');
-                }
-            });
-
-            // Show table details
-            showTableDetails(tableData);
-        };
-
-        // Show table details in bottom left panel
-        function showTableDetails(table) {
-            const detailsPanel = document.getElementById('table-details');
-
-            let html = `
-                <div>
-                    <h3 class="font-bold text-lg mb-3 text-gray-800">${table.identifier}</h3>
-
-                    <!-- Metadata Grid -->
-                    <div class="grid grid-cols-2 gap-2 text-sm mb-4">
-                        <div>
-                            <span class="font-semibold text-gray-700">Rows:</span>
-                            <span class="ml-1">${table.row_count}</span>
-                        </div>
-                        <div>
-                            <span class="font-semibold text-gray-700">Files:</span>
-                            <span class="ml-1">${table.file_count}</span>
-                        </div>
-                        <div class="col-span-2">
-                            <span class="font-semibold text-gray-700">Columns:</span>
-                            <span class="ml-1">${table.columns.length}</span>
-                        </div>
-            `;
-
-            if (table.dataset_repo) {
-                html += `
-                        <div class="col-span-2">
-                            <span class="font-semibold text-gray-700">Dataset:</span>
-                            <a href="https://huggingface.co/datasets/${table.dataset_repo}"
-                               target="_blank"
-                               class="text-blue-600 hover:underline ml-1 text-xs">
-                                ${table.dataset_repo}
-                            </a>
-                        </div>
-                `;
-            }
-
-            html += `
-                    </div>
-
-                    <!-- Schema Table -->
-                    <div>
-                        <div class="font-semibold text-gray-700 mb-2 text-sm">Schema:</div>
-                        <div class="overflow-x-auto">
-                            <table class="schema-table">
-                                <thead>
-                                    <tr>
-                                        <th>Column</th>
-                                        <th>Type</th>
-                                        <th>Required</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-            `;
-
-            table.columns.forEach(col => {
-                html += `
-                                    <tr>
-                                        <td class="font-mono text-sm">${escapeHtml(col.name)}</td>
-                                        <td class="text-gray-600 text-sm">${escapeHtml(col.type)}</td>
-                                        <td>${col.required ? '<span class="text-green-600">✓</span>' : '<span class="text-gray-400">-</span>'}</td>
-                                    </tr>
-                `;
-            });
-
-            html += `
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <!-- Query Button -->
-                    <button onclick="insertQuery('${table.metadata_location}')"
-                            class="mt-4 w-full bg-purple-600 hover:bg-purple-700 text-white font-medium px-4 py-2 rounded transition">
-                        🔍 Insert Query for this Table
-                    </button>
-                </div>
-            `;
-
-            detailsPanel.innerHTML = html;
-        }
 
         // Insert query into shell
-        window.insertQuery = function(metadataLocation) {
-            // This will insert the query into the terminal
-            // Note: Direct insertion into xterm is complex, so we'll copy to clipboard
-            const query = `SELECT * FROM iceberg_scan('${metadataLocation}') LIMIT 10;`;
+        window.insertQuery = function(tableName) {
+            const query = `SELECT * FROM ${tableName} LIMIT 10;`;
             navigator.clipboard.writeText(query).then(() => {
                 alert('Query copied to clipboard! Paste it into the shell with Cmd/Ctrl+V');
             }).catch(err => {
@@ -471,13 +723,6 @@ SELECT * FROM iceberg_scan('{{ first_table.metadata_location }}') LIMIT 10;
                     </div>
                 `;
             }
-        }
-
-        // Utility: Escape HTML
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
         }
 
         // Auto-initialize shell on page load
