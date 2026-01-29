@@ -9,12 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Set, Union
 from urllib.parse import urlparse
 
-from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
-from huggingface_hub import HfFileSystem
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, HfFileSystem
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
-    NamespaceNotEmptyError,
     NoSuchTableError,
     TableAlreadyExistsError,
 )
@@ -27,10 +25,12 @@ from pyiceberg.table import CommitTableRequest, CommitTableResponse, Table
 from pyiceberg.table.locations import LocationProvider
 from pyiceberg.table.metadata import new_table_metadata
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
-from pyiceberg.typedef import EMPTY_DICT, Identifier, Properties
+from pyiceberg.table.update import update_table_metadata
+from pyiceberg.typedef import EMPTY_DICT, Properties
 
-from faceberg.bridge import DatasetInfo, TableInfo
-from faceberg.config import Config, Entry
+from faceberg.bridge import DatasetInfo
+from faceberg.config import Config, Identifier
+from faceberg.config import Table as ConfigTable
 from faceberg.convert import IcebergMetadataWriter
 
 if TYPE_CHECKING:
@@ -202,6 +202,53 @@ class HfLocationProvider(LocationProvider):
 
 
 # =============================================================================
+# Utility for Staging Context Manager
+# =============================================================================
+
+
+class StagingContext:
+    def __init__(self, staging_dir):
+        self.path = Path(staging_dir)
+        self.changes = []
+
+    def add(self, path_in_repo: Union[str, Path]) -> None:
+        """Record a file addition in staged changes.
+
+        Args:
+            path_in_repo: Relative path in repository
+        """
+        self.changes.append(("add", str(path_in_repo)))
+
+    def delete(self, path_in_repo: Union[str, Path]) -> None:
+        """Record a file/directory deletion in staged changes.
+
+        Args:
+            path_in_repo: Relative path in repository to delete
+        """
+        self.changes.append(("delete", str(path_in_repo)))
+
+    def write(self, filename: str, content: str) -> None:
+        """Write content to a file in the staging directory.
+
+        Args:
+            filename: Name of the file to write
+            content: Content to write to the file
+        """
+        file_path = self.path / filename
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        self.changes.append(("add", filename))
+
+    # TODO(kszucs): maybe add move
+
+    def __iter__(self):
+        return iter(self.changes)
+
+    def __truediv__(self, other):
+        return self.path / other
+
+
+# =============================================================================
 # Catalog Implementations
 # =============================================================================
 
@@ -224,9 +271,9 @@ class BaseCatalog(Catalog):
 
     Subclasses must implement:
     - __init__: Initialize catalog-specific attributes
-    - _load_config(): Load catalog from storage
-    - _stage_config(): Save catalog to staging
-    - _persist_changes(): Persist staged changes to final storage
+    - _init(): Initialize storage and save empty config
+    - _commit(): Persist staged changes to final storage
+    - _checkout(): Get local path to a file in the catalog
     """
 
     def __init__(self, name: str, uri: str, hf_token: Optional[str] = None, **properties: str):
@@ -254,212 +301,103 @@ class BaseCatalog(Catalog):
         self.uri = uri
         self._hf_token = hf_token
 
-        # Temporary staging attributes (set within context manager)
-        self._staging_dir = None
-        self._staged_changes = None  # List of CommitOperation objects
-
     # =========================================================================
     # Catalog initialization
     # =========================================================================
 
-    # TODO(kszucs): allow passing a config object which is an incomplete
-    # cfg.Config instance without uri and revisions set, then initialization
-    # should sync as well given the provided config; this should be accessible
-    # through the cli as well
-    def init(self) -> None:
+    def init(self, config: Optional[Config] = None) -> None:
         """Initialize the catalog storage.
 
-        Creates the necessary storage structures and empty faceberg.yml.
-        For LocalCatalog, ensures directory exists and creates empty faceberg.yml.
-        For RemoteCatalog, creates a new HF dataset repository with empty faceberg.yml.
+        Creates the necessary storage structures and optionally populates it with
+        tables from the provided config.
+        For LocalCatalog, ensures directory exists and creates faceberg.yml.
+        For RemoteCatalog, creates a new HF dataset repository with faceberg.yml.
+
+        Args:
+            config: Optional initial Config object to populate the catalog.
+                   If None, creates an empty catalog.
+                   If provided, adds each dataset table to the catalog.
 
         Raises:
             Exception: Implementation-specific exceptions (e.g., repository already exists)
         """
-        with self._staging_changes():
-            # Initialize catalog storage
-            self._init_catalog()
-            # Create empty catalog config
-            config = Config(uri=self.uri, data={})
-            # Save the new config
-            self._stage_config(config)
+        # Initialize catalog storage (repository/directory creation) and save empty config
+        self._init()
+
+        # Initialize all tables from provided config
+        if config is not None:
+            for identifier, entry in config.items():
+                # Use add_dataset to create each table
+                self.add_dataset(identifier, entry.dataset, entry.config)
 
     # =========================================================================
     # Internal helper methods (catalog persistence and utilities)
     # =========================================================================
     # Subclasses must implement these methods
 
-    def _init_catalog(self) -> None:
+    def _init(self) -> None:
         """Initialize catalog-specific storage.
 
+        Creates the storage (directory/repository) and saves an empty config.
+
         Subclasses must implement this method.
         """
-        raise NotImplementedError("Subclasses must implement _init_catalog()")
+        raise NotImplementedError("Subclasses must implement _init()")
 
-    def _load_config(self) -> Config:
+    def config(self) -> Config:
         """Load catalog from storage.
 
-        Always sets self._config and returns it.
-        Subclasses must implement this method.
-
         Returns:
-            Catalog store object
+            Config object loaded from faceberg.yml
+
+        Raises:
+            FileNotFoundError: If faceberg.yml doesn't exist
         """
-        raise NotImplementedError("Subclasses must implement _load_config()")
+        config_path = self._checkout("faceberg.yml")
+        return Config.from_yaml(config_path)
 
-    def _stage_config(self, config: Config) -> None:
-        """Save catalog to staging directory and record the change.
+    def _checkout(self, path: str) -> Path:
+        """Get local path to a file in the catalog.
 
-        Serializes config to staging_dir/faceberg.yml and appends the
-        change to self._staged_changes.
-        Must be called within _staging_changes() context.
+        For LocalCatalog, returns path in catalog directory.
+        For RemoteCatalog, downloads from HF Hub and returns cached path.
 
         Args:
-            config: Config object to save
+            path: Relative path within the catalog (e.g., "faceberg.yml" or "namespace/table/metadata/version-hint.text")
+
+        Returns:
+            Local path to the file
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+
+        Subclasses must implement this method.
         """
-        if self._staging_dir is None:
-            raise RuntimeError("_stage_config() must be called within _staging_changes() context")
+        raise NotImplementedError("Subclasses must implement _checkout()")
 
-        catalog_file = self._staging_dir / "faceberg.yml"
-
-        # Save catalog store to YAML
-        config.to_yaml(catalog_file)
-
-        # Record the change
-        self._stage_add("faceberg.yml", catalog_file)
-
-    def _persist_changes(self) -> None:
+    def _commit(self, changes) -> None:
         """Persist staged changes to final storage.
 
-        Must be called within _staging_changes() context.
+        Must be called within _staging() context.
         Subclasses must implement this method.
         """
-        raise NotImplementedError("Subclasses must implement _persist_changes()")
+        raise NotImplementedError("Subclasses must implement _commit()")
 
-    def _load_table_locally(self, namespace: str, table_name: str) -> Path:
-        """Get local path where table directory can be accessed.
-
-        Used only for operations that need to copy table files (e.g., rename_table).
-        For loading tables, use URIs directly - PyIceberg's FileIO handles remote access.
-
-        For local catalogs, returns the direct path in catalog_dir.
-        For remote catalogs, downloads from HF Hub and returns cached path.
-
-        Args:
-            namespace: Table namespace
-            table_name: Table name
-
-        Returns:
-            Path to locally accessible table directory
-
-        Subclasses must implement this method.
-        """
-        raise NotImplementedError("Subclasses must implement _load_table_locally()")
-
+    # TODO(kszucs): maybe rename it to committing or something indicating all or nothing
     @contextmanager
-    def _staging_changes(self):
+    def _staging(self):
         """Context manager for staging catalog operations.
 
         Creates a temporary staging directory and provides staging context
         for modifications. On exit, persists changes and cleans up.
-
-        The caller is responsible for:
-        - Loading the config before or within the staging context
-        - Modifying self._config as needed
-        - Calling self._stage_config() if config changes (e.g., adding/removing tables)
-        - Persisting changes happens automatically on exit
-
-        Usage:
-            self._load_config()  # Load config first
-            with self._staging_changes():
-                # self._staging_dir is available
-                # self._config contains loaded catalog
-                # self._staged_changes tracks all modifications
-                # Use helper methods: self._set_table('ns', 'table', cfg.Entry(...))
-                # Write metadata files to self._staging_dir
-                # Append changes to self._staged_changes
-                # Call self._stage_config() when config is modified
         """
-        # Create temporary staging directory
-        temp_dir = tempfile.mkdtemp(prefix="faceberg_staging_")
-        self._staging_dir = Path(temp_dir)
-
-        # Initialize staged changes list
-        self._staged_changes = []
-
+        staging_dir = tempfile.mkdtemp(prefix="faceberg_staging_")
+        staging_ctx = StagingContext(staging_dir)
         try:
-            # Defer execution to caller
-            yield
-
-            # Persist changes to storage
-            self._persist_changes()
+            yield staging_ctx
+            self._commit(staging_ctx)
         finally:
-            # Clean up both the staging directory and internal state
-            self._staged_changes = None
-            self._staging_dir = None
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-    def _normalize_identifier(self, identifier: Union[str, Identifier]) -> Identifier:
-        """Convert string or tuple to validated Identifier tuple.
-
-        Args:
-            identifier: Table identifier (string or tuple)
-
-        Returns:
-            Identifier tuple (namespace, table_name)
-
-        Raises:
-            ValueError: If identifier format is invalid
-        """
-        if isinstance(identifier, str):
-            parts = identifier.split(".")
-            if len(parts) != 2:
-                raise ValueError(
-                    f"Invalid identifier: {identifier}. "
-                    f"Expected format: 'namespace.table' (e.g., 'deepmind.code_contests')"
-                )
-            return tuple(parts)
-        return tuple(identifier)
-
-    def _identifier_to_path(self, identifier: Identifier) -> Path:
-        """Convert identifier to relative path for file operations.
-
-        Args:
-            identifier: Identifier tuple
-
-        Returns:
-            Path object (namespace/table_name)
-        """
-        return Path(*identifier)
-
-    def _stage_add(self, path_in_repo: Union[str, Path], path_or_fileobj: Union[str, Path]) -> None:
-        """Record a file addition in staged changes.
-
-        Must be called within _staging_changes() context.
-
-        Args:
-            path_in_repo: Relative path in repository
-            path_or_fileobj: Path to file to add
-        """
-        if self._staged_changes is None:
-            raise RuntimeError("_stage_add() must be called within _staging_changes() context")
-
-        self._staged_changes.append(
-            CommitOperationAdd(path_in_repo=str(path_in_repo), path_or_fileobj=str(path_or_fileobj))
-        )
-
-    def _stage_delete(self, path_in_repo: Union[str, Path]) -> None:
-        """Record a file/directory deletion in staged changes.
-
-        Must be called within _staging_changes() context.
-
-        Args:
-            path_in_repo: Relative path in repository to delete
-        """
-        if self._staged_changes is None:
-            raise RuntimeError("_stage_delete() must be called within _staging_changes() context")
-
-        self._staged_changes.append(CommitOperationDelete(path_in_repo=str(path_in_repo)))
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
     # =========================================================================
     # Iceberg Catalog Interface (implementation of pyiceberg.catalog.Catalog)
@@ -481,28 +419,24 @@ class BaseCatalog(Catalog):
         Raises:
             NamespaceAlreadyExistsError: If namespace already exists
         """
-        # Convert to string
-        if isinstance(namespace, str):
-            ns_str = namespace
-        else:
-            ns_str = ".".join(namespace)
+        namespace = Identifier(namespace)
+        config = self.config()
+        if namespace in config:
+            raise NamespaceAlreadyExistsError(f"Namespace {namespace} already exists")
 
-        with self._staging_changes():
-            config = self._load_config()
+        with self._staging() as staging:
+            # add namespace to config
+            config[namespace] = {}
 
-            # Check if namespace already exists
-            if ns_str in config._data:
-                raise NamespaceAlreadyExistsError(f"Namespace {ns_str} already exists")
+            # save config since we added a namespace
+            config.to_yaml(staging / "faceberg.yml")
 
-            # Add empty namespace to config
-            config._data[ns_str] = {}
+            # create the directory in staging
+            (staging / namespace.path).mkdir(parents=True, exist_ok=True)
 
-            # Create the directory in staging
-            ns_dir = self._staging_dir / ns_str
-            ns_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save config since we added a namespace
-            self._stage_config(config)
+            # stage the changes
+            staging.add("faceberg.yml")
+            staging.add(namespace.path)
 
     def drop_namespace(self, namespace: Union[str, Identifier]) -> None:
         """Drop a namespace.
@@ -514,30 +448,21 @@ class BaseCatalog(Catalog):
             NoSuchNamespaceError: If namespace doesn't exist
             NamespaceNotEmptyError: If namespace contains tables
         """
-        # Convert to string
-        if isinstance(namespace, str):
-            ns_str = namespace
-        else:
-            ns_str = ".".join(namespace)
+        namespace = Identifier(namespace)
+        config = self.config()
+        if namespace not in config:
+            raise NoSuchNamespaceError(f"Namespace {namespace} does not exist")
 
-        with self._staging_changes():
-            config = self._load_config()
+        with self._staging() as staging:
+            # remove namespace from config
+            del config[namespace]
 
-            # Check if namespace exists and has tables
-            ns_tables = config._data.get(ns_str, {})
-            if ns_tables:
-                raise NamespaceNotEmptyError(f"Namespace {ns_str} is not empty")
+            # save config since we removed a namespace
+            config.to_yaml(staging / "faceberg.yml")
 
-            # Remove namespace from config
-            config._data.pop(ns_str, None)
-
-            # Remove the directory
-            ns_dir = self._staging_dir / ns_str
-            if ns_dir.exists():
-                ns_dir.rmdir()
-
-            # Save config since we removed a namespace
-            self._stage_config(config)
+            # stage the changes
+            staging.add("faceberg.yml")
+            staging.delete(namespace.path)
 
     def list_namespaces(self, namespace: Union[str, Identifier] = ()) -> List[Identifier]:
         """List namespaces.
@@ -548,37 +473,23 @@ class BaseCatalog(Catalog):
         Returns:
             List of namespace identifiers
         """
-        config = self._load_config()
-        return [tuple([ns_name]) for ns_name in config._data.keys()]
+        if namespace:
+            raise NotImplementedError("Nested namespaces are not supported")
+        config = self.config()
+        return config.namespaces
 
-    def load_namespace_properties(self, namespace: Union[str, Identifier]) -> Properties:
-        """Load namespace properties.
-
-        Args:
-            namespace: Namespace identifier
-
-        Returns:
-            Empty dict (properties not supported yet)
-        """
-        return {}
+    def load_namespace_properties(self, _namespace: Union[str, Identifier]) -> Properties:
+        """Load namespace properties."""
+        raise NotImplementedError("Namespace properties not supported")
 
     def update_namespace_properties(
         self,
-        namespace: Union[str, Identifier],
-        removals: Optional[Set[str]] = None,
-        updates: Properties = EMPTY_DICT,
+        _namespace: Union[str, Identifier],
+        _removals: Optional[Set[str]] = None,
+        _updates: Properties = EMPTY_DICT,
     ) -> PropertiesUpdateSummary:
-        """Update namespace properties.
-
-        Args:
-            namespace: Namespace identifier
-            removals: Properties to remove
-            updates: Properties to update
-
-        Returns:
-            Summary of changes (empty for now)
-        """
-        return PropertiesUpdateSummary(removed=[], updated=[], missing=[])
+        """Update namespace properties."""
+        raise NotImplementedError("Namespace properties not supported")
 
     # -------------------------------------------------------------------------
     # Table operations
@@ -609,27 +520,20 @@ class BaseCatalog(Catalog):
         Raises:
             TableAlreadyExistsError: If table already exists
         """
-        identifier = self._normalize_identifier(identifier)
+        identifier = Identifier(identifier)
+        config = self.config()
 
-        with self._staging_changes():
-            config = self._load_config()
+        # Check if table already exists
+        if identifier in config:
+            raise TableAlreadyExistsError(f"Table {'.'.join(identifier)} already exists")
 
-            # Check if table already exists
-            if identifier in config:
-                raise TableAlreadyExistsError(f"Table {'.'.join(identifier)} already exists")
+        if location is not None:
+            raise NotImplementedError("Custom table locations are not supported yet")
 
-            # Convert schema if needed
-            schema = self._convert_schema_if_needed(schema)
+        # Convert schema if needed
+        schema = self._convert_schema_if_needed(schema)
 
-            # Determine table directory path
-            if location is None:
-                table_path = self._staging_dir / self._identifier_to_path(identifier)
-            else:
-                table_path = Path(location)
-
-            # Ensure table directory exists
-            table_path.mkdir(parents=True, exist_ok=True)
-
+        with self._staging() as staging:
             # Create table URI for metadata
             table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
 
@@ -642,36 +546,24 @@ class BaseCatalog(Catalog):
                 properties=properties,
             )
 
-            # Write metadata file
-            metadata_file_path = (
-                table_path / "metadata" / f"v{metadata.last_sequence_number}.metadata.json"
-            )
-            metadata_file_path.parent.mkdir(parents=True, exist_ok=True)
+            # Create relative paths for metadata and version hint
+            metadata_dir = identifier.path / "metadata"
+            metadata_path = metadata_dir / f"v{metadata.last_sequence_number}.metadata.json"
+            version_hint_path = metadata_dir / "version-hint.text"
 
-            with open(metadata_file_path, "w") as f:
-                f.write(metadata.model_dump_json(indent=2))
+            # Write metadata and version hing files
+            (staging / metadata_dir).mkdir(parents=True, exist_ok=True)
+            (staging / metadata_path).write_text(metadata.model_dump_json(indent=2))
+            (staging / version_hint_path).write_text(str(metadata.last_sequence_number))
 
-            # Record metadata file change
-            rel_metadata_path = metadata_file_path.relative_to(self._staging_dir)
-            self._stage_add(rel_metadata_path, metadata_file_path)
+            # Add table to config
+            config[identifier] = ConfigTable()
+            config.to_yaml(staging / "faceberg.yml")
 
-            # Write version hint
-            version_hint_path = table_path / "metadata" / "version-hint.text"
-            with open(version_hint_path, "w") as f:
-                f.write(str(metadata.last_sequence_number))
-
-            # Record version hint change
-            rel_version_hint = version_hint_path.relative_to(self._staging_dir)
-            self._stage_add(rel_version_hint, version_hint_path)
-
-            # Add table to config (minimal entry - table is self-contained via metadata files)
-            config[identifier] = Entry(
-                dataset="",  # Empty for manually created tables
-                config="default",
-            )
-
-            # Save config since we added a table
-            self._stage_config(config)
+            # Record metadata and version hint additions
+            staging.add(metadata_path)
+            staging.add(version_hint_path)
+            staging.add("faceberg.yml")
 
         # Load and return table (after staging context exits and persists)
         return self.load_table(identifier)
@@ -688,31 +580,28 @@ class BaseCatalog(Catalog):
         Raises:
             NoSuchTableError: If table doesn't exist
         """
-        identifier = self._normalize_identifier(identifier)
-        config = self._load_config()
+        identifier = Identifier(identifier)
+        config = self.config()
 
         # Check if table exists in catalog
         if identifier not in config:
             raise NoSuchTableError(f"Table {'.'.join(identifier)} not found")
 
         # Compute table location from catalog URI
-        table_location = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+        table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
 
         # Use version-hint.text for Iceberg-native discovery
-        version_hint_path = f"{table_location}/metadata/version-hint.text"
+        version_hint_path = f"{table_uri}/metadata/version-hint.text"
 
         # Load FileIO to read version hint
-        io = load_file_io(properties=self.properties, location=table_location)
+        io = load_file_io(properties=self.properties, location=table_uri)
 
-        try:
-            # Read version hint to find current metadata version
-            with io.new_input(version_hint_path).open() as f:
-                version = int(f.read().decode("utf-8").strip())
-            metadata_uri = f"{table_location}/metadata/v{version}.metadata.json"
-        except Exception:
-            # Fallback: try v1.metadata.json if version hint doesn't exist
-            metadata_uri = f"{table_location}/metadata/v1.metadata.json"
+        # Read version hint to find current metadata version
+        with io.new_input(version_hint_path).open() as f:
+            version = int(f.read().decode("utf-8").strip())
 
+        # Read the actual metadata file
+        metadata_uri = f"{table_uri}/metadata/v{version}.metadata.json"
         try:
             metadata_file = io.new_input(metadata_uri)
             metadata = FromInputFile.table_metadata(metadata_file)
@@ -742,27 +631,7 @@ class BaseCatalog(Catalog):
         Raises:
             TableAlreadyExistsError: If table already exists
         """
-        identifier = self._normalize_identifier(identifier)
-
-        with self._staging_changes():
-            config = self._load_config()
-
-            # Check if table already exists
-            if identifier in config:
-                raise TableAlreadyExistsError(f"Table {'.'.join(identifier)} already exists")
-
-            # Register in config (minimal entry - table is self-contained via metadata files)
-            # Note: We no longer store metadata_location in the config
-            config[identifier] = Entry(
-                dataset="",  # Empty for registered tables
-                config="default",
-            )
-
-            # Save config since we registered a table
-            self._stage_config(config)
-            # Note: No files are added to staged_changes - only faceberg.yml will be updated
-
-        return self.load_table(identifier)
+        raise NotImplementedError("register_table is not supported yet")
 
     def list_tables(self, namespace: Union[str, Identifier]) -> List[Identifier]:
         """List tables in namespace.
@@ -773,15 +642,12 @@ class BaseCatalog(Catalog):
         Returns:
             List of table identifiers in namespace
         """
-        # Convert to string
-        if isinstance(namespace, str):
-            ns_str = namespace
-        else:
-            ns_str = ".".join(namespace)
+        namespace = Identifier(namespace)
+        if not namespace.is_namespace():
+            raise ValueError(f"Invalid namespace identifier: {namespace}")
 
-        config = self._load_config()
-        ns_tables = config._data.get(ns_str, {})
-        return [tuple([ns_str, table_name]) for table_name in ns_tables.keys()]
+        config = self.config()
+        return [Identifier((*namespace, table)) for table in config[namespace]]
 
     def drop_table(self, identifier: Union[str, Identifier]) -> None:
         """Drop a table.
@@ -792,23 +658,21 @@ class BaseCatalog(Catalog):
         Raises:
             NoSuchTableError: If table doesn't exist
         """
-        identifier = self._normalize_identifier(identifier)
+        identifier = Identifier(identifier)
+        config = self.config()
 
-        with self._staging_changes():
-            config = self._load_config()
+        # Check if table exists
+        if identifier not in config:
+            raise NoSuchTableError(f"Table {'.'.join(identifier)} not found")
 
-            # Check if table exists and remove it
-            if identifier not in config:
-                raise NoSuchTableError(f"Table {'.'.join(identifier)} not found")
-
+        with self._staging() as staging:
+            # Remove table from config
             del config[identifier]
+            config.to_yaml(staging / "faceberg.yml")
 
-            # Record deletion of table directory
-            table_dir = f"{'/'.join(identifier)}/"
-            self._stage_delete(table_dir)
-
-            # Save config since we dropped a table
-            self._stage_config(config)
+            # Mark the directory for deletion and stage config change
+            staging.add("faceberg.yml")
+            staging.delete(identifier.path)
 
     def rename_table(
         self, from_identifier: Union[str, Identifier], to_identifier: Union[str, Identifier]
@@ -826,11 +690,11 @@ class BaseCatalog(Catalog):
             NoSuchTableError: If source table doesn't exist
             TableAlreadyExistsError: If destination table already exists
         """
-        from_identifier = self._normalize_identifier(from_identifier)
-        to_identifier = self._normalize_identifier(to_identifier)
+        from_identifier = Identifier(from_identifier)
+        to_identifier = Identifier(to_identifier)
 
-        with self._staging_changes():
-            config = self._load_config()
+        with self._staging() as staging:
+            config = self.config()
 
             # Check if source table exists
             if from_identifier not in config:
@@ -843,34 +707,33 @@ class BaseCatalog(Catalog):
                 raise TableAlreadyExistsError(f"Table {'.'.join(to_identifier)} already exists")
 
             # Get source table directory
-            source_table_dir = self._load_table_locally(*from_identifier)
-            new_table_dir = self._staging_dir / self._identifier_to_path(to_identifier)
+            source_table_dir = self._checkout(from_identifier.path)
+            new_table_dir = staging / to_identifier.path
 
             if source_table_dir.exists():
                 # Copy from source to new location in staging
                 shutil.copytree(source_table_dir, new_table_dir)
 
                 # Record all files in the new table directory
-                for file_path in new_table_dir.rglob("*"):
-                    if file_path.is_file():
-                        rel_path = file_path.relative_to(self._staging_dir)
-                        self._stage_add(rel_path, file_path)
+                for path in new_table_dir.rglob("*"):
+                    if path.is_file():
+                        staging.add(path.relative_to(staging.path))
 
                 # Add new table to config (minimal entry - table is self-contained)
-                config[to_identifier] = Entry(
+                config[to_identifier] = ConfigTable(
                     dataset=from_entry.dataset,  # Preserve dataset info
                     config=from_entry.config,  # Preserve config
                 )
 
             # Record deletion of old table directory
-            old_table_dir = f"{'/'.join(from_identifier)}/"
-            self._stage_delete(old_table_dir)
+            staging.delete(from_identifier.path)
 
             # Remove old table from config
             del config[from_identifier]
 
             # Save config since we renamed a table (modified config structure)
-            self._stage_config(config)
+            config.to_yaml(staging / "faceberg.yml")
+            staging.add("faceberg.yml")
 
         return self.load_table(to_identifier)
 
@@ -883,21 +746,11 @@ class BaseCatalog(Catalog):
         Returns:
             True if table exists
         """
-        try:
-            identifier = self._normalize_identifier(identifier)
-        except ValueError:
-            return False
-        config = self._load_config()
-        return identifier in config
+        return identifier in self.config()
 
-    def purge_table(self, identifier: Union[str, Identifier]) -> None:
-        """Drop table and delete all files.
-
-        Args:
-            identifier: Table identifier
-        """
-        # For now, just drop the table (don't delete files)
-        self.drop_table(identifier)
+    def purge_table(self, _identifier: Union[str, Identifier]) -> None:
+        """Drop table and delete all files."""
+        raise NotImplementedError("Purge table not supported")
 
     def commit_table(self, request: CommitTableRequest) -> CommitTableResponse:
         """Commit table updates (data files and metadata).
@@ -914,10 +767,8 @@ class BaseCatalog(Catalog):
         Returns:
             Commit response with updated metadata
         """
-        from pyiceberg.table.update import update_table_metadata
-
         # Parse identifier
-        identifier = self._normalize_identifier(request.identifier)
+        identifier = Identifier(request.identifier)
 
         # Load current table
         table = self.load_table(identifier)
@@ -936,33 +787,26 @@ class BaseCatalog(Catalog):
         )
 
         # Persist new metadata
-        with self._staging_changes():
-            # Create metadata directory in staging
-            metadata_path = self._staging_dir / self._identifier_to_path(identifier) / "metadata"
-            metadata_path.mkdir(parents=True, exist_ok=True)
-
+        with self._staging() as staging:
             # Determine new version number
             new_version = updated_metadata.last_sequence_number
 
-            # Write new metadata file
-            metadata_file = metadata_path / f"v{new_version}.metadata.json"
-            with open(metadata_file, "w") as f:
-                f.write(updated_metadata.model_dump_json(indent=2))
+            # Define metadata file and version hint paths
+            metadata_dir = staging / identifier.path / "metadata"
+            metadata_file_path = metadata_dir / f"v{new_version}.metadata.json"
+            version_hint_path = metadata_dir / "version-hint.text"
 
-            # Record metadata file change
-            rel_metadata = metadata_file.relative_to(self._staging_dir)
-            self._stage_add(rel_metadata, metadata_file)
+            # Write new metadata file and version hint
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            metadata_file_path.write_text(updated_metadata.model_dump_json(indent=2))
+            version_hint_path.write_text(str(new_version))
 
-            # Write version hint
-            version_hint = metadata_path / "version-hint.text"
-            with open(version_hint, "w") as f:
-                f.write(str(new_version))
+            # Stage changes
+            staging.add(metadata_file_path)
+            staging.add(version_hint_path)
 
-            rel_hint = version_hint.relative_to(self._staging_dir)
-            self._stage_add(rel_hint, version_hint)
-
-            # Compute metadata URI (no config update needed - table is self-contained)
-            metadata_uri = f"{self.uri.rstrip('/')}/{rel_metadata}"
+        # Compute metadata URI (no config update needed - table is self-contained)
+        metadata_uri = f"{self.uri.rstrip('/')}/{metadata_file_path}"
 
         return CommitTableResponse(
             metadata=updated_metadata,
@@ -975,7 +819,7 @@ class BaseCatalog(Catalog):
 
     def view_exists(self, identifier: Union[str, Identifier]) -> bool:
         """Check if view exists."""
-        return False
+        raise NotImplementedError("Views not supported")
 
     def drop_view(self, identifier: Union[str, Identifier]) -> None:
         """Drop a view."""
@@ -983,7 +827,7 @@ class BaseCatalog(Catalog):
 
     def list_views(self, namespace: Union[str, Identifier]) -> List[Identifier]:
         """List views in namespace."""
-        return []
+        raise NotImplementedError("Views not supported")
 
     def create_table_transaction(
         self,
@@ -1001,68 +845,22 @@ class BaseCatalog(Catalog):
     # Faceberg-specific Methods (dataset synchronization)
     # =========================================================================
 
-    def sync_datasets(self, table_name: Optional[str] = None) -> List[Table]:
-        """Sync Iceberg tables with HuggingFace datasets in config.
+    # TODO(kszucs): rename it to sync(config=None) to allow syncing from a provided config
+    def sync_tables(self) -> List[Table]:
+        """Sync all Iceberg tables with HuggingFace datasets in config.
 
         Discovers datasets and either creates new tables or updates existing ones
         with new snapshots if the dataset revision has changed.
 
-        Args:
-            table_name: Specific table to sync (None for all), format: "namespace.table"
-
         Returns:
             List of synced Table objects (created or updated)
-
-        Raises:
-            ValueError: If table is invalid
         """
-        # Load the config once at the start
-        config = self._load_config()
-
-        # Determine which tables to process
-        if table_name:
-            # Parse table name (format: namespace.table)
-            identifier = self._normalize_identifier(table_name)
-
-            # Find the specific table in config
-            if identifier not in config:
-                raise ValueError(f"Table {table_name} not found in config")
-
-            config_entry = config[identifier]
-            tables_to_process = [(identifier, config_entry)]
-        else:
-            # Process all tables
-            tables_to_process = [(identifier, config[identifier]) for identifier in config]
+        # Load the config to get all tables
+        config = self.config()
 
         tables = []
-
-        # Process each table with its own staging context
-        for identifier, config_entry in tables_to_process:
-            # Discover dataset (only for the specific config needed)
-            dataset_info = DatasetInfo.discover(
-                repo_id=config_entry.dataset,
-                configs=[config_entry.config],  # Only discover the specific config
-                token=self._hf_token,
-            )
-
-            # Convert to TableInfo using explicit identifier
-            table_info = dataset_info.to_table_info(
-                namespace=identifier[0],
-                table_name=identifier[1],
-                config=config_entry.config,
-                token=self._hf_token,
-            )
-
-            # Sync table in its own staging context
-            with self._staging_changes():
-                # Load config inside staging context
-                staging_config = self._load_config()
-                # Sync table (create new or update existing)
-                # Metadata is self-contained in Iceberg files (version-hint.text, snapshots)
-                self._sync_dataset(staging_config, table_info)
-
-            # Load the table after persistence
-            table = self.load_table(identifier)
+        for table in config.tables:
+            table = self.sync_table(table)
             tables.append(table)
 
         return tables
@@ -1085,16 +883,26 @@ class BaseCatalog(Catalog):
 
         Raises:
             ValueError: If identifier format is invalid
-            TableAlreadyExistsError: If table already exists
+            TableAlreadyExistsError: If table already exists with metadata
         """
-        identifier = self._normalize_identifier(identifier)
+        identifier = Identifier(identifier)
+        catalog_config = self.config()
 
-        # Load config to check if table exists
-        catalog_config = self._load_config()
-
-        # Check if table already exists
         if identifier in catalog_config:
-            raise TableAlreadyExistsError(f"Table {'.'.join(identifier)} already exists in catalog")
+            # Check if metadata files exist
+            table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+            version_hint_uri = f"{table_uri}/metadata/version-hint.text"
+            io = load_file_io(properties=self.properties, location=version_hint_uri)
+
+            try:
+                with io.new_input(version_hint_uri).open():
+                    pass  # File exists, table has been synced
+                # Table has both config entry and metadata - it's truly a duplicate
+                raise TableAlreadyExistsError(
+                    f"Table {'.'.join(identifier)} already exists in catalog"
+                )
+            except FileNotFoundError:
+                pass  # Config entry exists but no metadata - we can proceed
 
         # Discover dataset
         dataset_info = DatasetInfo.discover(
@@ -1112,171 +920,146 @@ class BaseCatalog(Catalog):
         )
 
         # Create the table with full metadata in staging context
-        with self._staging_changes():
-            staging_config = self._load_config()
-            self._add_dataset(staging_config, table_info)
+        with self._staging() as staging:
+            # Define metadata directory in the staging area
+            metadata_dir = staging / identifier.path / "metadata"
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create table URI for metadata
+            table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+
+            # Create metadata writer
+            metadata_writer = IcebergMetadataWriter(
+                table_path=metadata_dir,
+                schema=table_info.schema,
+                partition_spec=table_info.partition_spec,
+                base_uri=table_uri,
+            )
+
+            # Generate table UUID
+            table_uuid = str(uuid.uuid4())
+
+            # Write Iceberg metadata files (manifest, manifest list, table metadata)
+            metadata_writer.create_metadata_from_files(
+                file_infos=table_info.files,
+                table_uuid=table_uuid,
+                properties=table_info.get_table_properties(),
+            )
+
+            # TODO(kszucs): metadata writer should return with the affected file paths
+            # Record all created files in the table directory
+            for path in metadata_dir.rglob("*"):
+                if path.is_file():
+                    staging.add(path.relative_to(staging.path))
+
+            # Register table in config if not already there
+            if identifier not in catalog_config:
+                catalog_config[identifier] = ConfigTable(
+                    dataset=table_info.source_repo,
+                    config=table_info.source_config,
+                )
+                # Save config since we added a dataset table
+                catalog_config.to_yaml(staging / "faceberg.yml")
+                staging.add("faceberg.yml")
 
         # Load and return table after persistence
         return self.load_table(identifier)
 
-    def _sync_dataset(self, config: Config, table_info: TableInfo) -> str:
-        """Sync a table by creating it or checking if it needs updates.
+    def sync_table(self, identifier: Union[str, Identifier]) -> Table:
+        """Sync a single dataset table by adding or updating it.
 
-        Must be called within a _staging_changes() context.
-
-        Args:
-            config: Config object loaded in staging context
-            table_info: TableInfo containing all metadata needed for table creation/update
-
-        Returns:
-            Metadata URI (either existing or newly created)
-        """
-        identifier = self._normalize_identifier(table_info.identifier)
-
-        # Check if table entry exists in config
-        if identifier in config:
-            # Table exists in config - check if it has been synced (has metadata files)
-            table_location = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
-            version_hint_path = f"{table_location}/metadata/version-hint.text"
-
-            # Check if table has been synced by looking for version-hint.text
-            io = load_file_io(properties=self.properties, location=table_location)
-            try:
-                with io.new_input(version_hint_path).open():
-                    pass  # File exists, table has been synced
-                # Table has been synced - update it with new snapshot
-                return self._update_dataset(table_info)
-            except Exception:
-                # Table hasn't been synced yet - create it
-                return self._add_dataset(config, table_info)
-        else:
-            # Table doesn't exist - create it
-            return self._add_dataset(config, table_info)
-
-    def _add_dataset(self, config: Config, table_info: TableInfo) -> str:
-        """Create Iceberg table from TableInfo using metadata-only mode.
-
-        This method creates an Iceberg table by:
-        1. Creating the namespace on-demand if it doesn't exist
-        2. Creating the table metadata directory
-        3. Using IcebergMetadataWriter to write Iceberg metadata files
-        4. Registering the table in the catalog
-
-        Must be called within a _staging_changes() context.
+        Reads dataset and config information from the catalog configuration,
+        then either creates the table (if no metadata exists) or updates it
+        with a new snapshot (if metadata exists).
 
         Args:
-            config: Config object loaded in staging context
-            table_info: TableInfo containing all metadata needed for table creation
+            identifier: Table identifier in format "namespace.table"
 
         Returns:
-            Metadata URI of the created table
+            Synced Table object (created or updated)
 
         Raises:
-            TableAlreadyExistsError: If table already exists with metadata
+            ValueError: If identifier format is invalid or table not in config
         """
-        # Parse identifier
-        identifier = self._normalize_identifier(table_info.identifier)
+        identifier = Identifier(identifier)
 
-        # Create namespace directory on-demand
-        ns_dir = self._staging_dir / identifier[0]
-        ns_dir.mkdir(parents=True, exist_ok=True)
+        # Load config to get dataset info
+        config = self.config()
 
-        # Create local metadata directory
-        metadata_path = self._staging_dir / self._identifier_to_path(identifier)
-        metadata_path.mkdir(parents=True, exist_ok=True)
+        # Check if table exists in config
+        if identifier not in config:
+            raise ValueError(f"Table {'.'.join(identifier)} not found in config")
 
-        # Create table URI for metadata
+        config_entry = config[identifier]
+
+        # Discover dataset
+        dataset_info = DatasetInfo.discover(
+            repo_id=config_entry.dataset,
+            configs=[config_entry.config],
+            token=self._hf_token,
+        )
+
+        # Convert to TableInfo
+        table_info = dataset_info.to_table_info(
+            namespace=identifier[0],
+            table_name=identifier[1],
+            config=config_entry.config,
+            token=self._hf_token,
+        )
+
+        # Check if table has been synced (has metadata files)
         table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+        version_hint_uri = f"{table_uri}/metadata/version-hint.text"
 
-        # Create metadata writer
-        metadata_writer = IcebergMetadataWriter(
-            table_path=metadata_path,
-            schema=table_info.schema,
-            partition_spec=table_info.partition_spec,
-            base_uri=table_uri,
-        )
+        io = load_file_io(properties=self.properties, location=table_uri)
+        has_metadata = False
+        try:
+            with io.new_input(version_hint_uri).open():
+                pass  # File exists, table has been synced
+            has_metadata = True
+        except Exception:
+            pass  # Table hasn't been synced yet
 
-        # Generate table UUID
-        table_uuid = str(uuid.uuid4())
+        if not has_metadata:
+            # First sync - call add_dataset which will create metadata
+            # (add_dataset is now smart enough to handle existing config entries)
+            return self.add_dataset(identifier, config_entry.dataset, config_entry.config)
 
-        # Write Iceberg metadata files (manifest, manifest list, table metadata)
-        metadata_file_path = metadata_writer.create_metadata_from_files(
-            file_infos=table_info.files,
-            table_uuid=table_uuid,
-            properties=table_info.get_table_properties(),
-        )
+        # Update existing table with new snapshot
+        with self._staging() as staging:
+            table = self.load_table(identifier)
 
-        # Record all created files in the table directory
-        for file_path in metadata_path.rglob("*"):
-            if file_path.is_file():
-                rel_path = file_path.relative_to(self._staging_dir)
-                self._stage_add(rel_path, file_path)
+            # Create local metadata directory
+            metadata_dir = staging / identifier.path / "metadata"
+            metadata_dir.mkdir(parents=True, exist_ok=True)
 
-        # Register table in config with full metadata URI
-        rel_path = metadata_file_path.relative_to(self._staging_dir)
-        metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
+            # Create table URI for metadata
+            table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
 
-        # Create and set table entry
-        config[identifier] = Entry(
-            dataset=table_info.source_repo,
-            config=table_info.source_config,
-        )
+            # Create metadata writer
+            metadata_writer = IcebergMetadataWriter(
+                table_path=metadata_dir,
+                schema=table_info.schema,
+                partition_spec=table_info.partition_spec,
+                base_uri=table_uri,
+            )
 
-        # Save config since we added a dataset table
-        self._stage_config(config)
+            # Append new snapshot with updated files
+            metadata_writer.append_snapshot_from_files(
+                file_infos=table_info.files,
+                current_metadata=table.metadata,
+                properties=table_info.get_table_properties(),
+            )
 
-        return metadata_uri
+            # Record all files in the table directory (including new manifest/metadata files)
+            for path in metadata_dir.rglob("*"):
+                if path.is_file():
+                    staging.add(path.relative_to(staging.path))
 
-    def _update_dataset(self, table_info: TableInfo) -> str:
-        """Update existing table with a new snapshot for the updated dataset revision.
+            # Note: No need to save config since table entry hasn't changed
 
-        Must be called within a _staging_changes() context.
-
-        Args:
-            table_info: TableInfo with updated revision and file information
-
-        Returns:
-            Metadata URI of the updated table
-        """
-        # Parse identifier and load existing table
-        identifier = self._normalize_identifier(table_info.identifier)
-        table = self.load_table(identifier)
-
-        # Create local metadata directory
-        metadata_path = self._staging_dir / self._identifier_to_path(identifier)
-        metadata_path.mkdir(parents=True, exist_ok=True)
-
-        # Create table URI for metadata
-        table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
-
-        # Create metadata writer
-        metadata_writer = IcebergMetadataWriter(
-            table_path=metadata_path,
-            schema=table_info.schema,
-            partition_spec=table_info.partition_spec,
-            base_uri=table_uri,
-        )
-
-        # Append new snapshot with updated files
-        metadata_file_path = metadata_writer.append_snapshot_from_files(
-            file_infos=table_info.files,
-            current_metadata=table.metadata,
-            properties=table_info.get_table_properties(),
-        )
-
-        # Record all files in the table directory (including new manifest/metadata files)
-        for file_path in metadata_path.rglob("*"):
-            if file_path.is_file():
-                rel_path = file_path.relative_to(self._staging_dir)
-                self._stage_add(rel_path, file_path)
-
-        # Update config with full metadata URI
-        rel_path = metadata_file_path.relative_to(self._staging_dir)
-        metadata_uri = f"{self.uri.rstrip('/')}/{rel_path}"
-
-        # Note: No need to save config since table entry (dataset, config) hasn't changed
-
-        return metadata_uri
+        # Load and return table after persistence
+        return self.load_table(identifier)
 
 
 class LocalCatalog(BaseCatalog):
@@ -1321,7 +1104,7 @@ class LocalCatalog(BaseCatalog):
         }
         super().__init__(name=name, uri=uri, hf_token=hf_token, **properties_with_warehouse)
 
-    def _init_catalog(self) -> None:
+    def _init(self) -> None:
         """Initialize local catalog storage.
 
         Ensures the catalog directory exists and creates an empty faceberg.yml file.
@@ -1329,44 +1112,36 @@ class LocalCatalog(BaseCatalog):
         # Ensure catalog directory exists
         self.catalog_dir.mkdir(parents=True, exist_ok=True)
 
-    def _load_config(self) -> Config:
-        """Load catalog from catalog directory.
+        # Create and save empty config
+        config = Config(uri=self.uri, data={})
+        config.to_yaml(self.catalog_dir / "faceberg.yml")
+
+    def _checkout(self, path: str) -> Path:
+        """Get local path to a file/directory in the catalog.
+
+        Args:
+            path: Relative path within the catalog
 
         Returns:
-            Config object
-
-        Raises:
-            FileNotFoundError: If faceberg.yml doesn't exist
+            Path in catalog directory (may or may not exist)
         """
-        catalog_file = self.catalog_dir / "faceberg.yml"
-        if not catalog_file.exists():
-            raise FileNotFoundError(
-                f"Catalog not found at {catalog_file}. "
-                f"Initialize the catalog first by calling catalog.init()"
-            )
+        return self.catalog_dir / path
 
-        return Config.from_yaml(catalog_file)
-
-    def _persist_changes(self) -> None:
+    def _commit(self, staging_ctx) -> None:
         """Persist staged changes to catalog directory.
 
-        Applies staged changes (CommitOperations) to catalog_dir.
-        - CommitOperationAdd: moves file from staging to catalog_dir
-        - CommitOperationDelete: removes directory from catalog_dir
+        Applies staged changes to catalog_dir:
+        - add: moves file from staging to catalog_dir
+        - delete: removes directory from catalog_dir
 
-        Must be called within _staging_changes() context.
+        Must be called within _staging() context.
         """
-        if self._staging_dir is None:
-            raise RuntimeError(
-                "_persist_changes() must be called within _staging_changes() context"
-            )
-
         # Apply each operation
-        for operation in self._staged_changes:
-            if isinstance(operation, CommitOperationAdd):
+        for action, path_in_repo in staging_ctx:
+            if action == "add":
                 # Move file from staging to catalog_dir
-                src = Path(operation.path_or_fileobj)
-                dest = self.catalog_dir / operation.path_in_repo
+                src = staging_ctx.path / path_in_repo
+                dest = self.catalog_dir / path_in_repo
 
                 # Ensure destination directory exists
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1381,9 +1156,9 @@ class LocalCatalog(BaseCatalog):
                 # Move file from staging to catalog_dir
                 shutil.move(str(src), str(dest))
 
-            elif isinstance(operation, CommitOperationDelete):
+            elif action == "delete":
                 # Remove directory from catalog_dir
-                path_to_delete = self.catalog_dir / operation.path_in_repo
+                path_to_delete = self.catalog_dir / path_in_repo
                 if path_to_delete.exists():
                     if path_to_delete.is_dir():
                         shutil.rmtree(path_to_delete)
@@ -1391,21 +1166,7 @@ class LocalCatalog(BaseCatalog):
                         path_to_delete.unlink()
 
             else:
-                raise ValueError(f"Unknown CommitOperation type: {type(operation)}")
-
-    def _load_table_locally(self, namespace: str, table_name: str) -> Path:
-        """Get local path where table directory can be accessed.
-
-        Returns the direct path in catalog_dir (no copying needed).
-
-        Args:
-            namespace: Table namespace
-            table_name: Table name
-
-        Returns:
-            Path to table directory in catalog_dir
-        """
-        return self.catalog_dir / namespace / table_name
+                raise ValueError(f"Unknown action: {action}")
 
 
 class RemoteCatalog(BaseCatalog):
@@ -1413,7 +1174,7 @@ class RemoteCatalog(BaseCatalog):
 
     Uses HuggingFace Hub for catalog storage with automatic local caching.
     All operations work on a local staging directory (cache), and changes
-    are uploaded to the hub by _persist_changes().
+    are uploaded to the hub by _commit().
 
     Features:
     - HuggingFace Hub storage with local caching
@@ -1452,100 +1213,108 @@ class RemoteCatalog(BaseCatalog):
 
         # Hub-specific attributes
         self._hf_api = HfApi(token=hf_token)
-        self._hf_repo_type, self._hf_repo = parts
-        if self._hf_repo_type == "spaces":
+
+        repo_type, self._hf_repo = parts
+        if repo_type == "spaces":
             self._hf_repo_type = "space"
+        elif repo_type == "datasets":
+            self._hf_repo_type = "dataset"
+        else:
+            raise ValueError(f"Unsupported repo_type in URI: {repo_type}")
 
         # Set warehouse property to hf:// URI for remote catalogs
         properties_with_warehouse = {"warehouse": uri, **properties}
         super().__init__(name=name, uri=uri, hf_token=hf_token, **properties_with_warehouse)
 
-    def _init_catalog(self) -> None:
+    def _init(self) -> None:
         """Initialize remote catalog storage.
 
-        Creates a new HuggingFace dataset repository with an empty faceberg.yml.
+        Creates a new HuggingFace repository with an empty faceberg.yml.
 
         Raises:
             ValueError: If repository already exists
         """
-        if self._hf_repo_type == "space":
-            # Initialize Spaces repository with README and Dockerfile
-            spaces_dir = Path(__file__).parent / "spaces"
-            self._stage_add("README.md", spaces_dir / "README.md")
-            self._stage_add("Dockerfile", spaces_dir / "Dockerfile")
-
         # Create the repository
         self._hf_api.create_repo(
             repo_id=self._hf_repo,
             repo_type=self._hf_repo_type,
-            space_sdk="docker",
+            space_sdk="docker" if self._hf_repo_type == "space" else None,
             exist_ok=False,
         )
 
-    def _load_config(self) -> Config:
-        """Load catalog from HuggingFace Hub.
+        # Create and commit initial files
+        with self._staging() as staging:
+            # Create empty config
+            config = Config(uri=self.uri, data={})
+            config.to_yaml(staging / "faceberg.yml")
+            staging.add("faceberg.yml")
 
-        Downloads faceberg.yml from hub using HfApi.
+            # For spaces, add README and Dockerfile
+            if self._hf_repo_type == "space":
+                spaces_dir = Path(__file__).parent / "spaces"
+                staging.write("README.md", (spaces_dir / "README.md").read_text())
+                staging.write("Dockerfile", (spaces_dir / "Dockerfile").read_text())
 
-        Returns:
-            Config object
-
-        Raises:
-            FileNotFoundError: If faceberg.yml doesn't exist
-        """
-        # Download faceberg.yml from the latest revision
-        try:
-            local_path = self._hf_api.hf_hub_download(
-                repo_id=self._hf_repo,
-                filename="faceberg.yml",
-                repo_type=self._hf_repo_type,
-            )
-        except Exception as e:
-            if "not found" in str(e).lower() or "404" in str(e):
-                raise FileNotFoundError(
-                    f"Catalog not found in repository {self._hf_repo}. "
-                    f"Initialize the catalog first by calling catalog.init()"
-                ) from e
-            raise
-
-        # Load and return the catalog
-        return Config.from_yaml(local_path)
-
-    def _persist_changes(self) -> None:
+    def _commit(self, staging_ctx) -> None:
         """Persist staged changes to HuggingFace Hub.
 
         Uses staged changes to create atomic commit with all operations.
         Files are automatically cached by HuggingFace Hub's download mechanism.
+
+        Must be called within _staging() context.
         """
-        # Create commit with all staged operations
+        # Convert staging changes to HF operations
+        operations = []
+        for action, path_in_repo in staging_ctx:
+            if action == "add":
+                # File is in staging directory
+                path_or_fileobj = staging_ctx.path / path_in_repo
+                operations.append(
+                    CommitOperationAdd(
+                        path_in_repo=path_in_repo, path_or_fileobj=str(path_or_fileobj)
+                    )
+                )
+            elif action == "delete":
+                operations.append(CommitOperationDelete(path_in_repo=path_in_repo))
+            else:
+                raise ValueError(f"Unknown staging action: {action}")
+
+        # Create commit with all operations
         self._hf_api.create_commit(
             repo_id=self._hf_repo,
             repo_type=self._hf_repo_type,
-            operations=self._staged_changes,
+            operations=operations,
             commit_message="Sync catalog metadata",
         )
 
-    def _load_table_locally(self, namespace: str, table_name: str) -> Path:
-        """Get local path where table directory can be accessed.
+    def _checkout(self, path: str) -> Path:
+        """Get local path to a file in the catalog.
 
-        Downloads table directory from HF Hub and returns cached path.
+        Downloads file from HF Hub and returns cached path.
 
         Args:
-            namespace: Table namespace
-            table_name: Table name
+            path: Relative path within the catalog
 
         Returns:
-            Path to table directory in HF cache
+            Path to the file in HF cache
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
         """
-        # Download the table's metadata directory containing iceberg metadata files
-        # Download one file from the table metadata directory to get the cached path
-        metadata_file = self._hf_api.hf_hub_download(
-            repo_id=self._hf_repo,
-            filename=f"{namespace}/{table_name}/metadata/version-hint.text",
-            repo_type=self._hf_repo_type,
-        )
-        # The metadata file is in the table directory
-        return Path(metadata_file).parent.parent
+        try:
+            local_path = self._hf_api.hf_hub_download(
+                repo_id=self._hf_repo,
+                filename=path,
+                repo_type=self._hf_repo_type,
+            )
+            return Path(local_path)
+        except Exception as e:
+            if "not found" in str(e).lower() or "404" in str(e):
+                raise FileNotFoundError(
+                    f"File '{path}' not found in repository {self._hf_repo}. "
+                    f"Initialize the catalog first by calling catalog.init()"
+                ) from e
+            raise
 
 
 def catalog(
@@ -1597,7 +1366,9 @@ def catalog(
         # Convert to absolute path and file:// URI
         abs_path = Path(uri).resolve()
         path_str = abs_path.as_posix()
-        file_uri = f"file:///{path_str.lstrip('/')}"
+        # file:// URI format: file:// + empty host + absolute path
+        # For /path/to/file -> file:///path/to/file (3 slashes total)
+        file_uri = f"file://{path_str}"
         return LocalCatalog(name=uri, uri=file_uri, hf_token=hf_token, **properties)
     else:
         # Assume it's a HuggingFace repo ID (org/repo format)

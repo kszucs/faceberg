@@ -9,7 +9,7 @@ import requests
 import uvicorn
 
 from faceberg.catalog import LocalCatalog
-from faceberg.config import Config, Entry
+from faceberg.config import Config, Table
 from faceberg.server import create_app
 
 
@@ -38,7 +38,7 @@ def synced_catalog(synced_catalog_dir):
         uri=catalog_uri,
         data={
             "default": {
-                "imdb_plain_text": Entry(
+                "imdb_plain_text": Table(
                     dataset="stanfordnlp/imdb",
                     config="plain_text",
                 )

@@ -8,7 +8,7 @@ from faceberg.bridge import (
     build_split_partition_spec,
 )
 from faceberg.catalog import FacebergCatalog, HfFileIO, LocalCatalog, RemoteCatalog
-from faceberg.config import Config, Entry
+from faceberg.config import Config, Table
 from faceberg.convert import IcebergMetadataWriter
 
 __all__ = [
@@ -18,7 +18,7 @@ __all__ = [
     "RemoteCatalog",
     # Config
     "Config",
-    "Entry",
+    "Table",
     # Bridge (discovery + schema conversion + TableInfo output)
     "DatasetInfo",
     "FileInfo",

@@ -270,7 +270,7 @@ def test_faceberg_lazy_namespace_creation(faceberg_catalog_with_datasets):
     assert ("default",) in faceberg_catalog_with_datasets.list_namespaces()
 
     # Sync will create tables
-    synced_tables = faceberg_catalog_with_datasets.sync_datasets()
+    synced_tables = faceberg_catalog_with_datasets.sync_tables()
 
     # Namespace should still exist
     assert ("default",) in faceberg_catalog_with_datasets.list_namespaces()
@@ -280,7 +280,7 @@ def test_faceberg_lazy_namespace_creation(faceberg_catalog_with_datasets):
 def test_faceberg_create_tables_from_datasets(faceberg_catalog_with_datasets):
     """Test creating tables from datasets in FacebergCatalog."""
     # Sync tables (token=None works for public datasets, namespaces created on-demand)
-    synced_tables = faceberg_catalog_with_datasets.sync_datasets()
+    synced_tables = faceberg_catalog_with_datasets.sync_tables()
 
     # Verify tables were created
     assert len(synced_tables) > 0
@@ -297,12 +297,10 @@ def test_faceberg_create_tables_from_datasets(faceberg_catalog_with_datasets):
 def test_faceberg_create_specific_table(faceberg_catalog_with_datasets):
     """Test creating a specific table in FacebergCatalog."""
     # Sync specific table (token=None works for public datasets, namespace created on-demand)
-    synced_tables = faceberg_catalog_with_datasets.sync_datasets(
-        table_name="default.imdb_plain_text",
-    )
+    synced_table = faceberg_catalog_with_datasets.sync_table("default.imdb_plain_text")
 
     # Verify table was synced
-    assert len(synced_tables) == 1
+    assert synced_table is not None
 
     # Verify table exists
     assert faceberg_catalog_with_datasets.table_exists("default.imdb_plain_text")
@@ -347,18 +345,14 @@ def test_faceberg_create_table_for_config(faceberg_catalog):
 def test_faceberg_invalid_table_name_format(faceberg_catalog):
     """Test invalid table name format raises error in FacebergCatalog."""
     with pytest.raises(ValueError, match="Invalid identifier"):
-        faceberg_catalog.sync_datasets(
-            table_name="invalid_format",  # Missing namespace
-        )
+        faceberg_catalog.sync_table("invalid_format")  # Missing namespace
 
 
 def test_faceberg_dataset_not_found_in_config(faceberg_catalog):
     """Test error when dataset not found in config in FacebergCatalog."""
     # Catalog config has "imdb_plain_text" dataset, so "nonexistent" should fail
     with pytest.raises(ValueError, match="not found in config"):
-        faceberg_catalog.sync_datasets(
-            table_name="default.nonexistent_default",
-        )
+        faceberg_catalog.sync_table("default.nonexistent_default")
 
 
 # =============================================================================
