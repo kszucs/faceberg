@@ -574,6 +574,22 @@ def test_table_info_name_mapping_with_maps():
     assert value_mapping["fields"][1]["names"] == ["name"]
 
 
+def test_extract_index_from_hf_pattern():
+    """Test extracting index from HF-style filenames."""
+    # Test data-NNNNN-of-NNNNN pattern
+    assert DatasetInfo._extract_index_from_filename("data-00005-of-00010.parquet") == 5
+    assert DatasetInfo._extract_index_from_filename("train-00000-of-00001.parquet") == 0
+
+    # Test split-NNNNN-iceberg pattern
+    assert DatasetInfo._extract_index_from_filename("train-00005-iceberg.parquet") == 5
+
+    # Test simple split-NNNNN pattern
+    assert DatasetInfo._extract_index_from_filename("train-00003.parquet") == 3
+
+    # Test no index pattern
+    assert DatasetInfo._extract_index_from_filename("random-file.parquet") is None
+
+
 if __name__ == "__main__":
     # Run basic smoke test
     print("Running basic discovery test...")

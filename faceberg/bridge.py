@@ -86,11 +86,20 @@ class TableInfo:
         # Create schema name mapping for Parquet files without embedded field IDs
         name_mapping = build_name_mapping(self.schema)
 
+        # TODO(kszucs): split should be configurable
         properties = {
             "format-version": "3",
             "write.parquet.compression-codec": "snappy",
+            "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
+            # HuggingFace source metadata
             "huggingface.dataset.repo": self.source_repo,
             "huggingface.dataset.config": self.source_config,
+            # Write configuration
+            "huggingface.write.pattern": "{split}-{index:05d}-iceberg.parquet",
+            "huggingface.write.next-index": "0",
+            "huggingface.write.use-uuid": "false",
+            "huggingface.write.split": "train",
+            # Schema mapping
             "schema.name-mapping.default": json.dumps(name_mapping),
         }
 
@@ -519,6 +528,82 @@ class DatasetInfo:
         if not files:
             raise ValueError(f"No Parquet files found for config {config}")
         return files[0]
+
+    def discover_file_pattern(self, config: str) -> tuple[str, int]:
+        """Discover file naming pattern and next index from existing files.
+
+        Analyzes existing parquet files to determine the next available index
+        for new files. The pattern returned is always the default Iceberg
+        pattern since we don't try to match existing HF conventions.
+
+        Args:
+            config: Configuration name
+
+        Returns:
+            Tuple of (pattern, next_index) where pattern is the default
+            Iceberg pattern and next_index is one more than the highest
+            index found in existing files (or 0 if no indexed files exist)
+        """
+        default_pattern = "{split}-{index:05d}-iceberg.parquet"
+
+        if config not in self.parquet_files:
+            return default_pattern, 0
+
+        # Collect all files across all splits
+        all_files = []
+        for split_files in self.parquet_files[config].values():
+            all_files.extend(split_files)
+
+        if not all_files:
+            return default_pattern, 0
+
+        # Analyze filenames to find max index
+        max_index = -1
+        for filepath in all_files:
+            filename = filepath.split("/")[-1]
+            index = self._extract_index_from_filename(filename)
+            if index is not None and index > max_index:
+                max_index = index
+
+        next_index = max_index + 1 if max_index >= 0 else 0
+        return default_pattern, next_index
+
+    @staticmethod
+    def _extract_index_from_filename(filename: str) -> Optional[int]:
+        """Extract numeric index from common HF dataset filename patterns.
+
+        Handles patterns like:
+        - data-00005-of-00010.parquet
+        - train-00005-iceberg.parquet
+        - train-00005.parquet
+
+        Args:
+            filename: Filename to parse
+
+        Returns:
+            Extracted index or None if no index pattern found
+        """
+        import re
+
+        # Remove extension
+        name = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+        # Pattern: data-NNNNN-of-NNNNN or similar with "of"
+        match = re.search(r"-(\d+)-of-\d+$", name)
+        if match:
+            return int(match.group(1))
+
+        # Pattern: split-NNNNN-iceberg or split-NNNNN
+        match = re.search(r"-(\d+)(?:-iceberg)?$", name)
+        if match:
+            return int(match.group(1))
+
+        # Pattern: data-NNNNN or similar ending with digits
+        match = re.search(r"-(\d+)$", name)
+        if match:
+            return int(match.group(1))
+
+        return None
 
     def to_table_info(
         self,

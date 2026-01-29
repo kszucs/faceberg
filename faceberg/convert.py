@@ -175,15 +175,29 @@ class IcebergMetadataWriter:
 
         return enriched
 
-    def _create_data_files(self, file_infos: List[FileInfo]) -> List[DataFile]:
+    def _create_data_files(
+        self,
+        file_infos: List[FileInfo],
+        sequence_number: int = INITIAL_SEQUENCE_NUMBER,
+        previous_data_files: Optional[List[DataFile]] = None,
+    ) -> List[DataFile]:
         """Create Iceberg DataFile entries from file information.
 
         Args:
             file_infos: List of FileInfo objects with metadata
+            sequence_number: Current sequence number (default: 0 for initial snapshot)
+            previous_data_files: Optional list of data files from previous snapshot for
+                                 inheritance tracking
 
         Returns:
             List of Iceberg DataFile objects
         """
+        # Build lookup of previous files by path for inheritance checking
+        previous_files_map = {}
+        if previous_data_files:
+            for prev_file in previous_data_files:
+                previous_files_map[prev_file.file_path] = prev_file
+
         data_files = []
 
         for file_info in file_infos:
@@ -196,6 +210,15 @@ class IcebergMetadataWriter:
             else:
                 partition = {}
 
+            # Determine file_sequence_number: inherit from previous snapshot if file unchanged
+            prev_file = previous_files_map.get(file_info.path)
+            if prev_file and self._files_identical(prev_file, file_info):
+                # File unchanged - inherit sequence number
+                file_seq_num = prev_file.file_sequence_number
+            else:
+                # File is new or modified - use current sequence number
+                file_seq_num = sequence_number
+
             data_file = DataFile.from_args(
                 content=DataFileContent.DATA,
                 file_path=file_info.path,
@@ -203,6 +226,7 @@ class IcebergMetadataWriter:
                 partition=partition,
                 record_count=file_info.row_count,
                 file_size_in_bytes=file_info.size_bytes,
+                file_sequence_number=file_seq_num,  # Track inheritance
                 column_sizes={},
                 value_counts={},
                 null_value_counts={},
@@ -217,6 +241,39 @@ class IcebergMetadataWriter:
             data_files.append(data_file)
 
         return data_files
+
+    def _files_identical(self, prev_file: DataFile, current_file: FileInfo) -> bool:
+        """Check if file is unchanged between snapshots.
+
+        Args:
+            prev_file: DataFile from previous snapshot
+            current_file: FileInfo for current file
+
+        Returns:
+            True if file is unchanged
+        """
+        return (
+            prev_file.file_size_in_bytes == current_file.size_bytes
+            and prev_file.record_count == current_file.row_count
+        )
+
+    def _get_previous_data_files(self, metadata: TableMetadataV2) -> Optional[List[DataFile]]:
+        """Extract data files from the current snapshot.
+
+        Args:
+            metadata: Current table metadata
+
+        Returns:
+            List of DataFile objects from current snapshot, or None if no snapshots
+
+        Note:
+            Currently returns None (inheritance tracking disabled).
+            Reading manifests requires additional pyiceberg APIs not yet available.
+            All files will be marked with current sequence_number.
+        """
+        # TODO: Implement manifest reading to enable file inheritance tracking
+        # This would require reading manifest files to extract previous DataFile entries
+        return None
 
     def _write_metadata_files(
         self,
@@ -237,8 +294,8 @@ class IcebergMetadataWriter:
         # Step 1: Create and write manifest
         manifest_file = self._create_manifest(data_files)
 
-        # Step 2: Create snapshot
-        snapshot = self._create_snapshot(data_files)
+        # Step 2: Create snapshot (with properties for summary fields)
+        snapshot = self._create_snapshot(data_files, properties)
 
         # Step 3: Write manifest list
         self._write_manifest_list(snapshot, [manifest_file])
@@ -302,17 +359,41 @@ class IcebergMetadataWriter:
                 key_metadata=original_manifest.key_metadata,
             )
 
-    def _create_snapshot(self, data_files: List[DataFile]) -> Snapshot:
+    def _create_snapshot(
+        self, data_files: List[DataFile], properties: Optional[Dict[str, str]] = None
+    ) -> Snapshot:
         """Create snapshot object.
 
         Args:
             data_files: List of data files
+            properties: Optional table properties (used to populate snapshot summary)
 
         Returns:
             Snapshot object
         """
+        properties = properties or {}
         total_records = sum(df.record_count for df in data_files)
         manifest_filename = f"snap-1-1-{uuid.uuid4()}.avro"
+
+        # Build summary with standard fields + huggingface metadata
+        summary_fields = {
+            "added-data-files": str(len(data_files)),
+            "added-records": str(total_records),
+            "total-data-files": str(len(data_files)),
+            "total-records": str(total_records),
+        }
+
+        # Add huggingface.* fields from properties to snapshot summary
+        if "huggingface.dataset.repo" in properties:
+            summary_fields["huggingface.dataset.repo"] = properties["huggingface.dataset.repo"]
+        if "huggingface.dataset.config" in properties:
+            summary_fields["huggingface.dataset.config"] = properties["huggingface.dataset.config"]
+        if "huggingface.dataset.revision" in properties:
+            revision = properties["huggingface.dataset.revision"]
+            summary_fields["huggingface.dataset.revision"] = revision
+            # Add short revision (first 7 chars)
+            summary_fields["huggingface.dataset.revision.short"] = revision[:7]
+
         return Snapshot(  # type: ignore[call-arg]
             snapshot_id=1,
             parent_snapshot_id=None,
@@ -321,12 +402,7 @@ class IcebergMetadataWriter:
             manifest_list=f"{self.base_uri.rstrip('/')}/metadata/{manifest_filename}",
             summary=Summary(
                 operation=Operation.APPEND,
-                **{
-                    "added-data-files": str(len(data_files)),
-                    "added-records": str(total_records),
-                    "total-data-files": str(len(data_files)),
-                    "total-records": str(total_records),
-                },
+                **summary_fields,
             ),
             schema_id=self.schema.schema_id,
         )
@@ -492,30 +568,35 @@ class IcebergMetadataWriter:
         # Enrich file metadata
         enriched_files = self._read_file_metadata(file_infos)
 
-        # Create DataFile entries
-        data_files = self._create_data_files(enriched_files)
+        # Get previous data files for inheritance tracking
+        previous_data_files = self._get_previous_data_files(current_metadata)
 
         # Calculate next IDs
         next_snapshot_id = max(snap.snapshot_id for snap in current_metadata.snapshots) + 1
         next_sequence_number = current_metadata.last_sequence_number + 1
+
+        # Create DataFile entries with sequence number tracking
+        data_files = self._create_data_files(
+            enriched_files, next_sequence_number, previous_data_files
+        )
+
+        # Merge properties first (needed for snapshot summary)
+        merged_properties = {**current_metadata.properties}
+        if properties:
+            merged_properties.update(properties)
 
         # Write manifest
         manifest_file = self._write_manifest_with_ids(
             data_files, next_snapshot_id, next_sequence_number
         )
 
-        # Create snapshot
+        # Create snapshot (with properties for summary fields)
         snapshot = self._create_snapshot_with_ids(
-            data_files, next_snapshot_id, next_sequence_number
+            data_files, next_snapshot_id, next_sequence_number, merged_properties
         )
 
         # Write manifest list
         self._write_manifest_list(snapshot, [manifest_file])
-
-        # Merge properties
-        merged_properties = {**current_metadata.properties}
-        if properties:
-            merged_properties.update(properties)
 
         # Create updated metadata
         updated_metadata = TableMetadataV2(  # type: ignore[call-arg]
@@ -606,7 +687,11 @@ class IcebergMetadataWriter:
             )
 
     def _create_snapshot_with_ids(
-        self, data_files: List[DataFile], snapshot_id: int, sequence_number: int
+        self,
+        data_files: List[DataFile],
+        snapshot_id: int,
+        sequence_number: int,
+        properties: Optional[Dict[str, str]] = None,
     ) -> Snapshot:
         """Create snapshot with specific IDs.
 
@@ -614,13 +699,35 @@ class IcebergMetadataWriter:
             data_files: List of DataFile objects
             snapshot_id: Snapshot ID
             sequence_number: Sequence number
+            properties: Optional table properties (used to populate snapshot summary)
 
         Returns:
             Snapshot object
         """
+        properties = properties or {}
         total_records = sum(df.record_count for df in data_files)
 
         manifest_filename = f"snap-{snapshot_id}-{sequence_number}-{uuid.uuid4()}.avro"
+
+        # Build summary with standard fields + huggingface metadata
+        summary_fields = {
+            "added-data-files": str(len(data_files)),
+            "added-records": str(total_records),
+            "total-data-files": str(len(data_files)),
+            "total-records": str(total_records),
+        }
+
+        # Add huggingface.* fields from properties to snapshot summary
+        if "huggingface.dataset.repo" in properties:
+            summary_fields["huggingface.dataset.repo"] = properties["huggingface.dataset.repo"]
+        if "huggingface.dataset.config" in properties:
+            summary_fields["huggingface.dataset.config"] = properties["huggingface.dataset.config"]
+        if "huggingface.dataset.revision" in properties:
+            revision = properties["huggingface.dataset.revision"]
+            summary_fields["huggingface.dataset.revision"] = revision
+            # Add short revision (first 7 chars)
+            summary_fields["huggingface.dataset.revision.short"] = revision[:7]
+
         return Snapshot(  # type: ignore[call-arg]
             snapshot_id=snapshot_id,
             parent_snapshot_id=snapshot_id - 1,
@@ -629,12 +736,7 @@ class IcebergMetadataWriter:
             manifest_list=f"{self.base_uri.rstrip('/')}/metadata/{manifest_filename}",
             summary=Summary(
                 operation=Operation.APPEND,
-                **{
-                    "added-data-files": str(len(data_files)),
-                    "added-records": str(total_records),
-                    "total-data-files": str(len(data_files)),
-                    "total-records": str(total_records),
-                },
+                **summary_fields,
             ),
             schema_id=self.schema.schema_id,
         )

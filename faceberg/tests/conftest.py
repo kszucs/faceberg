@@ -9,7 +9,7 @@ import requests
 import uvicorn
 
 from faceberg.catalog import LocalCatalog
-from faceberg.database import Catalog, Namespace, Table
+from faceberg.config import Config, Entry
 from faceberg.server import create_app
 
 
@@ -34,19 +34,15 @@ def synced_catalog(synced_catalog_dir):
 
     # Create store with test dataset
     catalog_uri = f"file:///{synced_catalog_dir.as_posix()}"
-    store_obj = Catalog(
+    store_obj = Config(
         uri=catalog_uri,
-        namespaces={
-            "default": Namespace(
-                tables={
-                    "imdb_plain_text": Table(
-                        dataset="stanfordnlp/imdb",
-                        uri="",  # Empty until synced
-                        revision="",  # Empty until synced
-                        config="plain_text",
-                    ),
-                }
-            )
+        data={
+            "default": {
+                "imdb_plain_text": Entry(
+                    dataset="stanfordnlp/imdb",
+                    config="plain_text",
+                )
+            }
         },
     )
 
