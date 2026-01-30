@@ -257,23 +257,33 @@ class IcebergMetadataWriter:
             and prev_file.record_count == current_file.row_count
         )
 
-    def _get_previous_data_files(self, metadata: TableMetadataV2) -> Optional[List[DataFile]]:
-        """Extract data files from the current snapshot.
+    def _get_previous_manifests(self, metadata: TableMetadataV2) -> Optional[List[ManifestFile]]:
+        """Extract manifest file references from the current snapshot without reading their contents.
+
+        This method is used for fast append operations to reuse existing manifest files
+        without downloading and reading their contents. This significantly reduces
+        bandwidth and improves performance for remote catalogs.
 
         Args:
             metadata: Current table metadata
 
         Returns:
-            List of DataFile objects from current snapshot, or None if no snapshots
-
-        Note:
-            Currently returns None (inheritance tracking disabled).
-            Reading manifests requires additional pyiceberg APIs not yet available.
-            All files will be marked with current sequence_number.
+            List of ManifestFile objects from current snapshot, or None if no snapshots
         """
-        # TODO: Implement manifest reading to enable file inheritance tracking
-        # This would require reading manifest files to extract previous DataFile entries
-        return None
+        # Return None if there's no current snapshot
+        if not metadata.current_snapshot_id or not metadata.snapshots:
+            return None
+
+        # Find the current snapshot
+        current_snapshot = next(
+            (s for s in metadata.snapshots if s.snapshot_id == metadata.current_snapshot_id),
+            None,
+        )
+        if not current_snapshot:
+            return None
+
+        # Return manifest file references (without reading their contents)
+        return list(current_snapshot.manifests(self.file_io))
 
     def _write_metadata_files(
         self,
@@ -568,14 +578,17 @@ class IcebergMetadataWriter:
         # Enrich file metadata
         enriched_files = self._read_file_metadata(file_infos)
 
-        # Get previous data files for inheritance tracking
-        previous_data_files = self._get_previous_data_files(current_metadata)
+        # Skip inheritance tracking for pure appends (new files only)
+        # The bridge layer already filtered to new files via revision diff,
+        # so no need to compare with previous data files.
+        # This saves 5-25 MB of manifest downloads for remote catalogs.
+        previous_data_files = None
 
         # Calculate next IDs
         next_snapshot_id = max(snap.snapshot_id for snap in current_metadata.snapshots) + 1
         next_sequence_number = current_metadata.last_sequence_number + 1
 
-        # Create DataFile entries with sequence number tracking
+        # Create DataFile entries (all get new sequence number)
         data_files = self._create_data_files(
             enriched_files, next_sequence_number, previous_data_files
         )
@@ -585,8 +598,8 @@ class IcebergMetadataWriter:
         if properties:
             merged_properties.update(properties)
 
-        # Write manifest
-        manifest_file = self._write_manifest_with_ids(
+        # Write manifest for new files only
+        new_manifest_file = self._write_manifest_with_ids(
             data_files, next_snapshot_id, next_sequence_number
         )
 
@@ -595,8 +608,15 @@ class IcebergMetadataWriter:
             data_files, next_snapshot_id, next_sequence_number, merged_properties
         )
 
-        # Write manifest list
-        self._write_manifest_list(snapshot, [manifest_file])
+        # Fast append: reuse previous manifests + add new manifest
+        previous_manifests = self._get_previous_manifests(current_metadata)
+        if previous_manifests:
+            all_manifest_files = previous_manifests + [new_manifest_file]
+        else:
+            all_manifest_files = [new_manifest_file]
+
+        # Write manifest list with all manifests
+        self._write_manifest_list(snapshot, all_manifest_files)
 
         # Create updated metadata
         updated_metadata = TableMetadataV2(  # type: ignore[call-arg]

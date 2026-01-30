@@ -1,5 +1,6 @@
 """Tests for the convert module (Iceberg metadata generation)."""
 
+import uuid
 from unittest.mock import Mock, patch
 
 import pytest
@@ -357,3 +358,60 @@ class TestFileSizeRegression:
                 # Verify the ratio is in the expected range
                 ratio = file_info.size_bytes / serialized_sizes[i]
                 assert 500 <= ratio <= 20000  # Based on real-world observations
+
+
+class TestGetPreviousManifests:
+    """Tests for the _get_previous_manifests method for fast append optimization."""
+
+    def test_no_snapshots_returns_none(self, metadata_writer):
+        """Test that None is returned when metadata has no snapshots."""
+        from pyiceberg.table.metadata import TableMetadataV2
+
+        # Create metadata with no snapshots
+        metadata = Mock(spec=TableMetadataV2)
+        metadata.current_snapshot_id = None
+        metadata.snapshots = []
+
+        result = metadata_writer._get_previous_manifests(metadata)
+        assert result is None
+
+    def test_returns_manifest_files_without_reading_contents(self, metadata_writer):
+        """Test that ManifestFile objects are returned without fetching their entries."""
+        from pyiceberg.manifest import ManifestFile
+        from pyiceberg.table.metadata import TableMetadataV2
+        from pyiceberg.table.snapshots import Snapshot
+
+        # Create mock manifest files
+        mock_manifest_1 = Mock(spec=ManifestFile)
+        mock_manifest_1.manifest_path = "hf://datasets/org/repo/metadata/manifest1.avro"
+
+        mock_manifest_2 = Mock(spec=ManifestFile)
+        mock_manifest_2.manifest_path = "hf://datasets/org/repo/metadata/manifest2.avro"
+
+        # Create mock snapshot
+        mock_snapshot = Mock(spec=Snapshot)
+        mock_snapshot.snapshot_id = 1
+        mock_snapshot.manifests.return_value = [mock_manifest_1, mock_manifest_2]
+
+        # Create metadata
+        metadata = Mock(spec=TableMetadataV2)
+        metadata.current_snapshot_id = 1
+        metadata.snapshots = [mock_snapshot]
+
+        # Test
+        result = metadata_writer._get_previous_manifests(metadata)
+
+        # Verify - should return manifest files
+        assert result is not None
+        assert len(result) == 2
+        assert result[0] == mock_manifest_1
+        assert result[1] == mock_manifest_2
+
+        # Critical: verify we did NOT call fetch_manifest_entry (no content reading)
+        assert not hasattr(mock_manifest_1, 'fetch_manifest_entry') or \
+               not mock_manifest_1.fetch_manifest_entry.called
+        assert not hasattr(mock_manifest_2, 'fetch_manifest_entry') or \
+               not mock_manifest_2.fetch_manifest_entry.called
+
+        # Verify we called manifests() with file_io
+        mock_snapshot.manifests.assert_called_once_with(metadata_writer.file_io)

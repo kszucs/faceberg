@@ -1,5 +1,6 @@
 """Faceberg catalog implementation with HuggingFace Hub support."""
 
+import logging
 import os
 import shutil
 import tempfile
@@ -13,6 +14,8 @@ from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, Hf
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
+    NamespaceNotEmptyError,
+    NoSuchNamespaceError,
     NoSuchTableError,
     TableAlreadyExistsError,
 )
@@ -35,6 +38,8 @@ from faceberg.convert import IcebergMetadataWriter
 
 if TYPE_CHECKING:
     import pyarrow as pa
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -453,6 +458,11 @@ class BaseCatalog(Catalog):
         if namespace not in config:
             raise NoSuchNamespaceError(f"Namespace {namespace} does not exist")
 
+        # Check if namespace has tables
+        namespace_obj = config[namespace]
+        if isinstance(namespace_obj, dict) and len(namespace_obj) > 0:
+            raise NamespaceNotEmptyError(f"Namespace {namespace} is not empty")
+
         with self._staging() as staging:
             # remove namespace from config
             del config[namespace]
@@ -479,17 +489,23 @@ class BaseCatalog(Catalog):
         return config.namespaces
 
     def load_namespace_properties(self, _namespace: Union[str, Identifier]) -> Properties:
-        """Load namespace properties."""
-        raise NotImplementedError("Namespace properties not supported")
+        """Load namespace properties.
+
+        Note: Namespace properties are not currently stored, returns empty dict.
+        """
+        return {}
 
     def update_namespace_properties(
         self,
-        _namespace: Union[str, Identifier],
-        _removals: Optional[Set[str]] = None,
-        _updates: Properties = EMPTY_DICT,
+        namespace: Union[str, Identifier],
+        removals: Optional[Set[str]] = None,
+        updates: Properties = EMPTY_DICT,
     ) -> PropertiesUpdateSummary:
-        """Update namespace properties."""
-        raise NotImplementedError("Namespace properties not supported")
+        """Update namespace properties.
+
+        Note: Namespace properties are not currently stored, returns empty summary.
+        """
+        return PropertiesUpdateSummary(removed=[], updated=[], missing=[])
 
     # -------------------------------------------------------------------------
     # Table operations
@@ -597,8 +613,13 @@ class BaseCatalog(Catalog):
         io = load_file_io(properties=self.properties, location=table_uri)
 
         # Read version hint to find current metadata version
-        with io.new_input(version_hint_path).open() as f:
-            version = int(f.read().decode("utf-8").strip())
+        try:
+            with io.new_input(version_hint_path).open() as f:
+                version = int(f.read().decode("utf-8").strip())
+        except FileNotFoundError as e:
+            raise NoSuchTableError(
+                f"Table {'.'.join(identifier)} metadata file not found: {version_hint_path}"
+            ) from e
 
         # Read the actual metadata file
         metadata_uri = f"{table_uri}/metadata/v{version}.metadata.json"
@@ -641,12 +662,17 @@ class BaseCatalog(Catalog):
 
         Returns:
             List of table identifiers in namespace
+
+        Raises:
+            NoSuchNamespaceError: If namespace doesn't exist
         """
         namespace = Identifier(namespace)
         if not namespace.is_namespace():
             raise ValueError(f"Invalid namespace identifier: {namespace}")
 
         config = self.config()
+        if namespace not in config:
+            raise NoSuchNamespaceError(f"Namespace {namespace} does not exist")
         return [Identifier((*namespace, table)) for table in config[namespace]]
 
     def drop_table(self, identifier: Union[str, Identifier]) -> None:
@@ -792,16 +818,16 @@ class BaseCatalog(Catalog):
             new_version = updated_metadata.last_sequence_number
 
             # Define metadata file and version hint paths
-            metadata_dir = staging / identifier.path / "metadata"
+            metadata_dir = identifier.path / "metadata"
             metadata_file_path = metadata_dir / f"v{new_version}.metadata.json"
             version_hint_path = metadata_dir / "version-hint.text"
 
             # Write new metadata file and version hint
-            metadata_dir.mkdir(parents=True, exist_ok=True)
-            metadata_file_path.write_text(updated_metadata.model_dump_json(indent=2))
-            version_hint_path.write_text(str(new_version))
+            (staging.path / metadata_dir).mkdir(parents=True, exist_ok=True)
+            (staging.path / metadata_file_path).write_text(updated_metadata.model_dump_json(indent=2))
+            (staging.path / version_hint_path).write_text(str(new_version))
 
-            # Stage changes
+            # Stage changes (must use relative paths from staging root)
             staging.add(metadata_file_path)
             staging.add(version_hint_path)
 
@@ -845,7 +871,6 @@ class BaseCatalog(Catalog):
     # Faceberg-specific Methods (dataset synchronization)
     # =========================================================================
 
-    # TODO(kszucs): rename it to sync(config=None) to allow syncing from a provided config
     def sync_tables(self) -> List[Table]:
         """Sync all Iceberg tables with HuggingFace datasets in config.
 
@@ -921,16 +946,17 @@ class BaseCatalog(Catalog):
 
         # Create the table with full metadata in staging context
         with self._staging() as staging:
-            # Define metadata directory in the staging area
-            metadata_dir = staging / identifier.path / "metadata"
-            metadata_dir.mkdir(parents=True, exist_ok=True)
+            # Define table directory in the staging area
+            # Note: IcebergMetadataWriter will create the metadata subdirectory
+            table_dir = staging / identifier.path
+            table_dir.mkdir(parents=True, exist_ok=True)
 
             # Create table URI for metadata
             table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
 
             # Create metadata writer
             metadata_writer = IcebergMetadataWriter(
-                table_path=metadata_dir,
+                table_path=table_dir,
                 schema=table_info.schema,
                 partition_spec=table_info.partition_spec,
                 base_uri=table_uri,
@@ -948,7 +974,7 @@ class BaseCatalog(Catalog):
 
             # TODO(kszucs): metadata writer should return with the affected file paths
             # Record all created files in the table directory
-            for path in metadata_dir.rglob("*"):
+            for path in table_dir.rglob("*"):
                 if path.is_file():
                     staging.add(path.relative_to(staging.path))
 
@@ -992,21 +1018,6 @@ class BaseCatalog(Catalog):
 
         config_entry = config[identifier]
 
-        # Discover dataset
-        dataset_info = DatasetInfo.discover(
-            repo_id=config_entry.dataset,
-            configs=[config_entry.config],
-            token=self._hf_token,
-        )
-
-        # Convert to TableInfo
-        table_info = dataset_info.to_table_info(
-            namespace=identifier[0],
-            table_name=identifier[1],
-            config=config_entry.config,
-            token=self._hf_token,
-        )
-
         # Check if table has been synced (has metadata files)
         table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
         version_hint_uri = f"{table_uri}/metadata/version-hint.text"
@@ -1026,9 +1037,46 @@ class BaseCatalog(Catalog):
             return self.add_dataset(identifier, config_entry.dataset, config_entry.config)
 
         # Update existing table with new snapshot
-        with self._staging() as staging:
-            table = self.load_table(identifier)
+        # Load table first to get old revision
+        table = self.load_table(identifier)
 
+        # Get old revision from table properties (required)
+        old_revision = table.metadata.properties.get("huggingface.dataset.revision")
+        if not old_revision:
+            raise ValueError(
+                f"Table {'.'.join(identifier)} missing 'huggingface.dataset.revision' property. "
+                "This table was created before revision tracking was implemented. "
+                "Please recreate the table to enable incremental sync."
+            )
+
+        # Discover dataset at current revision
+        dataset_info = DatasetInfo.discover(
+            repo_id=config_entry.dataset,
+            configs=[config_entry.config],
+            token=self._hf_token,
+        )
+
+        # Check if already up to date
+        if old_revision == dataset_info.revision:
+            logger.info(f"Table {'.'.join(identifier)} already at revision {old_revision}")
+            return table
+
+        # Get only new files since old revision (incremental update)
+        table_info = dataset_info.to_table_info_incremental(
+            namespace=identifier[0],
+            table_name=identifier[1],
+            config=config_entry.config,
+            old_revision=old_revision,
+            token=self._hf_token,
+        )
+
+        # If no new files, table is already up to date
+        if not table_info.files:
+            logger.info(f"No new files for {'.'.join(identifier)}")
+            return table
+
+        # Append new snapshot with only new files
+        with self._staging() as staging:
             # Create local metadata directory
             metadata_dir = staging / identifier.path / "metadata"
             metadata_dir.mkdir(parents=True, exist_ok=True)

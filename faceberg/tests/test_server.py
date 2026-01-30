@@ -202,7 +202,7 @@ class TestEmptyCatalogBehavior:
         # Create empty catalog
         catalog_dir = tmp_path / "empty_catalog"
         catalog_dir.mkdir()
-        catalog_config = Config(uri=f"file:///{catalog_dir.as_posix()}", data={})
+        catalog_config = Config(uri=f"file://{catalog_dir.as_posix()}", data={})
         catalog_config.to_yaml(catalog_dir / "faceberg.yml")
 
         # Create server
@@ -218,11 +218,11 @@ class TestEmptyCatalogBehavior:
             assert data["namespaces"] == []
 
     def test_empty_catalog_list_tables_in_default(self, tmp_path):
-        """Test that listing tables in default namespace of empty catalog returns empty list."""
+        """Test that listing tables in non-existent namespace returns 404."""
         # Create empty catalog
         catalog_dir = tmp_path / "empty_catalog"
         catalog_dir.mkdir()
-        catalog_config = Config(uri=f"file:///{catalog_dir.as_posix()}", data={})
+        catalog_config = Config(uri=f"file://{catalog_dir.as_posix()}", data={})
         catalog_config.to_yaml(catalog_dir / "faceberg.yml")
 
         # Create server
@@ -230,12 +230,8 @@ class TestEmptyCatalogBehavior:
 
         with TestClient(app=app) as client:
             response = client.get("/v1/namespaces/default/tables")
-            assert response.status_code == 200
-
-            data = response.json()
-            assert "identifiers" in data
-            # Empty namespace should return empty list, not error
-            assert data["identifiers"] == []
+            # Non-existent namespace should return 404
+            assert response.status_code == 404
 
     def test_catalog_with_namespace_but_no_tables(self, tmp_path):
         """Test catalog with defined namespace but no tables."""
@@ -243,7 +239,7 @@ class TestEmptyCatalogBehavior:
         catalog_dir = tmp_path / "catalog_with_empty_ns"
         catalog_dir.mkdir()
         catalog_config = Config(
-            uri=f"file:///{catalog_dir.as_posix()}",
+            uri=f"file://{catalog_dir.as_posix()}",
             data={"default": {}},
         )
         catalog_config.to_yaml(catalog_dir / "faceberg.yml")

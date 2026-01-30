@@ -33,7 +33,8 @@ def synced_catalog(synced_catalog_dir):
     synced_catalog_dir.mkdir(parents=True, exist_ok=True)
 
     # Create store with test dataset
-    catalog_uri = f"file:///{synced_catalog_dir.as_posix()}"
+    # Use file:// + absolute path (file:// + /path gives file:///path)
+    catalog_uri = f"file://{synced_catalog_dir.as_posix()}"
     store_obj = Config(
         uri=catalog_uri,
         data={
@@ -54,7 +55,7 @@ def synced_catalog(synced_catalog_dir):
     catalog = LocalCatalog(name=str(synced_catalog_dir), uri=catalog_uri)
 
     # Sync all tables (token=None works for public datasets)
-    synced_tables = catalog.sync_datasets()
+    synced_tables = catalog.sync_tables()
 
     # Verify sync was successful
     assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"

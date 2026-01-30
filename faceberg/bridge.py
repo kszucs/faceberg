@@ -115,6 +115,72 @@ class TableInfo:
 # =============================================================================
 
 
+def get_new_parquet_files(
+    repo_id: str,
+    config: str,
+    old_revision: str,
+    new_revision: str,
+    token: Optional[str] = None,
+) -> List[str]:
+    """Find new parquet files added between two revisions.
+
+    Uses HuggingFace Hub API to diff two git revisions and identify
+    new parquet files for a specific dataset configuration.
+
+    Args:
+        repo_id: HuggingFace dataset repo ID (e.g., "squad")
+        config: Dataset configuration name (e.g., "plain_text")
+        old_revision: Previous commit SHA
+        new_revision: Current commit SHA or branch (usually "main")
+        token: HuggingFace API token
+
+    Returns:
+        List of new parquet file paths relative to repo root
+
+    Example:
+        >>> get_new_parquet_files(
+        ...     "squad",
+        ...     "plain_text",
+        ...     "abc123",
+        ...     "def456"
+        ... )
+        ['plain_text/train-00000-of-00001.parquet',
+         'plain_text/validation-00000-of-00001.parquet']
+    """
+    api = HfApi(token=token)
+
+    # Get all files at old revision
+    old_files = set(
+        api.list_repo_files(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=old_revision,
+        )
+    )
+
+    # Get all files at new revision
+    new_files = set(
+        api.list_repo_files(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=new_revision,
+        )
+    )
+
+    # Find added files (set difference)
+    added_files = new_files - old_files
+
+    # Filter for parquet files in this config
+    config_prefix = f"{config}/"
+    parquet_files = [
+        f
+        for f in added_files
+        if f.endswith(".parquet") and f.startswith(config_prefix)
+    ]
+
+    return sorted(parquet_files)
+
+
 def build_field_mapping(field: NestedField) -> Dict[str, any]:
     """Build name mapping for a single field, recursively handling nested types.
 
@@ -670,6 +736,96 @@ class DatasetInfo:
         return TableInfo(
             namespace=namespace,
             table_name=table_name,  # Direct from config, no auto-generation
+            schema=schema,
+            partition_spec=partition_spec,
+            files=files,
+            source_repo=self.repo_id,
+            source_config=config,
+            source_revision=self.revision,
+        )
+
+    def to_table_info_incremental(
+        self,
+        namespace: str,
+        table_name: str,
+        config: str,
+        old_revision: str,
+        token: Optional[str] = None,
+    ) -> TableInfo:
+        """Convert DatasetInfo to TableInfo with only new files since old_revision.
+
+        This method is optimized for incremental updates - it only includes files
+        that are new since the specified old_revision.
+
+        Args:
+            namespace: Iceberg namespace for the table
+            table_name: Explicit table name
+            config: Specific config to create table for
+            old_revision: Previous revision SHA to diff against (required)
+            token: HuggingFace API token
+
+        Returns:
+            TableInfo object with only new files
+
+        Raises:
+            ValueError: If config not found in dataset
+        """
+        if config not in self.configs:
+            raise ValueError(
+                f"Config '{config}' not found in dataset {self.repo_id}. "
+                f"Available configs: {', '.join(self.configs)}"
+            )
+
+        # Get features and schema (same as before)
+        builder = load_dataset_builder_safe(self.repo_id, config_name=config, token=token)
+        features = builder.info.features
+        if not features:
+            raise ValueError(
+                f"Dataset {self.repo_id} config {config} has no features available."
+            )
+
+        schema = build_iceberg_schema_from_features(features, include_split_column=True)
+        partition_spec = build_split_partition_spec(schema)
+
+        # Get only new files added since old_revision
+        new_file_paths = get_new_parquet_files(
+            repo_id=self.repo_id,
+            config=config,
+            old_revision=old_revision,
+            new_revision=self.revision,
+            token=token,
+        )
+
+        # Organize by split (extract split from path)
+        file_paths_by_split = {}
+        for file_path in new_file_paths:
+            # Extract split from path: "config/split-00000.parquet" -> "split"
+            parts = file_path.split("/")
+            if len(parts) >= 2:
+                split_part = parts[1]  # e.g., "train-00000-of-00001.parquet"
+                split_name = split_part.split("-")[0]  # e.g., "train"
+
+                if split_name not in file_paths_by_split:
+                    file_paths_by_split[split_name] = []
+                file_paths_by_split[split_name].append(file_path)
+
+        # Create FileInfo objects
+        files = []
+        for split_name, file_paths in file_paths_by_split.items():
+            for file_path in file_paths:
+                hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
+                files.append(
+                    FileInfo(
+                        path=hf_uri,
+                        size_bytes=0,  # Will be enriched later
+                        row_count=0,  # Will be enriched later
+                        split=split_name,
+                    )
+                )
+
+        return TableInfo(
+            namespace=namespace,
+            table_name=table_name,
             schema=schema,
             partition_spec=partition_spec,
             files=files,
