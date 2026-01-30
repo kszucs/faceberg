@@ -2,7 +2,7 @@
 
 from litestar.testing import TestClient
 
-from faceberg.config import Config
+from faceberg.config import Config, Namespace
 from faceberg.server import create_app
 
 
@@ -202,7 +202,7 @@ class TestEmptyCatalogBehavior:
         # Create empty catalog
         catalog_dir = tmp_path / "empty_catalog"
         catalog_dir.mkdir()
-        catalog_config = Config(uri=f"file://{catalog_dir.as_posix()}", data={})
+        catalog_config = Config()
         catalog_config.to_yaml(catalog_dir / "faceberg.yml")
 
         # Create server
@@ -222,7 +222,7 @@ class TestEmptyCatalogBehavior:
         # Create empty catalog
         catalog_dir = tmp_path / "empty_catalog"
         catalog_dir.mkdir()
-        catalog_config = Config(uri=f"file://{catalog_dir.as_posix()}", data={})
+        catalog_config = Config()
         catalog_config.to_yaml(catalog_dir / "faceberg.yml")
 
         # Create server
@@ -238,10 +238,7 @@ class TestEmptyCatalogBehavior:
         # Create catalog with empty namespace
         catalog_dir = tmp_path / "catalog_with_empty_ns"
         catalog_dir.mkdir()
-        catalog_config = Config(
-            uri=f"file://{catalog_dir.as_posix()}",
-            data={"default": {}},
-        )
+        catalog_config = Config({"default": Namespace()})
         catalog_config.to_yaml(catalog_dir / "faceberg.yml")
 
         # Create server

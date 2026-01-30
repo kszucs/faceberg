@@ -36,16 +36,12 @@ def synced_catalog(synced_catalog_dir):
     # Use file:// + absolute path (file:// + /path gives file:///path)
     catalog_uri = f"file://{synced_catalog_dir.as_posix()}"
     store_obj = Config(
-        data={
-            "default": Namespace(
-                {
-                    "imdb_plain_text": Dataset(
-                        repo="stanfordnlp/imdb",
-                        config="plain_text",
-                    )
-                }
+        default=Namespace(
+            imdb_plain_text=Dataset(
+                repo="stanfordnlp/imdb",
+                config="plain_text",
             )
-        }
+        )
     )
 
     # Write config to faceberg.yml

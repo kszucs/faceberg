@@ -203,7 +203,8 @@ def init(ctx, config):
 
     if config_obj and config_obj.tables:
         console.print(
-            f"[bold green]✓ Catalog initialized with {len(config_obj.tables)} table(s)![/bold green]"
+            "[bold green]✓ Catalog initialized with "
+            f"{len(config_obj.tables)} table(s)![/bold green]"
         )
     else:
         console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
@@ -214,7 +215,8 @@ def init(ctx, config):
             space_url = catalog_obj._hf_repo.replace("/", "-")
             console.print(f"\n[cyan]Space URL:[/cyan] https://{space_url}.hf.space")
         console.print(
-            f"[cyan]Repository:[/cyan] https://huggingface.co/{catalog_obj._hf_repo_type}s/{catalog_obj._hf_repo}"
+            "[cyan]Repository:[/cyan] https://huggingface.co/"
+            f"{catalog_obj._hf_repo_type}s/{catalog_obj._hf_repo}"
         )
 
     # Recommend next steps
