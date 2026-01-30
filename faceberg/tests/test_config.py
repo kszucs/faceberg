@@ -46,7 +46,7 @@ def test_config(sample_config):
     cfg = Config.from_dict(sample_config)
 
     assert isinstance(cfg, Config)
-    for k, v in cfg.data.items():
+    for k, v in cfg.items():
         assert isinstance(v, Namespace)
 
     # Verify to_dict includes type discriminators
@@ -65,19 +65,6 @@ def test_config(sample_config):
     assert cfg[("ns1", "table1")].repo == "org/updated_dataset1"
 
 
-def test_config_string_key_access(sample_config):
-    """Test accessing config with string keys using dot notation."""
-    cfg = Config.from_dict(sample_config)
-
-    # Single level access
-    assert isinstance(cfg["ns1"], Namespace)
-    assert isinstance(cfg["ns2"], Namespace)
-
-    # Dot notation access
-    assert cfg["ns1.table1"].repo == "org/dataset1"
-    assert cfg["ns1.table2"].config == "config2"
-    assert cfg["ns2.view1"].query == "SELECT * FROM ns1.table1"
-    assert cfg["ns3.subns1.table3"].repo == "org/dataset3"
 
 
 def test_config_contains(sample_config):
@@ -88,8 +75,8 @@ def test_config_contains(sample_config):
     assert "ns1" in cfg
     assert "ns2" in cfg
     assert "nonexistent" not in cfg
-    assert "ns1.table1" in cfg
-    assert "ns1.table999" not in cfg
+    assert ("ns1", "table1") in cfg
+    assert ("ns1", "table999") not in cfg
 
     # Test with tuple keys
     assert ("ns1",) in cfg
@@ -108,14 +95,10 @@ def test_config_setitem_creates_intermediate_namespaces():
     cfg[("analytics", "sales", "orders")] = new_dataset
 
     # Verify intermediate namespaces were created
-    assert isinstance(cfg["analytics"], Namespace)
-    assert isinstance(cfg["analytics.sales"], Namespace)
-    assert cfg["analytics.sales.orders"].repo == "org/new_dataset"
+    assert isinstance(cfg[("analytics",)], Namespace)
+    assert isinstance(cfg[("analytics", "sales")], Namespace)
+    assert cfg[("analytics", "sales", "orders")].repo == "org/new_dataset"
 
-    # Set with string key
-    another_dataset = Dataset(repo="org/another", config="default")
-    cfg["analytics.marketing.campaigns"] = another_dataset
-    assert cfg["analytics.marketing.campaigns"].repo == "org/another"
 
 
 def test_config_setitem_overwrite(sample_config):
@@ -152,20 +135,19 @@ def test_config_invalid_key_type(sample_config):
     """Test that invalid key types raise TypeError."""
     cfg = Config.from_dict(sample_config)
 
-    with pytest.raises(TypeError, match="Identifier must be created from str, list, or tuple"):
+    with pytest.raises(TypeError, match="Key must be a tuple or string"):
         _ = cfg[123]
 
-    with pytest.raises(TypeError, match="Identifier must be created from str, list, or tuple"):
+    with pytest.raises(TypeError, match="Key must be a tuple or string"):
         _ = cfg[["list", "key"]]
 
-    with pytest.raises(TypeError, match="Identifier must be created from str, list, or tuple"):
+    with pytest.raises(TypeError, match="Key must be a tuple or string"):
         cfg[123] = Dataset(repo="test", config="default")
 
 
 def test_config_empty():
     """Test empty config initialization and operations."""
     cfg = Config()
-    assert cfg.data == {}
     assert cfg.to_dict() == {}
 
     # Add first item
@@ -180,7 +162,6 @@ def test_config_repr():
     cfg["test"] = Namespace()
     repr_str = repr(cfg)
     assert "Config" in repr_str
-    assert "data=" in repr_str
 
 
 def test_yaml_round_trip(tmp_path, sample_config):
@@ -202,11 +183,10 @@ def test_yaml_round_trip(tmp_path, sample_config):
     assert loaded_cfg.to_dict() == cfg.to_dict()
 
     # Verify data integrity and types
-    assert isinstance(loaded_cfg["ns1.table1"], Dataset)
-    assert loaded_cfg["ns1.table1"].repo == "org/dataset1"
-    assert isinstance(loaded_cfg["ns2.view1"], View)
-    assert loaded_cfg["ns2.view1"].query == "SELECT * FROM ns1.table1"
-
+    assert isinstance(loaded_cfg[("ns1", "table1")], Dataset)
+    assert loaded_cfg[("ns1", "table1")].repo == "org/dataset1"
+    assert isinstance(loaded_cfg[("ns2", "view1")], View)
+    assert loaded_cfg[("ns2", "view1")].query == "SELECT * FROM ns1.table1"
 
 def test_yaml_empty_file(tmp_path):
     """Test loading from empty YAML file."""
@@ -220,9 +200,9 @@ def test_yaml_empty_file(tmp_path):
 def test_yaml_preserves_all_types(tmp_path):
     """Test that YAML serialization preserves all node types."""
     cfg = Config()
-    cfg["data.dataset1"] = Dataset(repo="org/repo1", config="cfg1")
-    cfg["data.view1"] = View(query="SELECT 1")
-    cfg["data.table1"] = Table()
+    cfg[("data", "dataset1")] = Dataset(repo="org/repo1", config="cfg1")
+    cfg[("data", "view1")] = View(query="SELECT 1")
+    cfg[("data", "table1")] = Table()
 
     yaml_path = tmp_path / "types.yaml"
     cfg.to_yaml(yaml_path)
@@ -235,12 +215,11 @@ def test_yaml_preserves_all_types(tmp_path):
 
     # Load and verify all types are preserved
     loaded = Config.from_yaml(yaml_path)
-    assert isinstance(loaded["data.dataset1"], Dataset)
-    assert isinstance(loaded["data.view1"], View)
-    assert isinstance(loaded["data.table1"], Table)
-    assert loaded["data.dataset1"].repo == "org/repo1"
-    assert loaded["data.view1"].query == "SELECT 1"
-
+    assert isinstance(loaded[("data", "dataset1")], Dataset)
+    assert isinstance(loaded[("data", "view1")], View)
+    assert isinstance(loaded[("data", "table1")], Table)
+    assert loaded[("data", "dataset1")].repo == "org/repo1"
+    assert loaded[("data", "view1")].query == "SELECT 1"
 
 def test_node_from_dict_table():
     """Test Node.from_dict for Table type."""
@@ -355,27 +334,26 @@ def test_complex_nested_structure():
         repo="org/deep", config="nested"
     )
 
-    assert isinstance(cfg["level1"], Namespace)
-    assert isinstance(cfg["level1.level2"], Namespace)
-    assert isinstance(cfg["level1.level2.level3"], Namespace)
-    assert isinstance(cfg["level1.level2.level3.level4"], Namespace)
-    assert cfg["level1.level2.level3.level4.dataset"].repo == "org/deep"
-
+    assert isinstance(cfg[("level1",)], Namespace)
+    assert isinstance(cfg[("level1", "level2")], Namespace)
+    assert isinstance(cfg[("level1", "level2", "level3")], Namespace)
+    assert isinstance(cfg[("level1", "level2", "level3", "level4")], Namespace)
+    assert cfg[("level1", "level2", "level3", "level4", "dataset")].repo == "org/deep"
 
 def test_mixed_access_patterns(sample_config):
     """Test mixing tuple and string access in same config."""
     cfg = Config.from_dict(sample_config)
 
     # Access same item with different patterns
-    assert cfg["ns1.table1"] is cfg[("ns1", "table1")]
-    assert cfg["ns3.subns1"] is cfg[("ns3", "subns1")]
+    assert cfg[("ns1", "table1")] is cfg[("ns1", "table1")]
+    assert cfg[("ns3", "subns1")] is cfg[("ns3", "subns1")]
 
     # Set with tuple, read with string
     cfg[("new", "item")] = Dataset(repo="org/test", config="default")
-    assert cfg["new.item"].repo == "org/test"
+    assert cfg[("new", "item")].repo == "org/test"
 
     # Set with string, read with tuple
-    cfg["another.item"] = View(query="SELECT 2")
+    cfg[("another", "item")] = View(query="SELECT 2")
     assert cfg[("another", "item")].query == "SELECT 2"
 
 

@@ -32,7 +32,7 @@ from pyiceberg.table.update import update_table_metadata
 from pyiceberg.typedef import EMPTY_DICT, Properties
 
 from faceberg.bridge import DatasetInfo
-from faceberg.config import Config, Identifier
+from faceberg.config import Config
 from faceberg.config import Table as ConfigTable
 from faceberg.convert import IcebergMetadataWriter
 
@@ -256,6 +256,32 @@ class StagingContext:
 # =============================================================================
 # Catalog Implementations
 # =============================================================================
+
+
+class Identifier(tuple[str, ...]):
+
+    def __new__(cls, value):
+        """Create a new Identifier instance.
+
+        Args:
+            value: String (dot-separated) or list/tuple of strings
+
+        Returns:
+            Identifier instance
+        """
+        if isinstance(value, str):
+            parts = tuple(value.split("."))
+        elif isinstance(value, (list, tuple)):
+            parts = tuple(value)
+        else:
+            raise TypeError("Identifier must be created from str, list, or tuple")
+        return super().__new__(cls, parts)
+
+    @property
+    def path(self) -> Path:
+        """Get the path representation of the identifier."""
+        return Path(*self)
+
 
 
 class BaseCatalog(Catalog):
@@ -667,11 +693,10 @@ class BaseCatalog(Catalog):
         Raises:
             NoSuchNamespaceError: If namespace doesn't exist
         """
-        namespace = Identifier(namespace)
-        if not namespace.is_namespace():
-            raise ValueError(f"Invalid namespace identifier: {namespace}")
-
+        identifier = Identifier(namespace)
         config = self.config()
+        namespace = config[identifier]
+
         if namespace not in config:
             raise NoSuchNamespaceError(f"Namespace {namespace} does not exist")
         return [Identifier((*namespace, table)) for table in config[namespace]]

@@ -13,29 +13,6 @@ from pyiceberg.exceptions import (
 from collections.abc import Mapping
 import yaml
 
-class Identifier(tuple[str, ...]):
-
-    def __new__(cls, value):
-        """Create a new Identifier instance.
-
-        Args:
-            value: String (dot-separated) or list/tuple of strings
-
-        Returns:
-            Identifier instance
-        """
-        if isinstance(value, str):
-            parts = tuple(value.split("."))
-        elif isinstance(value, (list, tuple)):
-            parts = tuple(value)
-        else:
-            raise TypeError("Identifier must be created from str, list, or tuple")
-        return super().__new__(cls, parts)
-
-    @property
-    def path(self) -> Path:
-        """Get the path representation of the identifier."""
-        return Path(*self)
 
 
 # =============================================================================
@@ -124,120 +101,49 @@ class View(Node):
 class Namespace(Node, dict):
 
     def __repr__(self):
-        return f"Namespace({super().__repr__()})"
+        return f"{self.__class__.__name__}({super().__repr__()})"
 
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return super().__getitem__(key)
+        elif isinstance(key, tuple):
+            path, last = key[:-1], key[-1]
+            node = self
+            for part in path:
+                node = node[part]
+            return node[last]
+        else:
+            raise TypeError("Key must be a tuple or string")
 
-# =============================================================================
-# Config Class
-# =============================================================================
+    def __setitem__(self, key, value):
+        if isinstance(key, str):
+            super().__setitem__(key, value)
+        elif isinstance(key, tuple):
+            path, last = key[:-1], key[-1]
+            node = self
+            for part in path:
+                if part not in node:
+                    node[part] = Namespace()
+                node = node[part]
+            node[last] = value
+        else:
+            raise TypeError("Key must be a tuple or string")
 
+    def __delitem__(self, key):
+        if isinstance(key, tuple):
+            path, last = key[:-1], key[-1]
+            self[path].__delitem__(last)
+        elif isinstance(key, str):
+            super().__delitem__(key)
+        else:
+            raise TypeError("Key must be a tuple or string")
 
-class Config:
-    """Root catalog configuration with tuple identifier support.
-
-    Config extends dict to support both:
-    - String keys for top-level namespaces: cfg["analytics"]
-    - Tuple identifiers for nested paths: cfg[("analytics", "sales", "orders")]
-
-    Tuple identifiers automatically create intermediate Namespace objects
-    as needed, making it easy to build hierarchical structures.
-    """
-    data: dict[str, Namespace]
-
-    def __init__(self, data: dict[str, Namespace] = None):
-        self.data = data or {}
-
-    def __getitem__(self, key: Union[str, tuple]) -> Any:
-        """Get item by string key or tuple identifier.
-
-        Args:
-            key: String key or tuple identifier
-
-        Returns:
-            Value at the specified location
-
-        Raises:
-            KeyError: If key doesn't exist
-        """
-        path = Identifier(key)
-        data = self.data
-        for part in path:
-            data = data[part]
-        return data
-
-    def __setitem__(self, key: Union[str, tuple], value: Any):
-        """Set item by string key or tuple identifier.
-
-        Args:
-            key: String key or tuple identifier
-            value: Value to set (Namespace or leaf)
-        """
-        path = Identifier(key)
-        path, last = path[:-1], path[-1]
-        data = self.data
-        for part in path:
-            if part not in data:
-                data[part] = Namespace()
-            data = data[part]
-        data[last] = value
-
-    def __delitem__(self, key: Union[str, tuple]):
-        """Delete item by string key or tuple identifier.
-
-        Args:
-            key: String key or tuple identifier
-
-        Raises:
-            KeyError: If key doesn't exist
-        """
-        path = Identifier(key)
-        path, last = path[:-1], path[-1]
-        data = self.data
-        for part in path:
-            data = data[part]
-        del data[last]
-
-    def __contains__(self, key: Union[str, tuple]) -> bool:
-        """Check if key exists.
-
-        Args:
-            key: String key or tuple identifier
-
-        Returns:
-            True if key exists
-        """
+    def __contains__(self, key):
         try:
             self[key]
             return True
         except KeyError:
             return False
-
-    def __repr__(self):
-        return f"Config(data={self.data!r})"
-
-    def traverse(self):
-        """Generator to traverse all nodes in the config."""
-        def traverse(node, path):
-            if isinstance(node, dict):
-                for k, v in node.items():
-                    yield from traverse(v, path + (k,))
-            else:
-                yield path, node
-
-        yield from traverse(self.data, ())
-
-    # =========================================================================
-    # YAML Serialization
-    # =========================================================================
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "Config":
-        _uri = data.pop("uri", None)
-        node = Node.from_dict(data)
-        return cls(node)
-
-    def to_dict(self) -> dict:
-        return {k: v.to_dict() for k, v in self.data.items()}
 
     def to_yaml(self, path: Union[str, Path]) -> None:
         """Write config to YAML file.
@@ -264,3 +170,8 @@ class Config:
         return cls.from_dict(data or {})
 
 
+class Config(Namespace):
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        return cls(Namespace.from_dict(data))
