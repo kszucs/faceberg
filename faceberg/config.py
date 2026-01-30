@@ -1,149 +1,266 @@
 """Config module for Faceberg catalog configuration management."""
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
-
+from typing import Any, Union
+from pyiceberg.exceptions import (
+    NamespaceAlreadyExistsError,
+    NamespaceNotEmptyError,
+    NoSuchNamespaceError,
+    NoSuchTableError,
+    TableAlreadyExistsError,
+)
+from collections.abc import Mapping
 import yaml
 
-
-class Identifier(tuple):
-    """A tuple of exactly 2 strings: (namespace, table)."""
+class Identifier(tuple[str, ...]):
 
     def __new__(cls, value):
+        """Create a new Identifier instance.
+
+        Args:
+            value: String (dot-separated) or list/tuple of strings
+
+        Returns:
+            Identifier instance
+        """
         if isinstance(value, str):
             parts = tuple(value.split("."))
-        else:
+        elif isinstance(value, (list, tuple)):
             parts = tuple(value)
+        else:
+            raise TypeError("Identifier must be created from str, list, or tuple")
         return super().__new__(cls, parts)
 
     @property
     def path(self) -> Path:
+        """Get the path representation of the identifier."""
         return Path(*self)
 
-    def is_namespace(self) -> bool:
-        return len(self) == 1
 
-    def is_table(self) -> bool:
-        return len(self) == 2
+# =============================================================================
+# Base Node Class
+# =============================================================================
 
 
-class Namespace(dict):
-    """Namespace containing tables."""
+class Node:
+    """Base class for all leaf node types.
+
+    Provides common serialization/deserialization interface.
+    Subclasses should implement from_dict() as a classmethod.
+    """
+
+    def to_dict(self) -> dict:
+        """Convert node to dictionary using dataclasses.asdict().
+
+        Subclasses can override to add additional fields (e.g., type discriminator).
+        """
+        if isinstance(self, Namespace):
+            return {k: v.to_dict() for k, v in self.items()}
+        elif isinstance(self, Table):
+            return {"type": "table", **asdict(self)}
+        elif isinstance(self, Dataset):
+            return {"type": "dataset", **asdict(self)}
+        elif isinstance(self, View):
+            return {"type": "view", **asdict(self)}
+        else:
+            raise TypeError(f"Unsupported node type for serialization: {type(self)}")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Node":
+        """Create node from dictionary.
+
+        Subclasses must implement this to construct instances from dicts.
+        """
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict to deserialize {cls.__name__}, got {type(data)}")
+
+        if "type" in data:
+            typ = data.pop("type")
+        else:
+            typ = "namespace"
+
+        if typ == "table":
+            return Table(**data)
+        elif typ == "dataset":
+            return Dataset(**data)
+        elif typ == "view":
+            return View(**data)
+        elif typ == "namespace":
+            return Namespace({k: cls.from_dict(v) for k, v in data.items()})
+        else:
+            raise ValueError(f"Unknown node type: {typ}")
+
+
+# =============================================================================
+# Leaf Node Classes
+# =============================================================================
 
 
 @dataclass
-class Table:
-    """Table configuration entry."""
-
-    dataset: Optional[str] = None
-    config: Optional[str] = None
+class Table(Node):
+    """Physical Iceberg table."""
 
 
 @dataclass
+class Dataset(Node):
+    """External HuggingFace dataset reference."""
+    repo: str
+    config: str = "default"
+
+
+@dataclass
+class View(Node):
+    """Logical view with SQL query."""
+    query: str
+
+
+
+# =============================================================================
+# Namespace Class
+# =============================================================================
+
+
+class Namespace(Node, dict):
+
+    def __repr__(self):
+        return f"Namespace({super().__repr__()})"
+
+
+# =============================================================================
+# Config Class
+# =============================================================================
+
+
 class Config:
-    """Config store for table configurations."""
+    """Root catalog configuration with tuple identifier support.
 
-    uri: str
-    data: dict[str, Namespace] = field(default_factory=dict)
+    Config extends dict to support both:
+    - String keys for top-level namespaces: cfg["analytics"]
+    - Tuple identifiers for nested paths: cfg[("analytics", "sales", "orders")]
 
-    def __getitem__(self, key: Identifier) -> Table | Namespace:
-        key = Identifier(key)
-        if key.is_namespace():
-            (namespace,) = key
-            return self.data[namespace]
-        elif key.is_table():
-            namespace, table = key
-            return self.data[namespace][table]
-        else:
-            raise KeyError("Only 2-level identifiers (namespace, table) are supported")
+    Tuple identifiers automatically create intermediate Namespace objects
+    as needed, making it easy to build hierarchical structures.
+    """
+    data: dict[str, Namespace]
 
-    def __setitem__(self, key: Identifier, value) -> None:
-        key = Identifier(key)
-        if key.is_namespace():
-            (namespace,) = key
-            self.data[namespace] = Namespace(value)
-        elif key.is_table():
-            namespace, table = key
-            if namespace not in self.data:
-                self.data[namespace] = Namespace()
-            self.data[namespace][table] = value
-        else:
-            raise KeyError("Only 2-level identifiers (namespace, table) are supported")
+    def __init__(self, data: dict[str, Namespace] = None):
+        self.data = data or {}
 
-    def __delitem__(self, key: Identifier) -> None:
-        key = Identifier(key)
-        if key.is_namespace():
-            (namespace,) = key
-            del self.data[namespace]
-        elif key.is_table():
-            namespace, table = key
-            del self.data[namespace][table]
-        else:
-            raise KeyError("Only 2-level identifiers (namespace, table) are supported")
+    def __getitem__(self, key: Union[str, tuple]) -> Any:
+        """Get item by string key or tuple identifier.
 
-    def __contains__(self, key: Identifier) -> bool:
-        key = Identifier(key)
+        Args:
+            key: String key or tuple identifier
+
+        Returns:
+            Value at the specified location
+
+        Raises:
+            KeyError: If key doesn't exist
+        """
+        path = Identifier(key)
+        data = self.data
+        for part in path:
+            data = data[part]
+        return data
+
+    def __setitem__(self, key: Union[str, tuple], value: Any):
+        """Set item by string key or tuple identifier.
+
+        Args:
+            key: String key or tuple identifier
+            value: Value to set (Namespace or leaf)
+        """
+        path = Identifier(key)
+        path, last = path[:-1], path[-1]
+        data = self.data
+        for part in path:
+            if part not in data:
+                data[part] = Namespace()
+            data = data[part]
+        data[last] = value
+
+    def __delitem__(self, key: Union[str, tuple]):
+        """Delete item by string key or tuple identifier.
+
+        Args:
+            key: String key or tuple identifier
+
+        Raises:
+            KeyError: If key doesn't exist
+        """
+        path = Identifier(key)
+        path, last = path[:-1], path[-1]
+        data = self.data
+        for part in path:
+            data = data[part]
+        del data[last]
+
+    def __contains__(self, key: Union[str, tuple]) -> bool:
+        """Check if key exists.
+
+        Args:
+            key: String key or tuple identifier
+
+        Returns:
+            True if key exists
+        """
         try:
             self[key]
             return True
         except KeyError:
             return False
 
-    @property
-    def namespaces(self) -> list[Identifier]:
-        return [Identifier((ns,)) for ns in self.data.keys()]
+    def __repr__(self):
+        return f"Config(data={self.data!r})"
 
-    @property
-    def tables(self) -> list[Identifier]:
-        result = []
-        for namespace, tables in self.data.items():
-            for table in tables.keys():
-                result.append(Identifier((namespace, table)))
-        return result
+    def traverse(self):
+        """Generator to traverse all nodes in the config."""
+        def traverse(node, path):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    yield from traverse(v, path + (k,))
+            else:
+                yield path, node
 
-    def to_yaml(self, path) -> None:
+        yield from traverse(self.data, ())
+
+    # =========================================================================
+    # YAML Serialization
+    # =========================================================================
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Config":
+        _uri = data.pop("uri", None)
+        node = Node.from_dict(data)
+        return cls(node)
+
+    def to_dict(self) -> dict:
+        return {k: v.to_dict() for k, v in self.data.items()}
+
+    def to_yaml(self, path: Union[str, Path]) -> None:
         """Write config to YAML file.
 
         Args:
             path: Path to write YAML file to
         """
-        # Convert Table objects to dicts
-        data_dict = {
-            ns: {name: asdict(table) for name, table in tables.items()}
-            for ns, tables in self.data.items()
-        }
-        output = {"uri": self.uri, **data_dict}
-        yaml_str = yaml.safe_dump(output, sort_keys=False)
+        data = self.to_dict()
+        yaml_str = yaml.safe_dump(data, sort_keys=False)
         Path(path).write_text(yaml_str)
 
     @classmethod
-    def from_yaml(cls, path) -> "Config":
-        """Load config from YAML file."""
+    def from_yaml(cls, path: Union[str, Path]) -> "Config":
+        """Load config from YAML file.
+
+        Args:
+            path: Path to YAML file
+
+        Returns:
+            Config instance
+        """
         path = Path(path)
         data = yaml.safe_load(path.read_text())
-        if not data:
-            raise ValueError("Config is empty")
+        return cls.from_dict(data or {})
 
-        uri = data.pop("uri", None)
-        if not uri:
-            raise ValueError("Missing required 'uri' field in config")
 
-        # Convert dicts to Namespace/Table (2-level hierarchy only)
-        result = {}
-        for namespace, tables in data.items():
-            if not isinstance(tables, dict):
-                raise ValueError(f"Namespace '{namespace}' must contain a dict of tables")
-
-            namespace_obj = Namespace()
-            for table_name, table_data in tables.items():
-                if not isinstance(table_data, dict):
-                    raise ValueError(f"Table '{namespace}.{table_name}' must be a dict")
-                if "dataset" not in table_data:
-                    raise ValueError(f"Table '{namespace}.{table_name}' must have 'dataset' field")
-
-                namespace_obj[table_name] = Table(**table_data)
-
-            result[namespace] = namespace_obj
-
-        return cls(uri=uri, data=result)

@@ -9,7 +9,7 @@ import requests
 import uvicorn
 
 from faceberg.catalog import LocalCatalog
-from faceberg.config import Config, Table
+from faceberg.config import Config, Dataset, Namespace
 from faceberg.server import create_app
 
 
@@ -36,15 +36,14 @@ def synced_catalog(synced_catalog_dir):
     # Use file:// + absolute path (file:// + /path gives file:///path)
     catalog_uri = f"file://{synced_catalog_dir.as_posix()}"
     store_obj = Config(
-        uri=catalog_uri,
         data={
-            "default": {
-                "imdb_plain_text": Table(
-                    dataset="stanfordnlp/imdb",
+            "default": Namespace({
+                "imdb_plain_text": Dataset(
+                    repo="stanfordnlp/imdb",
                     config="plain_text",
                 )
-            }
-        },
+            })
+        }
     )
 
     # Write config to faceberg.yml
@@ -55,7 +54,7 @@ def synced_catalog(synced_catalog_dir):
     catalog = LocalCatalog(name=str(synced_catalog_dir), uri=catalog_uri)
 
     # Sync all tables (token=None works for public datasets)
-    synced_tables = catalog.sync_tables()
+    synced_tables = catalog.sync_datasets()
 
     # Verify sync was successful
     assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"

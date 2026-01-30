@@ -5,302 +5,380 @@ from pathlib import Path
 import pytest
 import yaml
 
-from faceberg.config import Config, Identifier, Table
+from faceberg.config import Config, Dataset, Namespace, Node, Table, View
 
 
-class TestIdentifier:
-    """Tests for Identifier class."""
-
-    def test_identifier_from_string(self):
-        """Test creating Identifier from string."""
-        ident = Identifier("namespace.table")
-        assert ident == ("namespace", "table")
-
-    def test_identifier_from_tuple(self):
-        """Test creating Identifier from tuple."""
-        ident = Identifier(("namespace", "table"))
-        assert ident == ("namespace", "table")
-
-    @pytest.mark.skip(reason="Identifier validation not enforced - allows flexible part counts")
-    def test_identifier_invalid_parts(self):
-        """Test creating Identifier with invalid number of parts."""
-        with pytest.raises(ValueError, match="must have exactly 2 parts"):
-            Identifier("onlynamespace")
-
-        with pytest.raises(ValueError, match="must have exactly 2 parts"):
-            Identifier(("ns1", "ns2", "table"))
-
-    def test_identifier_path_property(self):
-        """Test path property of Identifier."""
-        ident = Identifier("namespace.table")
-        assert ident.path == pytest.approx(Path("namespace") / "table")
-
-
-class TestTable:
-    """Tests for Table dataclass."""
-
-    def test_table_config_explicit(self):
-        """Test Table with explicit config value."""
-        table = Table(dataset="org/repo", config="custom")
-        assert table.dataset == "org/repo"
-        assert table.config == "custom"
-
-
-class TestConfig:
-    """Tests for Config class."""
-
-    def test_config_creation(self):
-        """Test Config creation."""
-        config = Config(uri=".faceberg")
-        assert config.uri == ".faceberg"
-        assert config.data == {}
-
-    def test_config_with_data(self):
-        """Test Config creation with nested data."""
-        data = {
-            "ns1": {
-                "table1": Table(dataset="org/repo1", config="config1"),
+@pytest.fixture
+def sample_config():
+    """Fixture that returns a fresh config dict for each test."""
+    return {
+        "ns1": {
+            "table1": {
+                "type": "dataset",
+                "repo": "org/dataset1",
+                "config": "config1",
+            },
+            "table2": {
+                "type": "dataset",
+                "repo": "org/dataset2",
+                "config": "config2",
+            },
+        },
+        "ns2": {
+            "view1": {
+                "type": "view",
+                "query": "SELECT * FROM ns1.table1",
+            },
+        },
+        "ns3": {
+            "subns1": {
+                "table3": {
+                    "type": "dataset",
+                    "repo": "org/dataset3",
+                    "config": "config3",
+                }
             }
         }
-        config = Config(uri=".faceberg", data=data)
-        assert config.uri == ".faceberg"
-        assert config.tables == [Identifier(("ns1", "table1"))]
-
-    def test_from_yaml_valid_config(self, tmp_path):
-        """Test parsing valid YAML config."""
-        yaml_content = """
-uri: .faceberg
-
-namespace1:
-  table1:
-    dataset: org/repo1
-    config: config1
-  table2:
-    dataset: org/repo2
-    config: config2
-
-namespace2:
-  table3:
-    dataset: org/repo3
-    config: config3
-"""
-        config_file = tmp_path / "test_config.yml"
-        config_file.write_text(yaml_content)
-        config = Config.from_yaml(config_file)
-
-        assert Identifier(("namespace1", "table1")) in config
-        assert Identifier(("namespace1", "table2")) in config
-        assert Identifier(("namespace2", "table3")) in config
-
-        assert config[Identifier(("namespace1", "table1"))].dataset == "org/repo1"
-        assert config[Identifier(("namespace1", "table1"))].config == "config1"
-        assert config[Identifier(("namespace2", "table3"))].config == "config3"
-
-    def test_from_yaml_empty_string(self, tmp_path):
-        """Test parsing empty YAML file."""
-        config_file = tmp_path / "empty.yml"
-        config_file.write_text("")
-        with pytest.raises(ValueError, match="Config is empty"):
-            Config.from_yaml(config_file)
-
-    def test_from_yaml_missing_uri(self, tmp_path):
-        """Test parsing YAML without URI."""
-        yaml_content = """
-namespace1:
-  table1:
-    dataset: org/repo1
-"""
-        config_file = tmp_path / "no_uri.yml"
-        config_file.write_text(yaml_content)
-        with pytest.raises(ValueError, match="Missing required 'uri' field"):
-            Config.from_yaml(config_file)
-
-    def test_to_yaml(self, tmp_path):
-        """Test exporting config to YAML."""
-        config = Config(uri=".faceberg")
-        config[("test_ns", "table1")] = Table(dataset="org/repo1", config="config1")
-        config[("test_ns", "table2")] = Table(dataset="org/repo2", config="default")
-
-        # Write to temporary file
-        yaml_file = tmp_path / "config.yml"
-        config.to_yaml(yaml_file)
-
-        # Read back and parse to verify
-        yaml_output = yaml_file.read_text()
-        data = yaml.safe_load(yaml_output)
-
-        assert "uri" in data
-        assert "test_ns" in data
-        assert "table1" in data["test_ns"]
-        assert data["test_ns"]["table1"]["dataset"] == "org/repo1"
-        assert data["test_ns"]["table1"]["config"] == "config1"
-        assert data["test_ns"]["table2"]["config"] == "default"
-
-    def test_round_trip(self, tmp_path):
-        """Test that config can be exported and re-imported correctly."""
-        yaml_content = """
-uri: .faceberg
-
-namespace1:
-  table1:
-    dataset: org/repo1
-    config: config1
-  table2:
-    dataset: org/repo2
-    config: config2
-
-namespace2:
-  table3:
-    dataset: org/repo3
-    config: config3
-"""
-        # Load, export to file, and re-load
-        config_file = tmp_path / "config.yml"
-        config_file.write_text(yaml_content)
-        config1 = Config.from_yaml(config_file)
-
-        yaml_file = tmp_path / "config2.yml"
-        config1.to_yaml(yaml_file)
-        config2 = Config.from_yaml(yaml_file)
-
-        # Verify they're equivalent
-        assert config1.uri == config2.uri
-        assert len(config1.data) == len(config2.data)
-        assert set(config1.data) == set(config2.data)
-
-        for identifier in config1.tables:
-            assert config1[identifier].dataset == config2[identifier].dataset
-            assert config1[identifier].config == config2[identifier].config
+    }
 
 
-class TestConfigMappingProtocol:
-    """Tests for Config Mapping protocol implementation."""
+def test_config(sample_config):
+    cfg = Config.from_dict(sample_config)
 
-    def test_getitem_setitem(self):
-        """Test __getitem__ and __setitem__."""
-        config = Config(uri=".faceberg")
-        entry = Table(dataset="org/repo", config="default")
-        config[Identifier(("ns", "table"))] = entry
+    assert isinstance(cfg, Config)
+    for k, v in cfg.data.items():
+        assert isinstance(v, Namespace)
 
-        assert config[Identifier(("ns", "table"))] == entry
-        assert config[Identifier(("ns", "table"))].dataset == "org/repo"
+    # Verify to_dict includes type discriminators
+    cfg_dict = cfg.to_dict()
+    assert cfg_dict["ns1"]["table1"]["type"] == "dataset"
+    assert cfg_dict["ns2"]["view1"]["type"] == "view"
 
-    def test_iter(self):
-        """Test tables property."""
-        config = Config(uri=".faceberg")
-        config[Identifier(("ns1", "table1"))] = Table(dataset="org/repo1")
-        config[Identifier(("ns1", "table2"))] = Table(dataset="org/repo2")
-        config[Identifier(("ns2", "table3"))] = Table(dataset="org/repo3")
+    # Verify data access
+    assert cfg[("ns1", "table1")].repo == "org/dataset1"
+    assert cfg[("ns1", "table2")].config == "config2"
+    assert cfg[("ns2", "view1")].query == "SELECT * FROM ns1.table1"
+    assert cfg[("ns3", "subns1", "table3")].repo == "org/dataset3"
 
-        identifiers = config.tables
-        assert len(identifiers) == 3
-        assert Identifier(("ns1", "table1")) in identifiers
-        assert Identifier(("ns1", "table2")) in identifiers
-        assert Identifier(("ns2", "table3")) in identifiers
-
-    def test_contains(self):
-        """Test __contains__."""
-        config = Config(uri=".faceberg")
-        config[Identifier(("ns", "table"))] = Table(dataset="org/repo")
-
-        assert Identifier(("ns", "table")) in config
-        assert Identifier(("ns", "other")) not in config
-        assert Identifier(("other", "table")) not in config
-
-    def test_delitem(self):
-        """Test __delitem__."""
-        config = Config(uri=".faceberg")
-        config[("ns", "table1")] = Table(dataset="org/repo1")
-        config[("ns", "table2")] = Table(dataset="org/repo2")
-
-        assert len(config.tables) == 2
-
-        del config[("ns", "table1")]
-        assert len(config.tables) == 1
-        assert ("ns", "table1") not in config
-        assert ("ns", "table2") in config
-
-    def test_delitem_nonexistent(self):
-        """Test __delitem__ raises KeyError for non-existent key."""
-        config = Config(uri=".faceberg")
-
-        with pytest.raises(KeyError):
-            del config[("ns", "table")]
+    # Verify mutation
+    cfg[("ns1", "table1")].repo = "org/updated_dataset1"
+    assert cfg[("ns1", "table1")].repo == "org/updated_dataset1"
 
 
-class TestConfigValidation:
-    """Tests for Config validation."""
+def test_config_string_key_access(sample_config):
+    """Test accessing config with string keys using dot notation."""
+    cfg = Config.from_dict(sample_config)
 
-    def test_setitem_requires_table(self):
-        """Test __setitem__ accepts Table instances."""
-        config = Config(uri=".faceberg")
+    # Single level access
+    assert isinstance(cfg["ns1"], Namespace)
+    assert isinstance(cfg["ns2"], Namespace)
 
-        # Tables can be set as Table instances
-        config[("ns", "table")] = Table(dataset="org/repo", config="default")
-        assert config[("ns", "table")].dataset == "org/repo"
-
-    def test_getitem_returns_table(self):
-        """Test __getitem__ returns Table instance."""
-        config = Config(uri=".faceberg")
-        table = Table(dataset="org/repo", config="custom")
-        config[("ns", "table")] = table
-
-        result = config[("ns", "table")]
-        assert isinstance(result, Table)
-        assert result.dataset == "org/repo"
-        assert result.config == "custom"
+    # Dot notation access
+    assert cfg["ns1.table1"].repo == "org/dataset1"
+    assert cfg["ns1.table2"].config == "config2"
+    assert cfg["ns2.view1"].query == "SELECT * FROM ns1.table1"
+    assert cfg["ns3.subns1.table3"].repo == "org/dataset3"
 
 
-class TestConfigTwoLevelHierarchy:
-    """Tests for Config with 2-level hierarchy (namespace, table)."""
+def test_config_contains(sample_config):
+    """Test __contains__ method for membership testing."""
+    cfg = Config.from_dict(sample_config)
 
-    def test_two_level_identifier(self):
-        """Test Config requires exactly 2-level identifiers."""
-        config = Config(uri=".faceberg")
-        config[("ns", "table")] = Table(dataset="org/repo")
+    # Test with string keys
+    assert "ns1" in cfg
+    assert "ns2" in cfg
+    assert "nonexistent" not in cfg
+    assert "ns1.table1" in cfg
+    assert "ns1.table999" not in cfg
 
-        assert ("ns", "table") in config
-        assert config[("ns", "table")].dataset == "org/repo"
-
-    def test_multiple_two_level_identifiers(self):
-        """Test Config supports multiple 2-level identifiers."""
-        config = Config(uri=".faceberg")
-        config[("ns1", "table1")] = Table(dataset="org/repo1")
-        config[("ns1", "table2")] = Table(dataset="org/repo2")
-        config[("ns2", "table3")] = Table(dataset="org/repo3")
-
-        assert len(config.tables) == 3
-        assert ("ns1", "table1") in config
-        assert ("ns1", "table2") in config
-        assert ("ns2", "table3") in config
+    # Test with tuple keys
+    assert ("ns1",) in cfg
+    assert ("ns1", "table1") in cfg
+    assert ("ns3", "subns1", "table3") in cfg
+    assert ("ns1", "nonexistent") not in cfg
+    assert ("nonexistent", "table") not in cfg
 
 
-class TestConfigYAML:
-    """Tests for Config YAML serialization."""
+def test_config_setitem_creates_intermediate_namespaces():
+    """Test that __setitem__ creates intermediate Namespace objects as needed."""
+    cfg = Config()
 
-    def test_yaml_round_trip_two_level_hierarchy(self, tmp_path):
-        """Test YAML round trip with 2-level hierarchy identifiers."""
-        config1 = Config(uri=".faceberg")
-        config1[("ns1", "table1")] = Table(dataset="org/repo1", config="config1")
-        config1[("ns1", "table2")] = Table(dataset="org/repo2", config="default")
-        config1[("ns2", "table3")] = Table(dataset="org/repo3", config="custom")
+    # Set nested item without creating intermediates first
+    new_dataset = Dataset(repo="org/new_dataset", config="new_config")
+    cfg[("analytics", "sales", "orders")] = new_dataset
 
-        yaml_file = tmp_path / "config.yml"
-        config1.to_yaml(yaml_file)
-        config2 = Config.from_yaml(yaml_file)
+    # Verify intermediate namespaces were created
+    assert isinstance(cfg["analytics"], Namespace)
+    assert isinstance(cfg["analytics.sales"], Namespace)
+    assert cfg["analytics.sales.orders"].repo == "org/new_dataset"
 
-        assert config2.uri == config1.uri
-        assert len(config2.tables) == len(config1.tables)
-        assert set(config2.tables) == set(config1.tables)
+    # Set with string key
+    another_dataset = Dataset(repo="org/another", config="default")
+    cfg["analytics.marketing.campaigns"] = another_dataset
+    assert cfg["analytics.marketing.campaigns"].repo == "org/another"
 
-        for key in config1.tables:
-            assert config2[key].dataset == config1[key].dataset
-            assert config2[key].config == config1[key].config
 
-    def test_empty_config(self):
-        """Test Config with no tables."""
-        config = Config(uri=".faceberg")
+def test_config_setitem_overwrite(sample_config):
+    """Test overwriting existing items."""
+    cfg = Config.from_dict(sample_config)
 
-        assert len(config.tables) == 0
-        assert config.tables == []
-        assert ("ns", "table") not in config
+    # Overwrite existing dataset
+    new_dataset = Dataset(repo="org/replaced", config="new_config")
+    cfg[("ns1", "table1")] = new_dataset
+    assert cfg[("ns1", "table1")].repo == "org/replaced"
+
+    # Overwrite with different node type
+    new_view = View(query="SELECT * FROM replaced")
+    cfg["ns1.table1"] = new_view
+    assert isinstance(cfg["ns1.table1"], View)
+    assert cfg["ns1.table1"].query == "SELECT * FROM replaced"
+
+
+def test_config_getitem_keyerror(sample_config):
+    """Test that accessing non-existent keys raises KeyError."""
+    cfg = Config.from_dict(sample_config)
+
+    with pytest.raises(KeyError):
+        _ = cfg["nonexistent"]
+
+    with pytest.raises(KeyError):
+        _ = cfg["ns1.nonexistent"]
+
+    with pytest.raises(KeyError):
+        _ = cfg[("nonexistent", "nested")]
+
+
+def test_config_invalid_key_type(sample_config):
+    """Test that invalid key types raise TypeError."""
+    cfg = Config.from_dict(sample_config)
+
+    with pytest.raises(TypeError, match="Identifier must be created from str, list, or tuple"):
+        _ = cfg[123]
+
+    with pytest.raises(TypeError, match="Identifier must be created from str, list, or tuple"):
+        _ = cfg[["list", "key"]]
+
+    with pytest.raises(TypeError, match="Identifier must be created from str, list, or tuple"):
+        cfg[123] = Dataset(repo="test", config="default")
+
+
+def test_config_empty():
+    """Test empty config initialization and operations."""
+    cfg = Config()
+    assert cfg.data == {}
+    assert cfg.to_dict() == {}
+
+    # Add first item
+    cfg["first"] = Namespace()
+    assert "first" in cfg
+    assert isinstance(cfg["first"], Namespace)
+
+
+def test_config_repr():
+    """Test Config string representation."""
+    cfg = Config()
+    cfg["test"] = Namespace()
+    repr_str = repr(cfg)
+    assert "Config" in repr_str
+    assert "data=" in repr_str
+
+
+def test_yaml_round_trip(tmp_path, sample_config):
+    """Test saving and loading config from YAML file with type preservation."""
+    cfg = Config.from_dict(sample_config)
+    yaml_path = tmp_path / "test_config.yaml"
+
+    # Save to YAML
+    cfg.to_yaml(yaml_path)
+    assert yaml_path.exists()
+
+    # Verify YAML content has type discriminators
+    yaml_content = yaml_path.read_text()
+    assert "type: dataset" in yaml_content
+    assert "type: view" in yaml_content
+
+    # Load from YAML and verify round-trip
+    loaded_cfg = Config.from_yaml(yaml_path)
+    assert loaded_cfg.to_dict() == cfg.to_dict()
+
+    # Verify data integrity and types
+    assert isinstance(loaded_cfg["ns1.table1"], Dataset)
+    assert loaded_cfg["ns1.table1"].repo == "org/dataset1"
+    assert isinstance(loaded_cfg["ns2.view1"], View)
+    assert loaded_cfg["ns2.view1"].query == "SELECT * FROM ns1.table1"
+
+
+def test_yaml_empty_file(tmp_path):
+    """Test loading from empty YAML file."""
+    yaml_path = tmp_path / "empty.yaml"
+    yaml_path.write_text("")
+
+    cfg = Config.from_yaml(yaml_path)
+    assert cfg.to_dict() == {}
+
+
+def test_yaml_preserves_all_types(tmp_path):
+    """Test that YAML serialization preserves all node types."""
+    cfg = Config()
+    cfg["data.dataset1"] = Dataset(repo="org/repo1", config="cfg1")
+    cfg["data.view1"] = View(query="SELECT 1")
+    cfg["data.table1"] = Table()
+
+    yaml_path = tmp_path / "types.yaml"
+    cfg.to_yaml(yaml_path)
+
+    # Verify YAML has all type discriminators
+    yaml_content = yaml_path.read_text()
+    assert "type: dataset" in yaml_content
+    assert "type: view" in yaml_content
+    assert "type: table" in yaml_content
+
+    # Load and verify all types are preserved
+    loaded = Config.from_yaml(yaml_path)
+    assert isinstance(loaded["data.dataset1"], Dataset)
+    assert isinstance(loaded["data.view1"], View)
+    assert isinstance(loaded["data.table1"], Table)
+    assert loaded["data.dataset1"].repo == "org/repo1"
+    assert loaded["data.view1"].query == "SELECT 1"
+
+
+def test_node_from_dict_table():
+    """Test Node.from_dict for Table type."""
+    data = {"type": "table"}
+    node = Node.from_dict(data)
+    assert isinstance(node, Table)
+
+
+def test_node_from_dict_dataset():
+    """Test Node.from_dict for Dataset type."""
+    data = {"type": "dataset", "repo": "org/dataset", "config": "default"}
+    node = Node.from_dict(data)
+    assert isinstance(node, Dataset)
+    assert node.repo == "org/dataset"
+    assert node.config == "default"
+
+
+def test_node_from_dict_dataset_default_config():
+    """Test Dataset with default config value."""
+    data = {"type": "dataset", "repo": "org/dataset"}
+    node = Node.from_dict(data)
+    assert isinstance(node, Dataset)
+    assert node.repo == "org/dataset"
+    assert node.config == "default"  # Default value
+
+
+def test_node_from_dict_view():
+    """Test Node.from_dict for View type."""
+    data = {"type": "view", "query": "SELECT * FROM table"}
+    node = Node.from_dict(data)
+    assert isinstance(node, View)
+    assert node.query == "SELECT * FROM table"
+
+
+def test_node_from_dict_namespace():
+    """Test Node.from_dict for Namespace type (explicit and implicit)."""
+    # Explicit type
+    data = {"type": "namespace", "child1": {"type": "table"}}
+    node = Node.from_dict(data)
+    assert isinstance(node, Namespace)
+    assert isinstance(node["child1"], Table)
+
+    # Implicit type (no type field defaults to namespace)
+    data = {"child1": {"type": "table"}, "child2": {"type": "view", "query": "SELECT 1"}}
+    node = Node.from_dict(data)
+    assert isinstance(node, Namespace)
+    assert isinstance(node["child1"], Table)
+    assert isinstance(node["child2"], View)
+
+
+def test_node_from_dict_unknown_type():
+    """Test Node.from_dict raises ValueError for unknown types."""
+    data = {"type": "unknown_type"}
+    with pytest.raises(ValueError, match="Unknown node type: unknown_type"):
+        Node.from_dict(data)
+
+
+def test_node_from_dict_invalid_input():
+    """Test Node.from_dict raises TypeError for non-dict input."""
+    with pytest.raises(TypeError, match="Expected dict to deserialize"):
+        Node.from_dict("not a dict")
+
+    with pytest.raises(TypeError, match="Expected dict to deserialize"):
+        Node.from_dict(123)
+
+    with pytest.raises(TypeError, match="Expected dict to deserialize"):
+        Node.from_dict(["list", "input"])
+
+
+def test_node_to_dict():
+    """Test Node.to_dict for different node types includes type discriminators."""
+    dataset = Dataset(repo="org/repo", config="cfg")
+    assert dataset.to_dict() == {"repo": "org/repo", "config": "cfg", "type": "dataset"}
+
+    view = View(query="SELECT * FROM table")
+    assert view.to_dict() == {"query": "SELECT * FROM table", "type": "view"}
+
+    table = Table()
+    assert table.to_dict() == {"type": "table"}
+
+
+def test_namespace_repr():
+    """Test Namespace string representation."""
+    ns = Namespace()
+    ns["child"] = Table()
+    repr_str = repr(ns)
+    assert "Namespace" in repr_str
+
+
+def test_namespace_dict_behavior():
+    """Test that Namespace behaves like a dict."""
+    ns = Namespace()
+    ns["key1"] = Dataset(repo="org/repo1", config="cfg1")
+    ns["key2"] = View(query="SELECT 1")
+
+    assert len(ns) == 2
+    assert "key1" in ns
+    assert "key2" in ns
+    assert list(ns.keys()) == ["key1", "key2"]
+
+
+def test_config_from_dict_with_empty():
+    """Test Config.from_dict with empty dict creates empty config."""
+    cfg = Config.from_dict({})
+    assert cfg.to_dict() == {}
+
+
+def test_complex_nested_structure():
+    """Test deeply nested namespace structure."""
+    cfg = Config()
+    cfg[("level1", "level2", "level3", "level4", "dataset")] = Dataset(
+        repo="org/deep", config="nested"
+    )
+
+    assert isinstance(cfg["level1"], Namespace)
+    assert isinstance(cfg["level1.level2"], Namespace)
+    assert isinstance(cfg["level1.level2.level3"], Namespace)
+    assert isinstance(cfg["level1.level2.level3.level4"], Namespace)
+    assert cfg["level1.level2.level3.level4.dataset"].repo == "org/deep"
+
+
+def test_mixed_access_patterns(sample_config):
+    """Test mixing tuple and string access in same config."""
+    cfg = Config.from_dict(sample_config)
+
+    # Access same item with different patterns
+    assert cfg["ns1.table1"] is cfg[("ns1", "table1")]
+    assert cfg["ns3.subns1"] is cfg[("ns3", "subns1")]
+
+    # Set with tuple, read with string
+    cfg[("new", "item")] = Dataset(repo="org/test", config="default")
+    assert cfg["new.item"].repo == "org/test"
+
+    # Set with string, read with tuple
+    cfg["another.item"] = View(query="SELECT 2")
+    assert cfg[("another", "item")].query == "SELECT 2"
+
+
+
+
+

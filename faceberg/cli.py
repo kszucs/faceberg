@@ -136,38 +136,93 @@ def sync(ctx, table_name):
 
 
 @main.command()
+@click.option("--config", "-c", help="Config file with initial table definitions")
 @click.pass_context
-def init(ctx):
-    """Initialize an empty catalog.
+def init(ctx, config):
+    """Initialize a catalog with optional initial configuration.
 
-    For local catalogs, creates the directory and catalog.json file.
+    For local catalogs, creates the directory and faceberg.yml file.
     For remote catalogs (HuggingFace), creates a new dataset repository.
 
-    Use this command before syncing datasets to explicitly create the catalog.
-    For RemoteCatalog, this is required to create the HF repository before
-    you can sync datasets to it.
+    If a config file is provided via --config/-c, the catalog will be populated
+    with the tables defined in that file. If no config is specified, looks for
+    faceberg.yml in the current directory. If neither is found, creates an
+    empty catalog.
 
     Example:
-        # Initialize local catalog
-        faceberg --config=faceberg.yml init
+        # Initialize with explicit config file
+        faceberg catalog.db init --config tables.yml
+
+        # Initialize with auto-discovered config (looks for ./faceberg.yml)
+        faceberg catalog.db init
 
         # Initialize remote catalog (creates HF dataset repo)
         export HF_TOKEN=your_token
-        faceberg --config=faceberg.yml init
+        faceberg hf://datasets/user/catalog init --config tables.yml
     """
-    catalog = ctx.obj["catalog"]
-    is_remote = isinstance(catalog, RemoteCatalog)
+    from pathlib import Path
+    from faceberg.config import Config
+
+    catalog_obj = ctx.obj["catalog"]
+    is_remote = isinstance(catalog_obj, RemoteCatalog)
 
     if is_remote:
-        console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog.uri}")
+        console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog_obj.uri}")
     else:
-        console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog.uri}")
+        console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog_obj.uri}")
 
-    catalog.init()
-    console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
+    # Load config if provided or auto-discover
+    config_obj = None
+    if config:
+        # Explicit config file provided
+        config_path = Path(config)
+        if not config_path.exists():
+            console.print(f"[red]Error: Config file not found: {config}[/red]")
+            raise click.Abort()
+        try:
+            config_obj = Config.from_yaml(config_path)
+            console.print(f"[dim]Loading config from: {config}[/dim]")
+        except Exception as e:
+            console.print(f"[red]Error loading config: {e}[/red]")
+            raise click.Abort()
+    else:
+        # Auto-discover faceberg.yml in current directory
+        default_config = Path("faceberg.yml")
+        if default_config.exists():
+            try:
+                config_obj = Config.from_yaml(default_config)
+                console.print(f"[dim]Found config file: {default_config}[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Found faceberg.yml but failed to load: {e}[/yellow]")
 
-    # TODO(kszucs): display additional info such as repo URL for remote catalogs
-    # TODO(kszucs): recommend next steps e.g. add datasets, scan and quack
+    # Initialize catalog with optional config
+    catalog_obj.init(config=config_obj)
+
+    if config_obj and config_obj.tables:
+        console.print(f"[bold green]✓ Catalog initialized with {len(config_obj.tables)} table(s)![/bold green]")
+    else:
+        console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
+
+    # Display additional info for remote catalogs
+    if is_remote:
+        if catalog_obj._hf_repo_type == "space":
+            space_url = catalog_obj._hf_repo.replace("/", "-")
+            console.print(f"\n[cyan]Space URL:[/cyan] https://{space_url}.hf.space")
+        console.print(f"[cyan]Repository:[/cyan] https://huggingface.co/{catalog_obj._hf_repo_type}s/{catalog_obj._hf_repo}")
+
+    # Recommend next steps
+    console.print("\n[bold]Next steps:[/bold]")
+    if config_obj and config_obj.tables:
+        console.print("  • Run [cyan]faceberg sync[/cyan] to populate tables with data")
+        console.print("  • Use [cyan]faceberg scan <table>[/cyan] to view sample data")
+    else:
+        console.print("  • Run [cyan]faceberg add <dataset>[/cyan] to add tables")
+        console.print("  • Or edit faceberg.yml and run [cyan]faceberg sync[/cyan]")
+
+    if is_remote and catalog_obj._hf_repo_type == "space":
+        console.print("  • Run [cyan]faceberg serve[/cyan] to start the REST catalog server")
+    else:
+        console.print("  • Run [cyan]faceberg quack[/cyan] to open DuckDB with the catalog")
 
 
 @main.command("list")
