@@ -66,9 +66,7 @@ def test_create_catalog(test_dir):
 def test_create_namespace(catalog):
     """Test namespace creation."""
     catalog.create_namespace("default")
-
-    # Note: Namespace directories are implicit in JSON catalog (from table names)
-    # Empty namespaces don't create physical directories until tables are added
+    assert ("default",) in catalog.list_namespaces()
 
 
 def test_list_namespaces_empty(catalog):
@@ -206,8 +204,7 @@ def faceberg_test_dir(tmp_path):
 def faceberg_config_file(tmp_path):
     """Create test config YAML file."""
     config_file = tmp_path / "test_faceberg.yml"
-    config_content = """uri: .faceberg
-
+    config_content = """
 default:
   imdb_plain_text:
     type: dataset
@@ -222,8 +219,7 @@ default:
 def faceberg_empty_config_file(tmp_path):
     """Create empty test config YAML file."""
     config_file = tmp_path / "test_faceberg_empty.yml"
-    config_content = """uri: .faceberg
-
+    config_content = """
 default: {}
 """
     config_file.write_text(config_content)

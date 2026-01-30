@@ -2,18 +2,9 @@
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Union
-from pyiceberg.exceptions import (
-    NamespaceAlreadyExistsError,
-    NamespaceNotEmptyError,
-    NoSuchNamespaceError,
-    NoSuchTableError,
-    TableAlreadyExistsError,
-)
-from collections.abc import Mapping
+from typing import Union
+
 import yaml
-
-
 
 # =============================================================================
 # Base Node Class
@@ -82,6 +73,7 @@ class Table(Node):
 @dataclass
 class Dataset(Node):
     """External HuggingFace dataset reference."""
+
     repo: str
     config: str = "default"
 
@@ -89,8 +81,8 @@ class Dataset(Node):
 @dataclass
 class View(Node):
     """Logical view with SQL query."""
-    query: str
 
+    query: str
 
 
 # =============================================================================
@@ -99,7 +91,6 @@ class View(Node):
 
 
 class Namespace(Node, dict):
-
     def __repr__(self):
         return f"{self.__class__.__name__}({super().__repr__()})"
 
@@ -107,11 +98,10 @@ class Namespace(Node, dict):
         if isinstance(key, str):
             return super().__getitem__(key)
         elif isinstance(key, tuple):
-            path, last = key[:-1], key[-1]
             node = self
-            for part in path:
+            for part in key:
                 node = node[part]
-            return node[last]
+            return node
         else:
             raise TypeError("Key must be a tuple or string")
 
@@ -145,6 +135,19 @@ class Namespace(Node, dict):
         except KeyError:
             return False
 
+    def traverse(self):
+        """Generator to traverse all nodes in the namespace.
+
+        Yields:
+            Tuple of (full_path, node) for each node in the namespace.
+        """
+        for name, node in self.items():
+            if isinstance(node, Namespace):
+                for sub_path, sub_node in node.traverse():
+                    yield (name,) + sub_path, sub_node
+            else:
+                yield (name,), node
+
     def to_yaml(self, path: Union[str, Path]) -> None:
         """Write config to YAML file.
 
@@ -171,7 +174,7 @@ class Namespace(Node, dict):
 
 
 class Config(Namespace):
-
     @classmethod
     def from_dict(cls, data: dict):
-        return cls(Namespace.from_dict(data))
+        namespaces = {k: Namespace.from_dict(v) for k, v in data.items()}
+        return cls(namespaces)

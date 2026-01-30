@@ -1,9 +1,6 @@
 """Tests for faceberg.config module."""
 
-from pathlib import Path
-
 import pytest
-import yaml
 
 from faceberg.config import Config, Dataset, Namespace, Node, Table, View
 
@@ -38,7 +35,7 @@ def sample_config():
                     "config": "config3",
                 }
             }
-        }
+        },
     }
 
 
@@ -65,6 +62,9 @@ def test_config(sample_config):
     assert cfg[("ns1", "table1")].repo == "org/updated_dataset1"
 
 
+def test_config_root(sample_config):
+    cfg = Config.from_dict(sample_config)
+    assert cfg[()] is cfg
 
 
 def test_config_contains(sample_config):
@@ -98,7 +98,6 @@ def test_config_setitem_creates_intermediate_namespaces():
     assert isinstance(cfg[("analytics",)], Namespace)
     assert isinstance(cfg[("analytics", "sales")], Namespace)
     assert cfg[("analytics", "sales", "orders")].repo == "org/new_dataset"
-
 
 
 def test_config_setitem_overwrite(sample_config):
@@ -188,6 +187,7 @@ def test_yaml_round_trip(tmp_path, sample_config):
     assert isinstance(loaded_cfg[("ns2", "view1")], View)
     assert loaded_cfg[("ns2", "view1")].query == "SELECT * FROM ns1.table1"
 
+
 def test_yaml_empty_file(tmp_path):
     """Test loading from empty YAML file."""
     yaml_path = tmp_path / "empty.yaml"
@@ -220,6 +220,7 @@ def test_yaml_preserves_all_types(tmp_path):
     assert isinstance(loaded[("data", "table1")], Table)
     assert loaded[("data", "dataset1")].repo == "org/repo1"
     assert loaded[("data", "view1")].query == "SELECT 1"
+
 
 def test_node_from_dict_table():
     """Test Node.from_dict for Table type."""
@@ -340,6 +341,7 @@ def test_complex_nested_structure():
     assert isinstance(cfg[("level1", "level2", "level3", "level4")], Namespace)
     assert cfg[("level1", "level2", "level3", "level4", "dataset")].repo == "org/deep"
 
+
 def test_mixed_access_patterns(sample_config):
     """Test mixing tuple and string access in same config."""
     cfg = Config.from_dict(sample_config)
@@ -355,8 +357,3 @@ def test_mixed_access_patterns(sample_config):
     # Set with string, read with tuple
     cfg[("another", "item")] = View(query="SELECT 2")
     assert cfg[("another", "item")].query == "SELECT 2"
-
-
-
-
-

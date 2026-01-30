@@ -31,9 +31,8 @@ from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.table.update import update_table_metadata
 from pyiceberg.typedef import EMPTY_DICT, Properties
 
+import faceberg.config as cfg
 from faceberg.bridge import DatasetInfo
-from faceberg.config import Config
-from faceberg.config import Table as ConfigTable
 from faceberg.convert import IcebergMetadataWriter
 
 if TYPE_CHECKING:
@@ -249,7 +248,7 @@ class StagingContext:
     def __iter__(self):
         return iter(self.changes)
 
-    def __truediv__(self, other):
+    def __truediv__(self, other: str | Path) -> Path:
         return self.path / other
 
 
@@ -259,7 +258,6 @@ class StagingContext:
 
 
 class Identifier(tuple[str, ...]):
-
     def __new__(cls, value):
         """Create a new Identifier instance.
 
@@ -277,11 +275,21 @@ class Identifier(tuple[str, ...]):
             raise TypeError("Identifier must be created from str, list, or tuple")
         return super().__new__(cls, parts)
 
+    def __str__(self) -> str:
+        """Get the string representation of the identifier."""
+        return ".".join(self)
+
     @property
     def path(self) -> Path:
         """Get the path representation of the identifier."""
         return Path(*self)
 
+
+class URI(str):
+    def __truediv__(self, other: str | Path) -> "URI":
+        left = self.rstrip("/")
+        right = str(other).lstrip("/")
+        return URI(f"{left}/{right}")
 
 
 class BaseCatalog(Catalog):
@@ -329,14 +337,14 @@ class BaseCatalog(Catalog):
         merged_properties = {**default_properties, **properties}
 
         super().__init__(name=name, **merged_properties)
-        self.uri = uri
+        self.uri = URI(uri)
         self._hf_token = hf_token
 
     # =========================================================================
     # Catalog initialization
     # =========================================================================
 
-    def init(self, config: Optional[Config] = None) -> None:
+    def init(self, config: Optional[cfg.Config] = None) -> None:
         """Initialize the catalog storage.
 
         Creates the necessary storage structures and optionally populates it with
@@ -375,7 +383,7 @@ class BaseCatalog(Catalog):
         """
         raise NotImplementedError("Subclasses must implement _init()")
 
-    def config(self) -> Config:
+    def config(self) -> cfg.Config:
         """Load catalog from storage.
 
         Returns:
@@ -385,7 +393,7 @@ class BaseCatalog(Catalog):
             FileNotFoundError: If faceberg.yml doesn't exist
         """
         config_path = self._checkout("faceberg.yml")
-        return Config.from_yaml(config_path)
+        return cfg.Config.from_yaml(config_path)
 
     def _checkout(self, path: str) -> Path:
         """Get local path to a file in the catalog.
@@ -451,24 +459,24 @@ class BaseCatalog(Catalog):
         Raises:
             NamespaceAlreadyExistsError: If namespace already exists
         """
-        namespace = Identifier(namespace)
+        identifier = Identifier(namespace)
         config = self.config()
-        if namespace in config:
-            raise NamespaceAlreadyExistsError(f"Namespace {namespace} already exists")
+        if identifier in config:
+            raise NamespaceAlreadyExistsError(f"Namespace {identifier} already exists")
 
         with self._staging() as staging:
             # add namespace to config
-            config[namespace] = {}
+            config[identifier] = cfg.Namespace()
 
             # save config since we added a namespace
             config.to_yaml(staging / "faceberg.yml")
 
             # create the directory in staging
-            (staging / namespace.path).mkdir(parents=True, exist_ok=True)
+            (staging / identifier.path).mkdir(parents=True, exist_ok=True)
 
             # stage the changes
             staging.add("faceberg.yml")
-            staging.add(namespace.path)
+            staging.add(identifier.path)
 
     def drop_namespace(self, namespace: Union[str, Identifier]) -> None:
         """Drop a namespace.
@@ -480,26 +488,26 @@ class BaseCatalog(Catalog):
             NoSuchNamespaceError: If namespace doesn't exist
             NamespaceNotEmptyError: If namespace contains tables
         """
-        namespace = Identifier(namespace)
+        identifier = Identifier(namespace)
         config = self.config()
-        if namespace not in config:
-            raise NoSuchNamespaceError(f"Namespace {namespace} does not exist")
+        if identifier not in config:
+            raise NoSuchNamespaceError(f"Namespace {identifier} does not exist")
 
         # Check if namespace has tables
-        namespace_obj = config[namespace]
-        if isinstance(namespace_obj, dict) and len(namespace_obj) > 0:
-            raise NamespaceNotEmptyError(f"Namespace {namespace} is not empty")
+        namespace = config[identifier]
+        if len(namespace) > 0:
+            raise NamespaceNotEmptyError(f"Namespace {identifier} is not empty")
 
         with self._staging() as staging:
             # remove namespace from config
-            del config[namespace]
+            del config[identifier]
 
             # save config since we removed a namespace
             config.to_yaml(staging / "faceberg.yml")
 
             # stage the changes
             staging.add("faceberg.yml")
-            staging.delete(namespace.path)
+            staging.delete(identifier.path)
 
     def list_namespaces(self, namespace: Union[str, Identifier] = ()) -> List[Identifier]:
         """List namespaces.
@@ -510,10 +518,14 @@ class BaseCatalog(Catalog):
         Returns:
             List of namespace identifiers
         """
-        if namespace:
-            raise NotImplementedError("Nested namespaces are not supported")
+        identifier = Identifier(namespace)
         config = self.config()
-        return config.namespaces
+        try:
+            namespace = config[identifier]
+        except KeyError:
+            raise NoSuchNamespaceError(f"Namespace {namespace} does not exist")
+
+        return [Identifier(*identifier, k) for k in namespace]
 
     def load_namespace_properties(self, _namespace: Union[str, Identifier]) -> Properties:
         """Load namespace properties.
@@ -568,7 +580,7 @@ class BaseCatalog(Catalog):
 
         # Check if table already exists
         if identifier in config:
-            raise TableAlreadyExistsError(f"Table {'.'.join(identifier)} already exists")
+            raise TableAlreadyExistsError(f"Table {identifier} already exists")
 
         if location is not None:
             raise NotImplementedError("Custom table locations are not supported yet")
@@ -578,7 +590,7 @@ class BaseCatalog(Catalog):
 
         with self._staging() as staging:
             # Create table URI for metadata
-            table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+            table_uri = self.uri / identifier.path
 
             # Create table metadata with URI location
             metadata = new_table_metadata(
@@ -600,7 +612,7 @@ class BaseCatalog(Catalog):
             (staging / version_hint_path).write_text(str(metadata.last_sequence_number))
 
             # Add table to config
-            config[identifier] = ConfigTable()
+            config[identifier] = cfg.Table()
             config.to_yaml(staging / "faceberg.yml")
 
             # Record metadata and version hint additions
@@ -628,34 +640,34 @@ class BaseCatalog(Catalog):
 
         # Check if table exists in catalog
         if identifier not in config:
-            raise NoSuchTableError(f"Table {'.'.join(identifier)} not found")
+            raise NoSuchTableError(f"Table {identifier} not found")
 
         # Compute table location from catalog URI
-        table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+        table_uri = self.uri / identifier.path
 
         # Use version-hint.text for Iceberg-native discovery
-        version_hint_path = f"{table_uri}/metadata/version-hint.text"
+        version_hint_uri = table_uri / "metadata/version-hint.text"
 
         # Load FileIO to read version hint
         io = load_file_io(properties=self.properties, location=table_uri)
 
         # Read version hint to find current metadata version
         try:
-            with io.new_input(version_hint_path).open() as f:
+            with io.new_input(version_hint_uri).open() as f:
                 version = int(f.read().decode("utf-8").strip())
         except FileNotFoundError as e:
             raise NoSuchTableError(
-                f"Table {'.'.join(identifier)} metadata file not found: {version_hint_path}"
+                f"Table {identifier} metadata file not found: {version_hint_uri}"
             ) from e
 
         # Read the actual metadata file
-        metadata_uri = f"{table_uri}/metadata/v{version}.metadata.json"
+        metadata_uri = table_uri / f"metadata/v{version}.metadata.json"
         try:
             metadata_file = io.new_input(metadata_uri)
             metadata = FromInputFile.table_metadata(metadata_file)
         except FileNotFoundError as e:
             raise NoSuchTableError(
-                f"Table {'.'.join(identifier)} metadata file not found: {metadata_uri}"
+                f"Table {identifier} metadata file not found: {metadata_uri}"
             ) from e
 
         return Table(
@@ -695,11 +707,13 @@ class BaseCatalog(Catalog):
         """
         identifier = Identifier(namespace)
         config = self.config()
-        namespace = config[identifier]
 
-        if namespace not in config:
+        try:
+            namespace = config[identifier]
+        except KeyError:
             raise NoSuchNamespaceError(f"Namespace {namespace} does not exist")
-        return [Identifier((*namespace, table)) for table in config[namespace]]
+
+        return [Identifier((*identifier, key)) for key in namespace]
 
     def drop_table(self, identifier: Union[str, Identifier]) -> None:
         """Drop a table.
@@ -715,7 +729,7 @@ class BaseCatalog(Catalog):
 
         # Check if table exists
         if identifier not in config:
-            raise NoSuchTableError(f"Table {'.'.join(identifier)} not found")
+            raise NoSuchTableError(f"Table {identifier} not found")
 
         with self._staging() as staging:
             # Remove table from config
@@ -744,19 +758,17 @@ class BaseCatalog(Catalog):
         """
         from_identifier = Identifier(from_identifier)
         to_identifier = Identifier(to_identifier)
+        config = self.config()
+
+        try:
+            from_table = config[from_identifier]
+        except KeyError:
+            raise NoSuchTableError(f"Table {from_identifier} not found")
 
         with self._staging() as staging:
-            config = self.config()
-
-            # Check if source table exists
-            if from_identifier not in config:
-                raise NoSuchTableError(f"Table {'.'.join(from_identifier)} not found")
-
-            from_entry = config[from_identifier]
-
             # Check if destination table already exists
             if to_identifier in config:
-                raise TableAlreadyExistsError(f"Table {'.'.join(to_identifier)} already exists")
+                raise TableAlreadyExistsError(f"Table {to_identifier} already exists")
 
             # Get source table directory
             source_table_dir = self._checkout(from_identifier.path)
@@ -771,11 +783,8 @@ class BaseCatalog(Catalog):
                     if path.is_file():
                         staging.add(path.relative_to(staging.path))
 
-                # Add new table to config (minimal entry - table is self-contained)
-                config[to_identifier] = ConfigTable(
-                    dataset=from_entry.dataset,  # Preserve dataset info
-                    config=from_entry.config,  # Preserve config
-                )
+                # Add new table to config
+                config[to_identifier] = from_table
 
             # Record deletion of old table directory
             staging.delete(from_identifier.path)
@@ -798,6 +807,7 @@ class BaseCatalog(Catalog):
         Returns:
             True if table exists
         """
+        identifier = Identifier(identifier)
         return identifier in self.config()
 
     def purge_table(self, _identifier: Union[str, Identifier]) -> None:
@@ -899,7 +909,7 @@ class BaseCatalog(Catalog):
     # Faceberg-specific Methods (dataset synchronization)
     # =========================================================================
 
-    def sync_tables(self) -> List[Table]:
+    def sync_datasets(self) -> List[Table]:
         """Sync all Iceberg tables with HuggingFace datasets in config.
 
         Discovers datasets and either creates new tables or updates existing ones
@@ -912,14 +922,15 @@ class BaseCatalog(Catalog):
         config = self.config()
 
         tables = []
-        for table in config.tables:
-            table = self.sync_table(table)
-            tables.append(table)
+        for identifier, table in config.traverse():
+            if isinstance(table, cfg.Dataset):
+                table = self.sync_dataset(identifier)
+                tables.append(table)
 
         return tables
 
     def add_dataset(
-        self, identifier: Union[str, Identifier], dataset: str, config: str = "default"
+        self, identifier: Union[str, Identifier], repo: str, config: str = "default"
     ) -> Table:
         """Add a dataset to the catalog and create the Iceberg table.
 
@@ -928,7 +939,7 @@ class BaseCatalog(Catalog):
 
         Args:
             identifier: Table identifier in format "namespace.table"
-            dataset: HuggingFace dataset in format "org/repo"
+            repo: HuggingFace dataset repository in format "org/repo"
             config: Dataset configuration name (default: "default")
 
         Returns:
@@ -943,31 +954,31 @@ class BaseCatalog(Catalog):
 
         if identifier in catalog_config:
             # Check if metadata files exist
-            table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
-            version_hint_uri = f"{table_uri}/metadata/version-hint.text"
+            table_uri = self.uri / identifier.path
+            version_hint_uri = table_uri / "metadata/version-hint.text"
             io = load_file_io(properties=self.properties, location=version_hint_uri)
 
             try:
                 with io.new_input(version_hint_uri).open():
                     pass  # File exists, table has been synced
                 # Table has both config entry and metadata - it's truly a duplicate
-                raise TableAlreadyExistsError(
-                    f"Table {'.'.join(identifier)} already exists in catalog"
-                )
+                raise TableAlreadyExistsError(f"Table {identifier} already exists in catalog")
             except FileNotFoundError:
                 pass  # Config entry exists but no metadata - we can proceed
 
         # Discover dataset
         dataset_info = DatasetInfo.discover(
-            repo_id=dataset,
+            repo_id=repo,
             configs=[config],
             token=self._hf_token,
         )
 
         # Convert to TableInfo
+        # TODO(kszucs): support nested namespace, pass identifier to to_table_info
+        namespace, table_name = identifier
         table_info = dataset_info.to_table_info(
-            namespace=identifier[0],
-            table_name=identifier[1],
+            namespace=namespace,
+            table_name=table_name,
             config=config,
             token=self._hf_token,
         )
@@ -980,7 +991,7 @@ class BaseCatalog(Catalog):
             table_dir.mkdir(parents=True, exist_ok=True)
 
             # Create table URI for metadata
-            table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+            table_uri = self.uri / identifier.path
 
             # Create metadata writer
             metadata_writer = IcebergMetadataWriter(
@@ -1008,8 +1019,8 @@ class BaseCatalog(Catalog):
 
             # Register table in config if not already there
             if identifier not in catalog_config:
-                catalog_config[identifier] = ConfigTable(
-                    dataset=table_info.source_repo,
+                catalog_config[identifier] = cfg.Dataset(
+                    repo=table_info.source_repo,
                     config=table_info.source_config,
                 )
                 # Save config since we added a dataset table
@@ -1019,7 +1030,7 @@ class BaseCatalog(Catalog):
         # Load and return table after persistence
         return self.load_table(identifier)
 
-    def sync_table(self, identifier: Union[str, Identifier]) -> Table:
+    def sync_dataset(self, identifier: Union[str, Identifier]) -> Table:
         """Sync a single dataset table by adding or updating it.
 
         Reads dataset and config information from the catalog configuration,
@@ -1041,14 +1052,14 @@ class BaseCatalog(Catalog):
         config = self.config()
 
         # Check if table exists in config
-        if identifier not in config:
-            raise ValueError(f"Table {'.'.join(identifier)} not found in config")
-
-        config_entry = config[identifier]
+        try:
+            table_entry = config[identifier]
+        except KeyError:
+            raise ValueError(f"Table {identifier} not found in config")
 
         # Check if table has been synced (has metadata files)
-        table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
-        version_hint_uri = f"{table_uri}/metadata/version-hint.text"
+        table_uri = self.uri / identifier.path
+        version_hint_uri = table_uri / "metadata/version-hint.text"
 
         io = load_file_io(properties=self.properties, location=table_uri)
         has_metadata = False
@@ -1062,7 +1073,7 @@ class BaseCatalog(Catalog):
         if not has_metadata:
             # First sync - call add_dataset which will create metadata
             # (add_dataset is now smart enough to handle existing config entries)
-            return self.add_dataset(identifier, config_entry.dataset, config_entry.config)
+            return self.add_dataset(identifier, table_entry.repo, table_entry.config)
 
         # Update existing table with new snapshot
         # Load table first to get old revision
@@ -1079,28 +1090,29 @@ class BaseCatalog(Catalog):
 
         # Discover dataset at current revision
         dataset_info = DatasetInfo.discover(
-            repo_id=config_entry.dataset,
-            configs=[config_entry.config],
+            repo_id=table_entry.dataset,
+            configs=[table_entry.config],
             token=self._hf_token,
         )
 
         # Check if already up to date
         if old_revision == dataset_info.revision:
-            logger.info(f"Table {'.'.join(identifier)} already at revision {old_revision}")
+            logger.info(f"Table {identifier} already at revision {old_revision}")
             return table
 
         # Get only new files since old revision (incremental update)
+        # TODO(kszucs): support nested namespace, pass identifier to to_table_info_incremental
         table_info = dataset_info.to_table_info_incremental(
             namespace=identifier[0],
             table_name=identifier[1],
-            config=config_entry.config,
+            config=table_entry.config,
             old_revision=old_revision,
             token=self._hf_token,
         )
 
         # If no new files, table is already up to date
         if not table_info.files:
-            logger.info(f"No new files for {'.'.join(identifier)}")
+            logger.info(f"No new files for {identifier}")
             return table
 
         # Append new snapshot with only new files
@@ -1110,7 +1122,7 @@ class BaseCatalog(Catalog):
             metadata_dir.mkdir(parents=True, exist_ok=True)
 
             # Create table URI for metadata
-            table_uri = f"{self.uri.rstrip('/')}/{'/'.join(identifier)}"
+            table_uri = self.uri / identifier.path.path
 
             # Create metadata writer
             metadata_writer = IcebergMetadataWriter(
@@ -1189,7 +1201,7 @@ class LocalCatalog(BaseCatalog):
         self.catalog_dir.mkdir(parents=True, exist_ok=True)
 
         # Create and save empty config
-        config = Config(uri=self.uri, data={})
+        config = cfg.Config()
         config.to_yaml(self.catalog_dir / "faceberg.yml")
 
     def _checkout(self, path: str) -> Path:
@@ -1321,7 +1333,7 @@ class RemoteCatalog(BaseCatalog):
         # Create and commit initial files
         with self._staging() as staging:
             # Create empty config
-            config = Config(uri=self.uri, data={})
+            config = cfg.Config()
             config.to_yaml(staging / "faceberg.yml")
             staging.add("faceberg.yml")
 
