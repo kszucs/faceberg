@@ -1,6 +1,5 @@
 """Tests for the convert module (Iceberg metadata generation)."""
 
-import uuid
 from unittest.mock import Mock, patch
 
 import pytest
@@ -408,10 +407,14 @@ class TestGetPreviousManifests:
         assert result[1] == mock_manifest_2
 
         # Critical: verify we did NOT call fetch_manifest_entry (no content reading)
-        assert not hasattr(mock_manifest_1, 'fetch_manifest_entry') or \
-               not mock_manifest_1.fetch_manifest_entry.called
-        assert not hasattr(mock_manifest_2, 'fetch_manifest_entry') or \
-               not mock_manifest_2.fetch_manifest_entry.called
+        assert (
+            not hasattr(mock_manifest_1, "fetch_manifest_entry")
+            or not mock_manifest_1.fetch_manifest_entry.called
+        )
+        assert (
+            not hasattr(mock_manifest_2, "fetch_manifest_entry")
+            or not mock_manifest_2.fetch_manifest_entry.called
+        )
 
         # Verify we called manifests() with file_io
         mock_snapshot.manifests.assert_called_once_with(metadata_writer.file_io)

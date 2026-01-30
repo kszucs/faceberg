@@ -173,9 +173,7 @@ def get_new_parquet_files(
     # Filter for parquet files in this config
     config_prefix = f"{config}/"
     parquet_files = [
-        f
-        for f in added_files
-        if f.endswith(".parquet") and f.startswith(config_prefix)
+        f for f in added_files if f.endswith(".parquet") and f.startswith(config_prefix)
     ]
 
     return sorted(parquet_files)
@@ -780,9 +778,7 @@ class DatasetInfo:
         builder = load_dataset_builder_safe(self.repo_id, config_name=config, token=token)
         features = builder.info.features
         if not features:
-            raise ValueError(
-                f"Dataset {self.repo_id} config {config} has no features available."
-            )
+            raise ValueError(f"Dataset {self.repo_id} config {config} has no features available.")
 
         schema = build_iceberg_schema_from_features(features, include_split_column=True)
         partition_spec = build_split_partition_spec(schema)

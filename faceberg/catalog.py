@@ -368,7 +368,8 @@ class BaseCatalog(Catalog):
         For RemoteCatalog, downloads from HF Hub and returns cached path.
 
         Args:
-            path: Relative path within the catalog (e.g., "faceberg.yml" or "namespace/table/metadata/version-hint.text")
+            path: Relative path within the catalog (e.g., "faceberg.yml" or
+                  "namespace/table/metadata/version-hint.text")
 
         Returns:
             Local path to the file
@@ -824,7 +825,9 @@ class BaseCatalog(Catalog):
 
             # Write new metadata file and version hint
             (staging.path / metadata_dir).mkdir(parents=True, exist_ok=True)
-            (staging.path / metadata_file_path).write_text(updated_metadata.model_dump_json(indent=2))
+            (staging.path / metadata_file_path).write_text(
+                updated_metadata.model_dump_json(indent=2)
+            )
             (staging.path / version_hint_path).write_text(str(new_version))
 
             # Stage changes (must use relative paths from staging root)

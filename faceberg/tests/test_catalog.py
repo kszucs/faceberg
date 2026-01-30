@@ -19,7 +19,6 @@ from pyiceberg.types import LongType, NestedField, StringType
 
 from faceberg.catalog import HfFileIO, HfLocationProvider, LocalCatalog, RemoteCatalog
 from faceberg.catalog import catalog as catalog_factory
-from faceberg.config import Config
 
 
 @pytest.fixture
@@ -653,7 +652,6 @@ class TestCatalogFactory:
 
         with pytest.raises(ValueError, match="Unsupported"):
             catalog_factory("hf://models/my-org/my-model", hf_token="test_token")
-
 
     def test_catalog_remote_shorthand_defaults_to_spaces(self):
         """Test creating RemoteCatalog with shorthand org/repo format defaults to spaces."""

@@ -777,8 +777,9 @@ def test_to_table_info_incremental_with_old_revision():
         ]
     )
 
-    with patch("faceberg.bridge.load_dataset_builder_safe", return_value=mock_builder), patch(
-        "faceberg.bridge.get_new_parquet_files", mock_get_new_files
+    with (
+        patch("faceberg.bridge.load_dataset_builder_safe", return_value=mock_builder),
+        patch("faceberg.bridge.get_new_parquet_files", mock_get_new_files),
     ):
         # Call with old_revision (should return only new files)
         table_info = dataset_info.to_table_info_incremental(

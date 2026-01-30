@@ -262,7 +262,6 @@ class TestConfigTwoLevelHierarchy:
         assert ("ns", "table") in config
         assert config[("ns", "table")].dataset == "org/repo"
 
-
     def test_multiple_two_level_identifiers(self):
         """Test Config supports multiple 2-level identifiers."""
         config = Config(uri=".faceberg")

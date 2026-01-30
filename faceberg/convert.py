@@ -258,7 +258,8 @@ class IcebergMetadataWriter:
         )
 
     def _get_previous_manifests(self, metadata: TableMetadataV2) -> Optional[List[ManifestFile]]:
-        """Extract manifest file references from the current snapshot without reading their contents.
+        """Extract manifest file references from the current snapshot without reading
+        their contents.
 
         This method is used for fast append operations to reuse existing manifest files
         without downloading and reading their contents. This significantly reduces
