@@ -8,7 +8,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .catalog import RemoteCatalog, catalog, Identifier
 from .config import Config
-from .pretty import tree, tree_progress
+from .pretty import tree, progress_bars, progress_tree
 
 console = Console()
 
@@ -65,26 +65,29 @@ def add(ctx, dataset, table, config):
     """
     catalog = ctx.obj["catalog"]
 
-    # Build tree view with tracking
-    config = catalog.config()
-
     # Determine table identifier
     if table is None:
         identifier = dataset.split("/")
     else:
         identifier = table
 
-    # Sync with live progress display
-    with tree_progress(config, console) as progress_callback:
+    # Convert identifier to string for display (e.g., ['org', 'repo'] -> 'org.repo')
+    identifier_str = ".".join(identifier) if isinstance(identifier, list) else identifier
+
+    console.print(f"\n[bold blue]Adding dataset:[/bold blue] {dataset}")
+    console.print(f"[bold blue]Table identifier:[/bold blue] {identifier_str}\n")
+
+    # Add with live progress display
+    with progress(identifier_str, console) as progress_callback:
         table = catalog.add_dataset(
             identifier=identifier,
             repo=dataset,
             config=config,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
         )
 
     # Display summary
-    console.print(f"\n[green]✓ Added {table.identifier} to catalog[/green]")
+    console.print(f"\n[green]✓ Added {table} to catalog[/green]")
     console.print(f"  Dataset: {dataset}")
     console.print(f"  Config: {config}")
     console.print(f"  Location: {table.metadata_location}")
@@ -93,8 +96,9 @@ def add(ctx, dataset, table, config):
 
 @main.command()
 @click.argument("table_name", required=False)
+@click.option("--tree-view", "-t", is_flag=True, help="Show the catalog as a tree")
 @click.pass_context
-def sync(ctx, table_name):
+def sync(ctx, table_name, tree_view):
     """Sync Iceberg tables with HuggingFace datasets from config.
 
     Discovers datasets and creates/updates Iceberg tables. For new tables,
@@ -107,14 +111,16 @@ def sync(ctx, table_name):
     """
     catalog = ctx.obj["catalog"]
 
-    console.print(f"[bold blue]🤗🧊 Catalog:[/bold blue] {catalog.uri}\n")
-
     # Build tree view with tracking
     config = catalog.config()
 
-    # Sync with live progress display
-    with tree_progress(config, console) as progress_callback:
-        catalog.sync_datasets(progress_callback=progress_callback)
+    if tree_view:
+        with progress_tree(config, console) as progress_callback:
+            catalog.sync_datasets(progress_callback=progress_callback)
+    else:
+        datasets = config.datasets()
+        with progress_bars(config, console, list(datasets)) as progress_callback:
+            catalog.sync_datasets(progress_callback=progress_callback)
 
     console.print("\n[bold green]✓ Sync complete![/bold green]")
 

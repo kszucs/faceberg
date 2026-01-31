@@ -957,7 +957,7 @@ class BaseCatalog(Catalog):
 
         # Notify start of add
         if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=0)
+            progress_callback(identifier, state="in_progress", percent=0, stage="Starting")
 
         catalog_config = self.config()
 
@@ -976,6 +976,9 @@ class BaseCatalog(Catalog):
                 pass  # Config entry exists but no metadata - we can proceed
 
         # Discover dataset
+        if progress_callback:
+            progress_callback(identifier, state="in_progress", percent=10, stage="Discovering dataset")
+
         dataset_info = DatasetInfo.discover(
             repo_id=repo,
             configs=[config],
@@ -983,6 +986,9 @@ class BaseCatalog(Catalog):
         )
 
         # Convert to TableInfo
+        if progress_callback:
+            progress_callback(identifier, state="in_progress", percent=30, stage="Converting schema")
+
         # TODO(kszucs): support nested namespace, pass identifier to to_table_info
         namespace, table_name = identifier
         table_info = dataset_info.to_table_info(
@@ -993,6 +999,9 @@ class BaseCatalog(Catalog):
         )
 
         # Create the table with full metadata in staging context
+        if progress_callback:
+            progress_callback(identifier, state="in_progress", percent=50, stage="Writing Iceberg metadata")
+
         with self._staging() as staging:
             # Define table directory in the staging area
             # Note: IcebergMetadataWriter will create the metadata subdirectory
@@ -1024,6 +1033,9 @@ class BaseCatalog(Catalog):
 
             # TODO(kszucs): metadata writer should return with the affected file paths
             # Record all created files in the table directory
+            if progress_callback:
+                progress_callback(identifier, state="in_progress", percent=90, stage="Finalizing")
+
             for path in table_dir.rglob("*"):
                 if path.is_file():
                     staging.add(path.relative_to(staging.path))
@@ -1043,7 +1055,7 @@ class BaseCatalog(Catalog):
 
         # Notify completion
         if progress_callback:
-            progress_callback(identifier, state="complete", percent=100)
+            progress_callback(identifier, state="complete", percent=100, stage="Complete")
 
         return table
 
@@ -1072,7 +1084,7 @@ class BaseCatalog(Catalog):
 
         # Notify start of sync
         if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=0)
+            progress_callback(identifier, state="in_progress", percent=0, stage="Starting sync")
 
         # Load config to get dataset info
         config = self.config()
@@ -1133,7 +1145,7 @@ class BaseCatalog(Catalog):
         if old_revision == dataset_info.revision:
             logger.info(f"Table {identifier} already at revision {old_revision}")
             if progress_callback:
-                progress_callback(identifier, state="up_to_date", percent=100)
+                progress_callback(identifier, state="up_to_date", percent=100, stage="Already up to date")
             return table
 
         # Get only new files since old revision (incremental update)
@@ -1187,7 +1199,7 @@ class BaseCatalog(Catalog):
 
         # Notify completion
         if progress_callback:
-            progress_callback(identifier, state="complete", percent=100)
+            progress_callback(identifier, state="complete", percent=100, stage="Sync complete")
 
         return table
 
