@@ -33,10 +33,11 @@ def main(ctx, uri, token):
     """
     # Create catalog instance using factory function
     cat = catalog(uri, hf_token=token)
-
     ctx.ensure_object(dict)
     ctx.obj["catalog"] = cat
     ctx.obj["token"] = token
+
+    console.print(f"[bold blue]🤗🧊 Catalog:[/bold blue] {cat.uri}\n")
 
 
 @main.command()
@@ -64,51 +65,30 @@ def add(ctx, dataset, table, config):
     """
     catalog = ctx.obj["catalog"]
 
+    # Build tree view with tracking
+    config = catalog.config()
+
     # Determine table identifier
-    if table:
-        # Explicit identifier provided
-        table_identifier = table
+    if table is None:
+        identifier = dataset.split("/")
     else:
-        # Infer from dataset: org/repo -> org.repo
-        try:
-            namespace, table_name = dataset.split("/", 1)
-            table_identifier = f"{namespace}.{table_name}"
-        except ValueError:
-            console.print("[red]Error: dataset must be in format 'org/repo'[/red]")
-            raise click.Abort()
+        identifier = table
 
-    # Initialize state for the dataset being added
-    node_id = Identifier(table_identifier)
-    tree_view.states[node_id] = TableState()
+    # Sync with live progress display
+    with tree_progress(config, console) as progress_callback:
+        table = catalog.add_dataset(
+            identifier=identifier,
+            repo=dataset,
+            config=config,
+            progress_callback=progress_callback
+        )
 
-    # Define progress callback
-    def progress_callback(identifier, kind, progress=None, error=None):
-        tree_view.update_state(identifier, kind, progress, error)
+    # Display summary
+    console.print(f"\n[green]✓ Added {table.identifier} to catalog[/green]")
+    console.print(f"  Dataset: {dataset}")
+    console.print(f"  Config: {config}")
+    console.print(f"  Location: {table.metadata_location}")
 
-    # Add dataset with live progress display
-    console.print()
-    try:
-        with tree_view:
-            table = catalog.add_dataset(
-                identifier=table_identifier,
-                repo=dataset,
-                config=config,
-                progress_callback=progress_callback
-            )
-
-        console.print(f"\n[green]✓ Added {table_identifier} to catalog[/green]")
-        console.print(f"  Dataset: {dataset}")
-        console.print(f"  Config: {config}")
-        console.print(f"  Location: {table.metadata_location}")
-    except ValueError as e:
-        console.print(f"\n[red]Error: {e}[/red]")
-        raise click.Abort()
-    except Exception as e:
-        if "already exists" in str(e).lower():
-            console.print(f"\n[yellow]Table {table_identifier} already exists[/yellow]")
-        else:
-            console.print(f"\n[red]Error: {e}[/red]")
-        raise click.Abort()
 
 
 @main.command()
@@ -127,7 +107,7 @@ def sync(ctx, table_name):
     """
     catalog = ctx.obj["catalog"]
 
-    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.uri}\n")
+    console.print(f"[bold blue]🤗🧊 Catalog:[/bold blue] {catalog.uri}\n")
 
     # Build tree view with tracking
     config = catalog.config()

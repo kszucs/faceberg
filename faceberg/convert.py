@@ -9,7 +9,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import pyarrow.parquet as pq
 from huggingface_hub import get_hf_file_metadata, hf_hub_url
@@ -79,6 +79,8 @@ class IcebergMetadataWriter:
         file_infos: List[FileInfo],
         table_uuid: str,
         properties: Optional[Dict[str, str]] = None,
+        progress_callback: Optional[Callable] = None,
+        identifier: Optional[str] = None,
     ) -> Path:
         """Create Iceberg metadata from data file information.
 
@@ -92,6 +94,8 @@ class IcebergMetadataWriter:
             file_infos: List of FileInfo objects describing data files
             table_uuid: UUID for the table
             properties: Optional table properties
+            progress_callback: Optional callback for progress updates
+            identifier: Optional table identifier for progress reporting
 
         Returns:
             Path to the metadata file
@@ -99,7 +103,11 @@ class IcebergMetadataWriter:
         logger.info(f"Creating Iceberg metadata for {len(file_infos)} files")
 
         # Step 1: Read file metadata from HuggingFace Hub
-        enriched_files = self._read_file_metadata(file_infos)
+        enriched_files = self._read_file_metadata(
+            file_infos,
+            progress_callback=progress_callback,
+            identifier=identifier
+        )
 
         # Step 2: Create DataFile entries
         data_files = self._create_data_files(enriched_files)
@@ -139,11 +147,18 @@ class IcebergMetadataWriter:
         metadata = get_hf_file_metadata(url)
         return metadata.size
 
-    def _read_file_metadata(self, file_infos: List[FileInfo]) -> List[FileInfo]:
+    def _read_file_metadata(
+        self,
+        file_infos: List[FileInfo],
+        progress_callback: Optional[Callable] = None,
+        identifier: Optional[str] = None,
+    ) -> List[FileInfo]:
         """Read metadata from HuggingFace Hub files without downloading.
 
         Args:
             file_infos: List of FileInfo objects (may have size/row_count = 0)
+            progress_callback: Optional callback for progress updates
+            identifier: Optional table identifier for progress reporting
 
         Returns:
             List of FileInfo objects with enriched metadata
@@ -152,8 +167,9 @@ class IcebergMetadataWriter:
             Exception: If metadata cannot be read from any file
         """
         enriched = []
+        total_files = len(file_infos)
 
-        for file_info in file_infos:
+        for i, file_info in enumerate(file_infos):
             # Read metadata directly from HF Hub without downloading the file
             metadata = pq.read_metadata(file_info.path)
             row_count = metadata.num_rows
@@ -172,6 +188,11 @@ class IcebergMetadataWriter:
                     split=file_info.split,
                 )
             )
+
+            # Report progress after processing each file
+            if progress_callback and identifier:
+                percent = 10 + int((i + 1) / total_files * 80)
+                progress_callback(identifier, state="in_progress", percent=percent)
 
         return enriched
 

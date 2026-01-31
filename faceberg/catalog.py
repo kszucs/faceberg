@@ -1018,6 +1018,8 @@ class BaseCatalog(Catalog):
                 file_infos=table_info.files,
                 table_uuid=table_uuid,
                 properties=table_info.get_table_properties(),
+                progress_callback=progress_callback,
+                identifier=identifier,
             )
 
             # TODO(kszucs): metadata writer should return with the affected file paths

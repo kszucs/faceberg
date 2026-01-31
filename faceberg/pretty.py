@@ -69,7 +69,8 @@ def node(
 ) -> Tree:
     """Format and build tree for Namespace nodes."""
     name = path[-1]
-    label = f"[cyan]🗂️ {name}[/cyan]"
+    metadata = f" [dim](namespace)[/dim]"
+    label = f"[cyan]{name}[/cyan]{metadata}"
     tree = parent.add(label)
 
     # Recursively add children
@@ -90,14 +91,15 @@ def node_leaf(
 
     # Build label based on node type
     if isinstance(node, cfg.Table):
-        label = f"[green]📊 {name}[/green]"
+        metadata = f" [dim](table)[/dim]"
+        label = f"[green]{name}[/green]{metadata}"
     elif isinstance(node, cfg.Dataset):
-        metadata = f" [dim]({node.repo})[/dim]"
-        label = f"[yellow]🤗 {name}[/yellow]{metadata}"
+        metadata = f" [dim](dataset: {node.repo})[/dim]"
+        label = f"[yellow]{name}[/yellow]{metadata}"
     elif isinstance(node, cfg.View):
         query_snippet = node.query[:30] + "..." if len(node.query) > 30 else node.query
-        metadata = f" [dim]({query_snippet})[/dim]"
-        label = f"[blue]👁️ {name}[/blue]{metadata}"
+        metadata = f" [dim](view: {query_snippet})[/dim]"
+        label = f"[blue]{name}[/blue]{metadata}"
     else:
         raise TypeError(f"Unsupported node type: {type(node)}")
 
