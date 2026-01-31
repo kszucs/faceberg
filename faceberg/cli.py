@@ -128,8 +128,9 @@ def sync(ctx, table_name, tree_view):
 
 @main.command()
 @click.argument("config_path", required=False)
+@click.option("--sync", "-s", is_flag=True, help="Sync after initialization")
 @click.pass_context
-def init(ctx, config_path):
+def init(ctx, config_path, sync):
     """Initialize a catalog with optional initial configuration.
 
     For local catalogs, creates the directory and faceberg.yml file.
@@ -172,11 +173,15 @@ def init(ctx, config_path):
         config = Config()
 
     # Initialize catalog with optional config
-    # catalog.init(config)
+    catalog.init(config)
     console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
-    if config:
-        # Display summary of tables added
-        pass
+
+    # Sync datasets if requested
+    if sync:
+        console.print("\n[bold blue]Syncing datasets...[/bold blue]")
+        with progress_bars(config, console, list(config.datasets())) as progress_callback:
+            catalog.sync_datasets(progress_callback=progress_callback)
+        console.print("\n[bold green]✓ Sync complete![/bold green]")
 
     # Display additional info for remote catalogs
     if is_remote:

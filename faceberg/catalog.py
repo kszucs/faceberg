@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, List, Optional, Set, Union
 from urllib.parse import urlparse
 
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, HfFileSystem
+from huggingface_hub.errors import RemoteEntryNotFoundError
 from pyiceberg.catalog import Catalog, PropertiesUpdateSummary
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
@@ -360,14 +361,9 @@ class BaseCatalog(Catalog):
         Raises:
             Exception: Implementation-specific exceptions (e.g., repository already exists)
         """
-        # Initialize catalog storage (repository/directory creation) and save empty config
-        self._init()
-
-        # Initialize all tables from provided config
-        if config is not None:
-            for identifier, entry in config.items():
-                # Use add_dataset to create each table
-                self.add_dataset(identifier, entry.dataset, entry.config)
+        if config is None:
+            config = cfg.Config()
+        self._init(config)
 
     # =========================================================================
     # Internal helper methods (catalog persistence and utilities)
@@ -972,13 +968,13 @@ class BaseCatalog(Catalog):
                     pass  # File exists, table has been synced
                 # Table has both config entry and metadata - it's truly a duplicate
                 raise TableAlreadyExistsError(f"Table {identifier} already exists in catalog")
-            except FileNotFoundError:
+            except (FileNotFoundError, RemoteEntryNotFoundError):
                 pass  # Config entry exists but no metadata - we can proceed
 
         # Discover dataset
         if progress_callback:
             progress_callback(
-                identifier, state="in_progress", percent=10, stage="Discovering dataset"
+                identifier, state="in_progress", percent=0, stage="Discovering dataset"
             )
 
         dataset_info = DatasetInfo.discover(
@@ -990,7 +986,7 @@ class BaseCatalog(Catalog):
         # Convert to TableInfo
         if progress_callback:
             progress_callback(
-                identifier, state="in_progress", percent=30, stage="Converting schema"
+                identifier, state="in_progress", percent=0, stage="Converting schema"
             )
 
         # TODO(kszucs): support nested namespace, pass identifier to to_table_info
@@ -1005,7 +1001,7 @@ class BaseCatalog(Catalog):
         # Create the table with full metadata in staging context
         if progress_callback:
             progress_callback(
-                identifier, state="in_progress", percent=50, stage="Writing Iceberg metadata"
+                identifier, state="in_progress", percent=0, stage="Writing Iceberg metadata"
             )
 
         with self._staging() as staging:
@@ -1112,7 +1108,7 @@ class BaseCatalog(Catalog):
             with io.new_input(version_hint_uri).open():
                 pass  # File exists, table has been synced
             has_metadata = True
-        except Exception:
+        except (FileNotFoundError, RemoteEntryNotFoundError):
             pass  # Table hasn't been synced yet
 
         if not has_metadata:
@@ -1252,7 +1248,7 @@ class LocalCatalog(BaseCatalog):
         }
         super().__init__(name=name, uri=uri, hf_token=hf_token, **properties_with_warehouse)
 
-    def _init(self) -> None:
+    def _init(self, config) -> None:
         """Initialize local catalog storage.
 
         Ensures the catalog directory exists and creates an empty faceberg.yml file.
@@ -1261,7 +1257,6 @@ class LocalCatalog(BaseCatalog):
         self.catalog_dir.mkdir(parents=True, exist_ok=True)
 
         # Create and save empty config
-        config = cfg.Config()
         config.to_yaml(self.catalog_dir / "faceberg.yml")
 
     def _checkout(self, path: str) -> Path:
@@ -1374,7 +1369,7 @@ class RemoteCatalog(BaseCatalog):
         properties_with_warehouse = {"warehouse": uri, **properties}
         super().__init__(name=name, uri=uri, hf_token=hf_token, **properties_with_warehouse)
 
-    def _init(self) -> None:
+    def _init(self, config) -> None:
         """Initialize remote catalog storage.
 
         Creates a new HuggingFace repository with an empty faceberg.yml.
@@ -1393,7 +1388,6 @@ class RemoteCatalog(BaseCatalog):
         # Create and commit initial files
         with self._staging() as staging:
             # Create empty config
-            config = cfg.Config()
             config.to_yaml(staging / "faceberg.yml")
             staging.add("faceberg.yml")
 
