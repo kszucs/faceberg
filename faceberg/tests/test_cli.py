@@ -1,9 +1,9 @@
 """Tests for CLI commands."""
 
 from click.testing import CliRunner
-from faceberg.cli import main
+
 from faceberg import config as cfg
-from pathlib import Path
+from faceberg.cli import main
 
 
 def test_list_command_with_tree_view(tmp_path):

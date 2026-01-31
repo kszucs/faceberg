@@ -1,10 +1,12 @@
-from faceberg.pretty import StateKind, TableState, CatalogTreeView, tree
-from faceberg.catalog import Identifier, LocalCatalog
-from faceberg import config as cfg
-from rich.tree import Tree
-from rich.console import Console
 import io
 import time
+
+from rich.console import Console
+from rich.tree import Tree
+
+from faceberg import config as cfg
+from faceberg.catalog import Identifier, LocalCatalog
+from faceberg.pretty import CatalogTreeView, StateKind, TableState, tree
 
 
 def test_state_kind_has_correct_values():
@@ -39,11 +41,7 @@ def test_table_state_creation():
 
 def test_table_state_with_all_fields():
     """Test TableState with all fields specified."""
-    state = TableState(
-        kind=StateKind.IN_PROGRESS,
-        progress=50,
-        error="test error"
-    )
+    state = TableState(kind=StateKind.IN_PROGRESS, progress=50, error="test error")
 
     assert state.kind == StateKind.IN_PROGRESS
     assert state.progress == 50
@@ -112,10 +110,7 @@ def test_tree_dataset_with_state():
     """Test tree building for dataset node with state tracking."""
     identifier = Identifier(("default", "test"))
     node = cfg.Dataset(repo="org/repo", config="default")
-    state = TableState(
-        kind=StateKind.IN_PROGRESS,
-        progress=45
-    )
+    state = TableState(kind=StateKind.IN_PROGRESS, progress=45)
     states = {identifier: state}
 
     result = tree(node, identifier, None, states)
@@ -130,10 +125,7 @@ def test_tree_dataset_with_error():
     """Test tree building for dataset node with error state."""
     identifier = Identifier(("default", "failed"))
     node = cfg.Dataset(repo="org/repo", config="default")
-    state = TableState(
-        kind=StateKind.FAILED,
-        error="Connection timeout"
-    )
+    state = TableState(kind=StateKind.FAILED, error="Connection timeout")
     states = {identifier: state}
 
     # Need a parent to see error messages
@@ -151,10 +143,7 @@ def test_tree_dataset_with_error():
 def test_catalog_tree_view_initialization(tmp_path):
     """Test CatalogTreeView initialization."""
     catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(
-        name="test",
-        uri=f"file://{catalog_dir}"
-    )
+    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
     catalog.init()
 
     tree_view = CatalogTreeView(catalog)
@@ -167,10 +156,7 @@ def test_catalog_tree_view_initialization(tmp_path):
 def test_build_tree_empty_catalog(tmp_path):
     """Test building tree from empty catalog."""
     catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(
-        name="test",
-        uri=f"file://{catalog_dir}"
-    )
+    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
     catalog.init()
 
     tree_view = CatalogTreeView(catalog)
@@ -184,10 +170,7 @@ def test_build_tree_empty_catalog(tmp_path):
 def test_build_tree_with_namespace_and_dataset(tmp_path):
     """Test building tree with namespace and dataset."""
     catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(
-        name="test",
-        uri=f"file://{catalog_dir}"
-    )
+    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
     catalog.init()
 
     # Create config with namespace and dataset
@@ -214,6 +197,7 @@ def test_build_tree_with_namespace_and_dataset(tmp_path):
 
 def test_update_state():
     """Test updating table state."""
+
     # Create a mock catalog (we'll use a simple approach)
     class MockCatalog:
         def __init__(self):
@@ -245,10 +229,7 @@ def test_update_state():
 def test_catalog_tree_view_context_manager(tmp_path):
     """Test CatalogTreeView as context manager with live display."""
     catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(
-        name="test",
-        uri=f"file://{catalog_dir}"
-    )
+    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
 
     # Create config with dataset
     config = cfg.Config()
@@ -280,6 +261,7 @@ def test_catalog_tree_view_context_manager(tmp_path):
 
 def test_catalog_tree_view_with_console():
     """Test CatalogTreeView with custom console."""
+
     # Use mock catalog for simplicity
     class MockCatalog:
         def __init__(self):

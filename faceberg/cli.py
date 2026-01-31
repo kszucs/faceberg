@@ -6,9 +6,9 @@ import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .catalog import RemoteCatalog, catalog, Identifier
+from .catalog import RemoteCatalog, catalog
 from .config import Config
-from .pretty import tree, progress_bars, progress_tree
+from .pretty import progress_bars, progress_tree, tree
 
 console = Console()
 
@@ -67,18 +67,16 @@ def add(ctx, dataset, table, config):
 
     # Determine table identifier
     if table is None:
-        identifier = dataset.split("/")
+        identifier = tuple(dataset.split("/"))
     else:
         identifier = table
+    name = ".".join(identifier)
 
-    # Convert identifier to string for display (e.g., ['org', 'repo'] -> 'org.repo')
-    identifier_str = ".".join(identifier) if isinstance(identifier, list) else identifier
-
-    console.print(f"\n[bold blue]Adding dataset:[/bold blue] {dataset}")
-    console.print(f"[bold blue]Table identifier:[/bold blue] {identifier_str}\n")
+    console.print(f"[bold blue]Adding dataset:[/bold blue] {dataset}")
+    console.print(f"[bold blue]Table identifier:[/bold blue] {name}\n")
 
     # Add with live progress display
-    with progress(identifier_str, console) as progress_callback:
+    with progress_bars(config, console, [identifier]) as progress_callback:
         table = catalog.add_dataset(
             identifier=identifier,
             repo=dataset,
@@ -87,11 +85,14 @@ def add(ctx, dataset, table, config):
         )
 
     # Display summary
-    console.print(f"\n[green]✓ Added {table} to catalog[/green]")
+    console.print(f"\n[green]✓ Added {name} to catalog[/green]")
     console.print(f"  Dataset: {dataset}")
     console.print(f"  Config: {config}")
     console.print(f"  Location: {table.metadata_location}")
 
+    # Display table schema
+    console.print("\n[bold blue]Table schema:[/bold blue]")
+    console.print(table)
 
 
 @main.command()
@@ -177,7 +178,6 @@ def init(ctx, config_path):
         # Display summary of tables added
         pass
 
-
     # Display additional info for remote catalogs
     if is_remote:
         if catalog.hf_repo_type == "space":
@@ -211,7 +211,6 @@ def list_tables(ctx):
 
     console.print(f"[bold blue]Catalog:[/bold blue] {catalog.uri}\n")
     console.print(rendered)
-
 
 
 @main.command()

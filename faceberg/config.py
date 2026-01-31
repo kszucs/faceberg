@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Union
 
 import yaml
-import rich
 
 # =============================================================================
 # Base Node Class
@@ -59,8 +58,6 @@ class Node:
             return Namespace({k: cls.from_dict(v) for k, v in data.items()})
         else:
             raise ValueError(f"Unknown node type: {typ}")
-
-
 
 
 # =============================================================================
@@ -159,6 +156,7 @@ class Namespace(Node, dict):
                 return node
             else:
                 return None
+
         return self.dfs(finder)
 
     def datasets(self):

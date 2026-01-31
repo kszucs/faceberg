@@ -104,9 +104,7 @@ class IcebergMetadataWriter:
 
         # Step 1: Read file metadata from HuggingFace Hub
         enriched_files = self._read_file_metadata(
-            file_infos,
-            progress_callback=progress_callback,
-            identifier=identifier
+            file_infos, progress_callback=progress_callback, identifier=identifier
         )
 
         # Step 2: Create DataFile entries

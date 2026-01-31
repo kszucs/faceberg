@@ -11,7 +11,6 @@ from rich.tree import Tree
 
 from . import config as cfg
 
-
 StateKind = Literal["pending", "in_progress", "complete", "up_to_date", "needs_update"]
 
 _state_icons = {
@@ -77,21 +76,17 @@ def tree(config: cfg.Config, states: dict[tuple, TableState] = None):
 
 
 @singledispatch
-def node(
-    ns: cfg.Namespace,
-    path: tuple,
-    parent: Tree,
-    states: dict[tuple, TableState]
-) -> Tree:
+def node(ns: cfg.Namespace, path: tuple, parent: Tree, states: dict[tuple, TableState]) -> Tree:
     """Format and build tree for Namespace nodes."""
     name = path[-1]
-    metadata = f" [dim](namespace)[/dim]"
+    metadata = " [dim](namespace)[/dim]"
     label = f"[cyan]{name}[/cyan]{metadata}"
     tree = parent.add(label)
 
     # Recursively add children
     for name, child in ns.items():
         node(child, path + (name,), tree, states)
+
 
 @node.register(cfg.Table)
 @node.register(cfg.Dataset)
@@ -100,14 +95,14 @@ def node_leaf(
     node: cfg.Table | cfg.Dataset | cfg.View,
     path: tuple,
     parent: Tree,
-    states: dict[tuple, TableState]
+    states: dict[tuple, TableState],
 ) -> Tree:
     """Format and build tree for Table, Dataset, and View nodes."""
     name = path[-1]
 
     # Build label based on node type
     if isinstance(node, cfg.Table):
-        metadata = f" [dim](table)[/dim]"
+        metadata = " [dim](table)[/dim]"
         label = f"[green]{name}[/green]{metadata}"
     elif isinstance(node, cfg.Dataset):
         metadata = f" [dim](dataset: {node.repo})[/dim]"

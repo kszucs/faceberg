@@ -933,7 +933,7 @@ class BaseCatalog(Catalog):
         identifier: Union[str, Identifier],
         repo: str,
         config: str = "default",
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
     ) -> Table:
         """Add a dataset to the catalog and create the Iceberg table.
 
@@ -977,7 +977,9 @@ class BaseCatalog(Catalog):
 
         # Discover dataset
         if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=10, stage="Discovering dataset")
+            progress_callback(
+                identifier, state="in_progress", percent=10, stage="Discovering dataset"
+            )
 
         dataset_info = DatasetInfo.discover(
             repo_id=repo,
@@ -987,7 +989,9 @@ class BaseCatalog(Catalog):
 
         # Convert to TableInfo
         if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=30, stage="Converting schema")
+            progress_callback(
+                identifier, state="in_progress", percent=30, stage="Converting schema"
+            )
 
         # TODO(kszucs): support nested namespace, pass identifier to to_table_info
         namespace, table_name = identifier
@@ -1000,7 +1004,9 @@ class BaseCatalog(Catalog):
 
         # Create the table with full metadata in staging context
         if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=50, stage="Writing Iceberg metadata")
+            progress_callback(
+                identifier, state="in_progress", percent=50, stage="Writing Iceberg metadata"
+            )
 
         with self._staging() as staging:
             # Define table directory in the staging area
@@ -1060,9 +1066,7 @@ class BaseCatalog(Catalog):
         return table
 
     def sync_dataset(
-        self,
-        identifier: Union[str, Identifier],
-        progress_callback: Optional[Callable] = None
+        self, identifier: Union[str, Identifier], progress_callback: Optional[Callable] = None
     ) -> Table:
         """Sync a single dataset table by adding or updating it.
 
@@ -1118,7 +1122,7 @@ class BaseCatalog(Catalog):
                 identifier,
                 table_entry.repo,
                 table_entry.config,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
             )
 
         # Update existing table with new snapshot
@@ -1145,7 +1149,9 @@ class BaseCatalog(Catalog):
         if old_revision == dataset_info.revision:
             logger.info(f"Table {identifier} already at revision {old_revision}")
             if progress_callback:
-                progress_callback(identifier, state="up_to_date", percent=100, stage="Already up to date")
+                progress_callback(
+                    identifier, state="up_to_date", percent=100, stage="Already up to date"
+                )
             return table
 
         # Get only new files since old revision (incremental update)
