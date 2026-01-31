@@ -7,7 +7,7 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Set, Union
 from urllib.parse import urlparse
 
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi, HfFileSystem
@@ -31,9 +31,9 @@ from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.table.update import update_table_metadata
 from pyiceberg.typedef import EMPTY_DICT, Properties
 
-import faceberg.config as cfg
-from faceberg.bridge import DatasetInfo
-from faceberg.convert import IcebergMetadataWriter
+from . import config as cfg
+from .bridge import DatasetInfo
+from .convert import IcebergMetadataWriter
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -909,7 +909,7 @@ class BaseCatalog(Catalog):
     # Faceberg-specific Methods (dataset synchronization)
     # =========================================================================
 
-    def sync_datasets(self) -> List[Table]:
+    def sync_datasets(self, progress_callback=None) -> List[Table]:
         """Sync all Iceberg tables with HuggingFace datasets in config.
 
         Discovers datasets and either creates new tables or updates existing ones
@@ -922,15 +922,18 @@ class BaseCatalog(Catalog):
         config = self.config()
 
         tables = []
-        for identifier, table in config.traverse():
-            if isinstance(table, cfg.Dataset):
-                table = self.sync_dataset(identifier)
-                tables.append(table)
+        for identifier in config.datasets():
+            table = self.sync_dataset(identifier, progress_callback=progress_callback)
+            tables.append(table)
 
         return tables
 
     def add_dataset(
-        self, identifier: Union[str, Identifier], repo: str, config: str = "default"
+        self,
+        identifier: Union[str, Identifier],
+        repo: str,
+        config: str = "default",
+        progress_callback: Optional[Callable] = None
     ) -> Table:
         """Add a dataset to the catalog and create the Iceberg table.
 
@@ -941,6 +944,7 @@ class BaseCatalog(Catalog):
             identifier: Table identifier in format "namespace.table"
             repo: HuggingFace dataset repository in format "org/repo"
             config: Dataset configuration name (default: "default")
+            progress_callback: Optional callback function(identifier, state, progress, error)
 
         Returns:
             Created Table object
@@ -950,6 +954,11 @@ class BaseCatalog(Catalog):
             TableAlreadyExistsError: If table already exists with metadata
         """
         identifier = Identifier(identifier)
+
+        # Notify start of add
+        if progress_callback:
+            progress_callback(identifier, state="in_progress", percent=0)
+
         catalog_config = self.config()
 
         if identifier in catalog_config:
@@ -1028,9 +1037,19 @@ class BaseCatalog(Catalog):
                 staging.add("faceberg.yml")
 
         # Load and return table after persistence
-        return self.load_table(identifier)
+        table = self.load_table(identifier)
 
-    def sync_dataset(self, identifier: Union[str, Identifier]) -> Table:
+        # Notify completion
+        if progress_callback:
+            progress_callback(identifier, state="complete", percent=100)
+
+        return table
+
+    def sync_dataset(
+        self,
+        identifier: Union[str, Identifier],
+        progress_callback: Optional[Callable] = None
+    ) -> Table:
         """Sync a single dataset table by adding or updating it.
 
         Reads dataset and config information from the catalog configuration,
@@ -1039,6 +1058,7 @@ class BaseCatalog(Catalog):
 
         Args:
             identifier: Table identifier in format "namespace.table"
+            progress_callback: Optional callback function(identifier, state, progress, error)
 
         Returns:
             Synced Table object (created or updated)
@@ -1048,6 +1068,10 @@ class BaseCatalog(Catalog):
         """
         identifier = Identifier(identifier)
 
+        # Notify start of sync
+        if progress_callback:
+            progress_callback(identifier, state="in_progress", percent=0)
+
         # Load config to get dataset info
         config = self.config()
 
@@ -1055,7 +1079,10 @@ class BaseCatalog(Catalog):
         try:
             table_entry = config[identifier]
         except KeyError:
-            raise ValueError(f"Table {identifier} not found in config")
+            raise ValueError(f"Table `{identifier}` not found in config")
+
+        if not isinstance(table_entry, cfg.Dataset):
+            raise ValueError(f"Table `{identifier}` is not a dataset entry in config")
 
         # Check if table has been synced (has metadata files)
         table_uri = self.uri / identifier.path
@@ -1073,7 +1100,12 @@ class BaseCatalog(Catalog):
         if not has_metadata:
             # First sync - call add_dataset which will create metadata
             # (add_dataset is now smart enough to handle existing config entries)
-            return self.add_dataset(identifier, table_entry.repo, table_entry.config)
+            return self.add_dataset(
+                identifier,
+                table_entry.repo,
+                table_entry.config,
+                progress_callback=progress_callback
+            )
 
         # Update existing table with new snapshot
         # Load table first to get old revision
@@ -1090,7 +1122,7 @@ class BaseCatalog(Catalog):
 
         # Discover dataset at current revision
         dataset_info = DatasetInfo.discover(
-            repo_id=table_entry.dataset,
+            repo_id=table_entry.repo,
             configs=[table_entry.config],
             token=self._hf_token,
         )
@@ -1098,6 +1130,8 @@ class BaseCatalog(Catalog):
         # Check if already up to date
         if old_revision == dataset_info.revision:
             logger.info(f"Table {identifier} already at revision {old_revision}")
+            if progress_callback:
+                progress_callback(identifier, state="up_to_date", percent=100)
             return table
 
         # Get only new files since old revision (incremental update)
@@ -1147,7 +1181,13 @@ class BaseCatalog(Catalog):
             # Note: No need to save config since table entry hasn't changed
 
         # Load and return table after persistence
-        return self.load_table(identifier)
+        table = self.load_table(identifier)
+
+        # Notify completion
+        if progress_callback:
+            progress_callback(identifier, state="complete", percent=100)
+
+        return table
 
 
 class LocalCatalog(BaseCatalog):
@@ -1403,6 +1443,16 @@ class RemoteCatalog(BaseCatalog):
                     f"Initialize the catalog first by calling catalog.init()"
                 ) from e
             raise
+
+    @property
+    def hf_repo(self) -> str:
+        """HuggingFace repository ID."""
+        return self._hf_repo
+
+    @property
+    def hf_repo_type(self) -> str:
+        """HuggingFace repository type."""
+        return self._hf_repo_type
 
 
 def catalog(

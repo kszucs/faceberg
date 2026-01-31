@@ -216,3 +216,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 testing/
+
+# Git worktrees
+.worktrees/

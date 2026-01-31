@@ -844,3 +844,49 @@ class TestLocalCatalogWrite:
         # Verify LocationProvider is configured
         provider = table.location_provider()
         assert isinstance(provider, HfLocationProvider)
+
+
+def test_sync_dataset_with_progress_callback(tmp_path):
+    """Test sync_dataset with progress callback."""
+    from faceberg.catalog import LocalCatalog
+    from faceberg import config as cfg
+    from faceberg.pretty import TableState
+    
+    # Create catalog
+    catalog_dir = tmp_path / "test_catalog"
+    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
+    catalog.init()
+    
+    # Add a dataset to config
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["test_dataset"] = cfg.Dataset(
+        repo="imdb", 
+        config="plain_text"
+    )
+    config.to_yaml(catalog_dir / "faceberg.yml")
+    
+    # Track progress callback calls
+    progress_calls = []
+    
+    def progress_callback(identifier, state, progress=None, error=None):
+        progress_calls.append({
+            "identifier": identifier,
+            "state": state,
+            "progress": progress,
+            "error": error
+        })
+    
+    # Sync dataset with progress callback
+    try:
+        catalog.sync_dataset(
+            identifier="default.test_dataset",
+            progress_callback=progress_callback
+        )
+    except Exception:
+        # Sync might fail due to missing HF token, but we're testing the callback
+        pass
+    
+    # Verify callback was called with IN_PROGRESS state
+    assert len(progress_calls) > 0
+    assert any(call["state"] == TableState.IN_PROGRESS for call in progress_calls)

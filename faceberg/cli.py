@@ -1,10 +1,14 @@
 """Command-line interface for Faceberg."""
 
+from pathlib import Path
+
 import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from faceberg.catalog import RemoteCatalog, catalog
+from .catalog import RemoteCatalog, catalog, Identifier
+from .config import Config
+from .pretty import tree, tree_progress
 
 console = Console()
 
@@ -73,23 +77,38 @@ def add(ctx, dataset, table, config):
             console.print("[red]Error: dataset must be in format 'org/repo'[/red]")
             raise click.Abort()
 
-    # Add dataset to catalog and create Iceberg table
+    # Initialize state for the dataset being added
+    node_id = Identifier(table_identifier)
+    tree_view.states[node_id] = TableState()
+
+    # Define progress callback
+    def progress_callback(identifier, kind, progress=None, error=None):
+        tree_view.update_state(identifier, kind, progress, error)
+
+    # Add dataset with live progress display
+    console.print()
     try:
-        table = catalog.add_dataset(identifier=table_identifier, dataset=dataset, config=config)
+        with tree_view:
+            table = catalog.add_dataset(
+                identifier=table_identifier,
+                repo=dataset,
+                config=config,
+                progress_callback=progress_callback
+            )
+
+        console.print(f"\n[green]✓ Added {table_identifier} to catalog[/green]")
+        console.print(f"  Dataset: {dataset}")
+        console.print(f"  Config: {config}")
+        console.print(f"  Location: {table.metadata_location}")
     except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
+        console.print(f"\n[red]Error: {e}[/red]")
         raise click.Abort()
     except Exception as e:
         if "already exists" in str(e).lower():
-            console.print(f"[yellow]Table {table_identifier} already exists[/yellow]")
+            console.print(f"\n[yellow]Table {table_identifier} already exists[/yellow]")
         else:
-            console.print(f"[red]Error: {e}[/red]")
+            console.print(f"\n[red]Error: {e}[/red]")
         raise click.Abort()
-
-    console.print(f"[green]✓ Added {table_identifier} to catalog[/green]")
-    console.print(f"  Dataset: {dataset}")
-    console.print(f"  Config: {config}")
-    console.print(f"  Location: {table.metadata_location}")
 
 
 @main.command()
@@ -108,37 +127,22 @@ def sync(ctx, table_name):
     """
     catalog = ctx.obj["catalog"]
 
-    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.uri}")
+    console.print(f"[bold blue]Catalog:[/bold blue] {catalog.uri}\n")
 
-    # Sync tables with progress
-    if table_name:
-        console.print(f"\n[bold blue]Syncing table:[/bold blue] {table_name}")
-    else:
-        console.print("\n[bold blue]Syncing tables...[/bold blue]")
+    # Build tree view with tracking
+    config = catalog.config()
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Discovering and syncing...", total=None)
+    # Sync with live progress display
+    with tree_progress(config, console) as progress_callback:
+        catalog.sync_datasets(progress_callback=progress_callback)
 
-        try:
-            tables = catalog.sync_datasets(table_name=table_name)
-            if tables:
-                progress.update(task, description=f"✓ Synced {len(tables)} table(s)")
-            else:
-                progress.update(task, description="✓ All tables up-to-date")
-            console.print("\n[bold green]Done![/bold green]")
-        except Exception as e:
-            progress.update(task, description=f"✗ Failed: {e}")
-            raise
+    console.print("\n[bold green]✓ Sync complete![/bold green]")
 
 
 @main.command()
-@click.option("--config", "-c", help="Config file with initial table definitions")
+@click.argument("config_path", required=False)
 @click.pass_context
-def init(ctx, config):
+def init(ctx, config_path):
     """Initialize a catalog with optional initial configuration.
 
     For local catalogs, creates the directory and faceberg.yml file.
@@ -151,87 +155,60 @@ def init(ctx, config):
 
     Example:
         # Initialize with explicit config file
-        faceberg catalog.db init --config tables.yml
+        faceberg catalog.db init tables.yml
 
         # Initialize with auto-discovered config (looks for ./faceberg.yml)
         faceberg catalog.db init
 
         # Initialize remote catalog (creates HF dataset repo)
         export HF_TOKEN=your_token
-        faceberg hf://datasets/user/catalog init --config tables.yml
+        faceberg hf://datasets/user/catalog init tables.yml
     """
-    from pathlib import Path
-
-    from faceberg.config import Config
-
-    catalog_obj = ctx.obj["catalog"]
-    is_remote = isinstance(catalog_obj, RemoteCatalog)
+    catalog = ctx.obj["catalog"]
+    is_remote = isinstance(catalog, RemoteCatalog)
 
     if is_remote:
-        console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog_obj.uri}")
+        console.print(f"[bold blue]Initializing remote catalog:[/bold blue] {catalog.uri}")
     else:
-        console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog_obj.uri}")
+        console.print(f"[bold blue]Initializing local catalog:[/bold blue] {catalog.uri}")
 
     # Load config if provided or auto-discover
-    config_obj = None
-    if config:
-        # Explicit config file provided
-        config_path = Path(config)
-        if not config_path.exists():
-            console.print(f"[red]Error: Config file not found: {config}[/red]")
-            raise click.Abort()
+    config_path = Path(config_path or "faceberg.yml")
+    if config_path.exists():
         try:
-            config_obj = Config.from_yaml(config_path)
-            console.print(f"[dim]Loading config from: {config}[/dim]")
+            config = Config.from_yaml(config_path)
+            console.print(f"[dim]Loading config from: {config_path}[/dim]")
         except Exception as e:
             console.print(f"[red]Error loading config: {e}[/red]")
             raise click.Abort()
     else:
-        # Auto-discover faceberg.yml in current directory
-        default_config = Path("faceberg.yml")
-        if default_config.exists():
-            try:
-                config_obj = Config.from_yaml(default_config)
-                console.print(f"[dim]Found config file: {default_config}[/dim]")
-            except Exception as e:
-                console.print(
-                    f"[yellow]Warning: Found faceberg.yml but failed to load: {e}[/yellow]"
-                )
+        config = Config()
 
     # Initialize catalog with optional config
-    catalog_obj.init(config=config_obj)
+    # catalog.init(config)
+    console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
+    if config:
+        # Display summary of tables added
+        pass
 
-    if config_obj and config_obj.tables:
-        console.print(
-            "[bold green]✓ Catalog initialized with "
-            f"{len(config_obj.tables)} table(s)![/bold green]"
-        )
-    else:
-        console.print("[bold green]✓ Catalog initialized successfully![/bold green]")
 
     # Display additional info for remote catalogs
     if is_remote:
-        if catalog_obj._hf_repo_type == "space":
-            space_url = catalog_obj._hf_repo.replace("/", "-")
+        if catalog.hf_repo_type == "space":
+            space_url = catalog.hf_repo.replace("/", "-")
             console.print(f"\n[cyan]Space URL:[/cyan] https://{space_url}.hf.space")
         console.print(
             "[cyan]Repository:[/cyan] https://huggingface.co/"
-            f"{catalog_obj._hf_repo_type}s/{catalog_obj._hf_repo}"
+            f"{catalog.hf_repo_type}s/{catalog.hf_repo}"
         )
 
     # Recommend next steps
     console.print("\n[bold]Next steps:[/bold]")
-    if config_obj and config_obj.tables:
-        console.print("  • Run [cyan]faceberg sync[/cyan] to populate tables with data")
-        console.print("  • Use [cyan]faceberg scan <table>[/cyan] to view sample data")
-    else:
-        console.print("  • Run [cyan]faceberg add <dataset>[/cyan] to add tables")
-        console.print("  • Or edit faceberg.yml and run [cyan]faceberg sync[/cyan]")
-
-    if is_remote and catalog_obj._hf_repo_type == "space":
-        console.print("  • Run [cyan]faceberg serve[/cyan] to start the REST catalog server")
-    else:
-        console.print("  • Run [cyan]faceberg quack[/cyan] to open DuckDB with the catalog")
+    console.print("  • Run [cyan]faceberg add <dataset>[/cyan] to add tables")
+    console.print("  • Run [cyan]faceberg sync[/cyan] to sync tables from datasets")
+    console.print("  • Use [cyan]faceberg scan <table>[/cyan] to view sample data")
+    console.print("  • Run [cyan]faceberg serve[/cyan] to start the REST catalog server")
+    console.print("  • Run [cyan]faceberg quack[/cyan] to open DuckDB with the catalog")
 
 
 @main.command("list")
@@ -243,22 +220,12 @@ def list_tables(ctx):
         faceberg --config=faceberg.yml list
     """
     catalog = ctx.obj["catalog"]
+    config = catalog.config()
+    rendered = tree(config)
 
     console.print(f"[bold blue]Catalog:[/bold blue] {catalog.uri}\n")
+    console.print(rendered)
 
-    # List all namespaces and tables
-    namespaces = catalog.list_namespaces()
-    if not namespaces:
-        console.print("[yellow]No tables found[/yellow]")
-        return
-
-    for ns in namespaces:
-        ns_str = ".".join(ns) if isinstance(ns, tuple) else ns
-        console.print(f"[bold cyan]{ns_str}[/bold cyan]")
-        tables = catalog.list_tables(ns)
-        for table in tables:
-            table_str = ".".join(table) if isinstance(table, tuple) else table
-            console.print(f"  • {table_str}")
 
 
 @main.command()

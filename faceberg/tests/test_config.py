@@ -61,6 +61,14 @@ def test_config(sample_config):
     cfg[("ns1", "table1")].repo = "org/updated_dataset1"
     assert cfg[("ns1", "table1")].repo == "org/updated_dataset1"
 
+    # Check datasets() method
+    datasets = cfg.datasets()
+    assert datasets == {
+        ("ns1", "table1"): cfg[("ns1", "table1")],
+        ("ns1", "table2"): cfg[("ns1", "table2")],
+        ("ns3", "subns1", "table3"): cfg[("ns3", "subns1", "table3")],
+    }
+
 
 def test_config_root(sample_config):
     cfg = Config.from_dict(sample_config)

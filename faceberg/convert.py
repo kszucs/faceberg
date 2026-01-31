@@ -33,7 +33,7 @@ from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
 from pyiceberg.transforms import IdentityTransform
 
 # Import FileInfo (created by bridge layer)
-from faceberg.bridge import FileInfo
+from .bridge import FileInfo
 
 logger = logging.getLogger(__name__)
 

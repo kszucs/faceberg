@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Union
 
 import yaml
+import rich
 
 # =============================================================================
 # Base Node Class
@@ -58,6 +59,8 @@ class Node:
             return Namespace({k: cls.from_dict(v) for k, v in data.items()})
         else:
             raise ValueError(f"Unknown node type: {typ}")
+
+
 
 
 # =============================================================================
@@ -135,18 +138,37 @@ class Namespace(Node, dict):
         except KeyError:
             return False
 
-    def traverse(self):
-        """Generator to traverse all nodes in the namespace.
+    def dfs(self, func):
+        queue = [((), self)]
 
-        Yields:
-            Tuple of (full_path, node) for each node in the namespace.
-        """
-        for name, node in self.items():
+        results = {}
+        while queue:
+            path, node = queue.pop(0)
+            ret_val = func(path, node)
+            if ret_val is not None:
+                results[path] = ret_val
             if isinstance(node, Namespace):
-                for sub_path, sub_node in node.traverse():
-                    yield (name,) + sub_path, sub_node
+                for name, child in node.items():
+                    queue.append((path + (name,), child))
+
+        return results
+
+    def _leaves(self, type_):
+        def finder(path, node):
+            if isinstance(node, type_):
+                return node
             else:
-                yield (name,), node
+                return None
+        return self.dfs(finder)
+
+    def datasets(self):
+        return self._leaves(Dataset)
+
+    def tables(self):
+        return self._leaves(Table)
+
+    def views(self):
+        return self._leaves(View)
 
     def to_yaml(self, path: Union[str, Path]) -> None:
         """Write config to YAML file.
