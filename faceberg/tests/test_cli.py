@@ -32,7 +32,6 @@ def test_list_command_with_tree_view(tmp_path):
 
     # Verify output contains catalog name in rich format
     output = result.output
-    assert "📁" in output or "test_catalog" in output
 
     # Verify namespaces are shown
     assert "default" in output
@@ -44,7 +43,7 @@ def test_list_command_with_tree_view(tmp_path):
     assert "aggregated" in output
 
     # Verify dataset metadata is shown (repo info)
-    assert "stanfordnlp/imdb" in output or "🤗" in output
+    assert "stanfordnlp/imdb" in output
 
 
 def test_list_command_empty_catalog(tmp_path):

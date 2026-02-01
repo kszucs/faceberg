@@ -985,9 +985,7 @@ class BaseCatalog(Catalog):
 
         # Convert to TableInfo
         if progress_callback:
-            progress_callback(
-                identifier, state="in_progress", percent=0, stage="Converting schema"
-            )
+            progress_callback(identifier, state="in_progress", percent=0, stage="Converting schema")
 
         # TODO(kszucs): support nested namespace, pass identifier to to_table_info
         namespace, table_name = identifier

@@ -1,32 +1,15 @@
 """Faceberg - Bridge between HuggingFace datasets and Apache Iceberg tables."""
 
-from faceberg.bridge import (
-    DatasetInfo,
-    FileInfo,
-    TableInfo,
-    build_iceberg_schema_from_features,
-    build_split_partition_spec,
-)
-from faceberg.catalog import FacebergCatalog, HfFileIO, LocalCatalog, RemoteCatalog
-from faceberg.config import Config, Table
-from faceberg.convert import IcebergMetadataWriter
+from faceberg.catalog import HfFileIO, LocalCatalog, RemoteCatalog, catalog
+from faceberg.config import Config
 
 __all__ = [
     # Catalog
-    "FacebergCatalog",
+    "catalog",
     "LocalCatalog",
     "RemoteCatalog",
     # Config
     "Config",
-    "Table",
-    # Bridge (discovery + schema conversion + TableInfo output)
-    "DatasetInfo",
-    "FileInfo",
-    "TableInfo",
-    "build_iceberg_schema_from_features",
-    "build_split_partition_spec",
-    # Convert (Iceberg metadata writer)
-    "IcebergMetadataWriter",
     # IO (FileIO implementations)
     "HfFileIO",
 ]

@@ -850,7 +850,6 @@ def test_sync_dataset_with_progress_callback(tmp_path):
     """Test sync_dataset with progress callback."""
     from faceberg import config as cfg
     from faceberg.catalog import LocalCatalog
-    from faceberg.pretty import TableState
 
     # Create catalog
     catalog_dir = tmp_path / "test_catalog"
@@ -866,9 +865,9 @@ def test_sync_dataset_with_progress_callback(tmp_path):
     # Track progress callback calls
     progress_calls = []
 
-    def progress_callback(identifier, state, progress=None, error=None):
+    def progress_callback(identifier, state, percent=None, stage=None):
         progress_calls.append(
-            {"identifier": identifier, "state": state, "progress": progress, "error": error}
+            {"identifier": identifier, "state": state, "percent": percent, "stage": stage}
         )
 
     # Sync dataset with progress callback
@@ -878,6 +877,6 @@ def test_sync_dataset_with_progress_callback(tmp_path):
         # Sync might fail due to missing HF token, but we're testing the callback
         pass
 
-    # Verify callback was called with IN_PROGRESS state
+    # Verify callback was called with in_progress state
     assert len(progress_calls) > 0
-    assert any(call["state"] == TableState.IN_PROGRESS for call in progress_calls)
+    assert any(call["state"] == "in_progress" for call in progress_calls)

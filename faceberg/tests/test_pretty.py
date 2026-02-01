@@ -5,285 +5,362 @@ from rich.console import Console
 from rich.tree import Tree
 
 from faceberg import config as cfg
-from faceberg.catalog import Identifier, LocalCatalog
-from faceberg.pretty import CatalogTreeView, StateKind, TableState, tree
-
-
-def test_state_kind_has_correct_values():
-    """Test that StateKind enum has correct icon and color attributes."""
-    assert StateKind.PENDING.icon == "⏳"
-    assert StateKind.PENDING.color == "dim white"
-
-    assert StateKind.IN_PROGRESS.icon == "▶️"
-    assert StateKind.IN_PROGRESS.color == "yellow"
-
-    assert StateKind.COMPLETE.icon == "✓"
-    assert StateKind.COMPLETE.color == "green"
-
-    assert StateKind.UP_TO_DATE.icon == "✓"
-    assert StateKind.UP_TO_DATE.color == "dim green"
-
-    assert StateKind.FAILED.icon == "✗"
-    assert StateKind.FAILED.color == "red"
-
-    assert StateKind.NEEDS_UPDATE.icon == "↻"
-    assert StateKind.NEEDS_UPDATE.color == "blue"
+from faceberg.pretty import TableState, node, progress_bars, progress_tree, tree
 
 
 def test_table_state_creation():
     """Test TableState dataclass creation with defaults."""
     state = TableState()
 
-    assert state.kind == StateKind.PENDING
+    assert state.kind == "pending"
     assert state.progress is None
     assert state.error is None
 
 
 def test_table_state_with_all_fields():
     """Test TableState with all fields specified."""
-    state = TableState(kind=StateKind.IN_PROGRESS, progress=50, error="test error")
+    state = TableState(kind="in_progress", progress=50, error="test error")
 
-    assert state.kind == StateKind.IN_PROGRESS
+    assert state.kind == "in_progress"
     assert state.progress == 50
     assert state.error == "test error"
 
 
-def test_tree_namespace_node():
-    """Test tree building for namespace node."""
-    identifier = Identifier("myns")
-    node = cfg.Namespace()
-
-    result = tree(node, identifier, None, {})
-
-    assert isinstance(result, Tree)
-    label_str = str(result.label)
-    assert "🗂️" in label_str
-    assert "myns" in label_str
-    assert "[cyan]" in label_str
+def test_table_state_icon_property():
+    """Test that TableState.icon returns correct icons for different states."""
+    assert TableState(kind="pending").icon == "⏳"
+    assert TableState(kind="in_progress").icon == "▶️"
+    assert TableState(kind="complete").icon == "✓"
+    assert TableState(kind="up_to_date").icon == "✓"
+    assert TableState(kind="needs_update").icon == "↻"
 
 
-def test_tree_dataset_node():
-    """Test tree building for dataset node with metadata."""
-    identifier = Identifier(("default", "imdb"))
-    node = cfg.Dataset(repo="stanfordnlp/imdb", config="plain_text")
-
-    result = tree(node, identifier, None, {})
-
-    assert isinstance(result, Tree)
-    label_str = str(result.label)
-    assert "🤗" in label_str
-    assert "imdb" in label_str
-    assert "stanfordnlp/imdb" in label_str
-    assert "[yellow]" in label_str
+def test_table_state_color_property():
+    """Test that TableState.color returns correct colors for different states."""
+    assert TableState(kind="pending").color == "dim white"
+    assert TableState(kind="in_progress").color == "yellow"
+    assert TableState(kind="complete").color == "green"
+    assert TableState(kind="up_to_date").color == "dim green"
+    assert TableState(kind="needs_update").color == "blue"
 
 
-def test_tree_view_node():
-    """Test tree building for view node with query snippet."""
-    identifier = Identifier(("default", "my_view"))
-    node = cfg.View(query="SELECT * FROM table WHERE condition = true")
-
-    result = tree(node, identifier, None, {})
+def test_tree_empty_config():
+    """Test tree building with empty config."""
+    config = cfg.Config()
+    result = tree(config)
 
     assert isinstance(result, Tree)
-    label_str = str(result.label)
-    assert "👁️" in label_str
-    assert "my_view" in label_str
-    assert "SELECT" in label_str
-    assert "[blue]" in label_str
+    assert result.hide_root is True
 
 
-def test_tree_table_node():
-    """Test tree building for table node."""
-    identifier = Identifier(("default", "my_table"))
-    node = cfg.Table()
-
-    result = tree(node, identifier, None, {})
-
-    assert isinstance(result, Tree)
-    label_str = str(result.label)
-    assert "📊" in label_str
-    assert "my_table" in label_str
-    assert "[green]" in label_str
-
-
-def test_tree_dataset_with_state():
-    """Test tree building for dataset node with state tracking."""
-    identifier = Identifier(("default", "test"))
-    node = cfg.Dataset(repo="org/repo", config="default")
-    state = TableState(kind=StateKind.IN_PROGRESS, progress=45)
-    states = {identifier: state}
-
-    result = tree(node, identifier, None, states)
-
-    assert isinstance(result, Tree)
-    label_str = str(result.label)
-    assert "▶️" in label_str  # In progress icon
-    assert "[45%]" in label_str  # Progress percentage
-
-
-def test_tree_dataset_with_error():
-    """Test tree building for dataset node with error state."""
-    identifier = Identifier(("default", "failed"))
-    node = cfg.Dataset(repo="org/repo", config="default")
-    state = TableState(kind=StateKind.FAILED, error="Connection timeout")
-    states = {identifier: state}
-
-    # Need a parent to see error messages
-    parent = Tree("root")
-    tree(node, identifier, parent, states)
-
-    # Check that error was added
-    assert len(parent.children) > 0
-    # The first child should be the node
-    child = parent.children[0]
-    label_str = str(child.label)
-    assert "✗" in label_str  # Failed icon
-
-
-def test_catalog_tree_view_initialization(tmp_path):
-    """Test CatalogTreeView initialization."""
-    catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
-    catalog.init()
-
-    tree_view = CatalogTreeView(catalog)
-
-    assert tree_view.catalog == catalog
-    assert tree_view.states == {}
-    assert tree_view.config is not None
-
-
-def test_build_tree_empty_catalog(tmp_path):
-    """Test building tree from empty catalog."""
-    catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
-    catalog.init()
-
-    tree_view = CatalogTreeView(catalog)
-    root_label = f"[bold cyan]📁 {catalog.name}[/bold cyan]"
-    root = tree(tree_view.config, Identifier(()), None, tree_view.states, root_label)
-
-    assert isinstance(root, Tree)
-    assert "test" in str(root.label)
-
-
-def test_build_tree_with_namespace_and_dataset(tmp_path):
-    """Test building tree with namespace and dataset."""
-    catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
-    catalog.init()
-
-    # Create config with namespace and dataset
+def test_tree_with_namespace():
+    """Test tree building with namespace."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
-    config["default"]["test_table"] = cfg.Dataset(repo="org/repo", config="default")
 
-    # Save config manually
-    config.to_yaml(catalog_dir / "faceberg.yml")
+    result = tree(config)
 
-    tree_view = CatalogTreeView(catalog)
-    root_label = f"[bold cyan]📁 {catalog.name}[/bold cyan]"
-    root = tree(tree_view.config, Identifier(()), None, tree_view.states, root_label)
+    assert isinstance(result, Tree)
+    # Should have one child (the namespace)
+    assert len(result.children) == 1
+    label_str = str(result.children[0].label)
+    assert "default" in label_str
+    assert "cyan" in label_str
+    assert "namespace" in label_str
 
-    # Verify tree structure by rendering to string
+
+def test_tree_with_table():
+    """Test tree building with table node."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["my_table"] = cfg.Table()
+
+    result = tree(config)
+
+    assert isinstance(result, Tree)
+    # Navigate to the table node
+    namespace_node = result.children[0]
+    assert len(namespace_node.children) == 1
+    table_label = str(namespace_node.children[0].label)
+    assert "my_table" in table_label
+    assert "green" in table_label
+    assert "table" in table_label
+
+
+def test_tree_with_dataset():
+    """Test tree building with dataset node."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["imdb"] = cfg.Dataset(repo="stanfordnlp/imdb", config="plain_text")
+
+    result = tree(config)
+
+    assert isinstance(result, Tree)
+    namespace_node = result.children[0]
+    dataset_label = str(namespace_node.children[0].label)
+    assert "imdb" in dataset_label
+    assert "stanfordnlp/imdb" in dataset_label
+    assert "yellow" in dataset_label
+    assert "dataset" in dataset_label
+
+
+def test_tree_with_view():
+    """Test tree building with view node."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["my_view"] = cfg.View(query="SELECT * FROM table WHERE condition = true")
+
+    result = tree(config)
+
+    assert isinstance(result, Tree)
+    namespace_node = result.children[0]
+    view_label = str(namespace_node.children[0].label)
+    assert "my_view" in view_label
+    assert "SELECT" in view_label
+    assert "blue" in view_label
+    assert "view" in view_label
+
+
+def test_tree_with_states():
+    """Test tree building with state tracking."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["test_table"] = cfg.Table()
+
+    states = {("default", "test_table"): TableState(kind="in_progress", progress=50)}
+
+    result = tree(config, states)
+
+    assert isinstance(result, Tree)
+    namespace_node = result.children[0]
+    table_label = str(namespace_node.children[0].label)
+    assert "▶️" in table_label  # In progress icon
+    assert "yellow" in table_label  # In progress color
+
+
+def test_tree_with_error_state():
+    """Test tree building with error state."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["failed_table"] = cfg.Table()
+
+    states = {("default", "failed_table"): TableState(kind="complete", error="Connection timeout")}
+
+    result = tree(config, states)
+
+    assert isinstance(result, Tree)
+    namespace_node = result.children[0]
+    table_node = namespace_node.children[0]
+    # Error should be added as a child node
+    assert len(table_node.children) == 1
+    error_label = str(table_node.children[0].label)
+    assert "Connection timeout" in error_label
+    assert "red" in error_label
+
+
+def test_node_namespace():
+    """Test node function with namespace."""
+    ns = cfg.Namespace()
+    ns["child_table"] = cfg.Table()
+    parent = Tree("root")
+    states = {}
+
+    node(ns, ("default",), parent, states)
+
+    assert len(parent.children) == 1
+    namespace_label = str(parent.children[0].label)
+    assert "default" in namespace_label
+    assert "cyan" in namespace_label
+    # Should have one child (the table)
+    assert len(parent.children[0].children) == 1
+
+
+def test_node_table():
+    """Test node function with table."""
+    table = cfg.Table()
+    parent = Tree("root")
+    states = {}
+
+    node(table, ("default", "my_table"), parent, states)
+
+    assert len(parent.children) == 1
+    table_label = str(parent.children[0].label)
+    assert "my_table" in table_label
+    assert "green" in table_label
+
+
+def test_node_dataset():
+    """Test node function with dataset."""
+    dataset = cfg.Dataset(repo="org/repo", config="default")
+    parent = Tree("root")
+    states = {}
+
+    node(dataset, ("default", "my_dataset"), parent, states)
+
+    assert len(parent.children) == 1
+    dataset_label = str(parent.children[0].label)
+    assert "my_dataset" in dataset_label
+    assert "org/repo" in dataset_label
+    assert "yellow" in dataset_label
+
+
+def test_node_view():
+    """Test node function with view."""
+    view = cfg.View(query="SELECT * FROM table")
+    parent = Tree("root")
+    states = {}
+
+    node(view, ("default", "my_view"), parent, states)
+
+    assert len(parent.children) == 1
+    view_label = str(parent.children[0].label)
+    assert "my_view" in view_label
+    assert "SELECT" in view_label
+    assert "blue" in view_label
+
+
+def test_node_view_long_query():
+    """Test node function with view that has long query."""
+    long_query = "SELECT * FROM table WHERE condition = true AND another_condition = false"
+    view = cfg.View(query=long_query)
+    parent = Tree("root")
+    states = {}
+
+    node(view, ("default", "my_view"), parent, states)
+
+    assert len(parent.children) == 1
+    view_label = str(parent.children[0].label)
+    # Should truncate query to 30 chars + "..."
+    assert "..." in view_label
+    assert len(long_query) > 30  # Verify our test query is actually long
+
+
+def test_progress_tree_context_manager():
+    """Test progress_tree context manager."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["test_table"] = cfg.Table()
+
     string_io = io.StringIO()
     console = Console(file=string_io, force_terminal=True, width=80)
-    console.print(root)
-    tree_str = string_io.getvalue()
 
-    assert "default" in tree_str
-    assert "test_table" in tree_str
+    with progress_tree(config, console) as updater:
+        # Update state
+        updater(("default", "test_table"), "in_progress", percent=50)
+        time.sleep(0.1)  # Give time for live display to render
 
+        updater(("default", "test_table"), "complete")
+        time.sleep(0.1)
 
-def test_update_state():
-    """Test updating table state."""
-
-    # Create a mock catalog (we'll use a simple approach)
-    class MockCatalog:
-        def __init__(self):
-            self.name = "mock"
-            self._config = cfg.Config()
-
-        def config(self):
-            return self._config
-
-    catalog = MockCatalog()
-    tree_view = CatalogTreeView(catalog)
-
-    identifier = Identifier("default.test")
-    tree_view.states[identifier] = TableState()
-
-    # Update state
-    tree_view.update_state(identifier, StateKind.IN_PROGRESS, progress=50)
-
-    assert tree_view.states[identifier].kind == StateKind.IN_PROGRESS
-    assert tree_view.states[identifier].progress == 50
-
-    # Update with error
-    tree_view.update_state(identifier, StateKind.FAILED, error="Test error")
-
-    assert tree_view.states[identifier].kind == StateKind.FAILED
-    assert tree_view.states[identifier].error == "Test error"
+    # Verify output was generated
+    output = string_io.getvalue()
+    assert len(output) > 0
 
 
-def test_catalog_tree_view_context_manager(tmp_path):
-    """Test CatalogTreeView as context manager with live display."""
-    catalog_dir = tmp_path / "test_catalog"
-    catalog = LocalCatalog(name="test", uri=f"file://{catalog_dir}")
+def test_progress_tree_updater_with_error():
+    """Test progress_tree updater with error."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["test_table"] = cfg.Table()
 
-    # Create config with dataset
+    string_io = io.StringIO()
+    console = Console(file=string_io, force_terminal=True, width=80)
+
+    with progress_tree(config, console) as updater:
+        updater(("default", "test_table"), "complete", error="Test error")
+        time.sleep(0.1)
+
+    output = string_io.getvalue()
+    assert len(output) > 0
+
+
+def test_progress_bars_context_manager():
+    """Test progress_bars context manager."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["dataset1"] = cfg.Dataset(repo="org/repo1", config="default")
+    config["default"]["dataset2"] = cfg.Dataset(repo="org/repo2", config="default")
+
+    identifiers = [("default", "dataset1"), ("default", "dataset2")]
+
+    string_io = io.StringIO()
+    console = Console(file=string_io, force_terminal=True, width=80)
+
+    with progress_bars(config, console, identifiers) as updater:
+        # Update progress for first dataset
+        updater(("default", "dataset1"), "in_progress", percent=30, stage="Processing")
+        time.sleep(0.1)
+
+        # Update progress for second dataset
+        updater(("default", "dataset2"), "in_progress", percent=60, stage="Almost done")
+        time.sleep(0.1)
+
+        # Complete both
+        updater(("default", "dataset1"), "complete")
+        updater(("default", "dataset2"), "complete")
+        time.sleep(0.1)
+
+    output = string_io.getvalue()
+    assert len(output) > 0
+
+
+def test_progress_bars_updater_stages():
+    """Test progress_bars updater with different stages."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
     config["default"]["test"] = cfg.Dataset(repo="org/repo", config="default")
-    catalog.init()
-    config.to_yaml(catalog_dir / "faceberg.yml")
 
-    # Capture console output
+    identifiers = [("default", "test")]
+
     string_io = io.StringIO()
     console = Console(file=string_io, force_terminal=True, width=80)
 
-    # Create tree view with console
-    tree_view = CatalogTreeView(catalog, console=console)
-    identifier = Identifier(("default", "test"))
-    tree_view.states[identifier] = TableState()
+    with progress_bars(config, console, identifiers) as updater:
+        updater(("default", "test"), "pending")
+        time.sleep(0.05)
 
-    # Use CatalogTreeView as context manager
-    with tree_view:
-        # Update state
-        tree_view.update_state(identifier, StateKind.IN_PROGRESS, progress=50)
-        # Give time for live display to render
-        time.sleep(0.1)
+        updater(("default", "test"), "in_progress", percent=50, stage="Downloading")
+        time.sleep(0.05)
 
-    # Verify live display was used
+        updater(("default", "test"), "complete", percent=100)
+        time.sleep(0.05)
+
     output = string_io.getvalue()
-    assert len(output) > 0  # Should have some output
+    assert len(output) > 0
 
 
-def test_catalog_tree_view_with_console():
-    """Test CatalogTreeView with custom console."""
+def test_nested_namespaces():
+    """Test tree building with nested namespaces."""
+    config = cfg.Config()
+    config["level1"] = cfg.Namespace()
+    config["level1"]["level2"] = cfg.Namespace()
+    config["level1"]["level2"]["table"] = cfg.Table()
 
-    # Use mock catalog for simplicity
-    class MockCatalog:
-        def __init__(self):
-            self.name = "mock"
-            self._config = cfg.Config()
+    result = tree(config)
 
-        def config(self):
-            return self._config
+    assert isinstance(result, Tree)
+    # Navigate through the hierarchy
+    level1_node = result.children[0]
+    assert "level1" in str(level1_node.label)
 
-    catalog = MockCatalog()
+    level2_node = level1_node.children[0]
+    assert "level2" in str(level2_node.label)
 
-    # Create tree view with custom console
-    string_io = io.StringIO()
-    console = Console(file=string_io, force_terminal=True, width=80)
-    tree_view = CatalogTreeView(catalog, console=console)
+    table_node = level2_node.children[0]
+    assert "table" in str(table_node.label)
 
-    identifier = Identifier("test")
-    tree_view.states[identifier] = TableState()
 
-    # Test update_state method
-    tree_view.update_state(identifier, StateKind.COMPLETE, progress=100)
+def test_multiple_tables_in_namespace():
+    """Test tree building with multiple tables in a namespace."""
+    config = cfg.Config()
+    config["default"] = cfg.Namespace()
+    config["default"]["table1"] = cfg.Table()
+    config["default"]["table2"] = cfg.Table()
+    config["default"]["table3"] = cfg.Table()
 
-    assert tree_view.states[identifier].kind == StateKind.COMPLETE
-    assert tree_view.states[identifier].progress == 100
-    assert tree_view.console == console
+    result = tree(config)
+
+    assert isinstance(result, Tree)
+    namespace_node = result.children[0]
+    # Should have three children (the tables)
+    assert len(namespace_node.children) == 3
