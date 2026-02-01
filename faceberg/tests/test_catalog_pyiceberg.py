@@ -7,6 +7,8 @@ PyIceberg's FsspecFileIO provides full support for the hf:// protocol,
 enabling both metadata reading and data scanning from HuggingFace datasets.
 """
 
+import uuid
+
 import pyarrow as pa
 import pytest
 from pandas.api.types import is_string_dtype
@@ -457,3 +459,264 @@ def test_rest_column_projection(rest_catalog):
     assert "text" in column_names
     assert "label" in column_names
     assert "split" not in column_names
+
+
+# =============================================================================
+# F. Write Operations (Local Catalog)
+# =============================================================================
+
+
+def test_append_data_basic(writable_catalog):
+    """Test basic append operation."""
+    table = writable_catalog.load_table("default.test_table")
+
+    # Create test data matching schema
+    test_data = pa.Table.from_pydict({
+        "split": ["test", "test"],
+        "text": ["Test review 1", "Test review 2"],
+        "label": [1, 0],
+    })
+
+    # Append data - should complete without error
+    table.append(test_data)
+
+    # Verify operation completed
+    assert table is not None
+
+
+def test_append_data_verify_count(writable_catalog):
+    """Test row count increases correctly after append."""
+    table = writable_catalog.load_table("default.test_table")
+
+    # Record count before append
+    before_count = table.scan().to_arrow().num_rows
+
+    # Create and append test data
+    test_data = pa.Table.from_pydict({
+        "split": ["test", "test"],
+        "text": ["Count test review 1", "Count test review 2"],
+        "label": [1, 0],
+    })
+    table.append(test_data)
+
+    # Verify count increased by expected amount
+    after_count = table.scan().to_arrow().num_rows
+    assert after_count == before_count + len(test_data)
+
+
+def test_append_data_verify_scan(writable_catalog):
+    """Test appended data is readable via scan."""
+    table = writable_catalog.load_table("default.test_table")
+
+    # Create test data with unique text for verification
+    unique_text = f"Unique test review {uuid.uuid4()}"
+    test_data = pa.Table.from_pydict({
+        "split": ["test"],
+        "text": [unique_text],
+        "label": [1],
+    })
+
+    # Append data
+    table.append(test_data)
+
+    # Scan for appended data
+    scan = table.scan().filter(f"text = '{unique_text}'")
+    result = scan.to_arrow()
+
+    # Verify appended data is present
+    assert result.num_rows == 1
+    assert result["text"][0].as_py() == unique_text
+
+
+def test_append_data_snapshot_history(writable_catalog):
+    """Test snapshot history is updated after append."""
+    table = writable_catalog.load_table("default.test_table")
+
+    # Record snapshot count before append
+    snapshots_before = list(table.snapshots())
+    snapshot_count_before = len(snapshots_before)
+
+    # Create and append test data
+    test_data = pa.Table.from_pydict({
+        "split": ["test"],
+        "text": ["Snapshot test review"],
+        "label": [1],
+    })
+    table.append(test_data)
+
+    # Reload table to get updated snapshots
+    table = writable_catalog.load_table("default.test_table")
+    snapshots_after = list(table.snapshots())
+
+    # Verify new snapshot was created
+    assert len(snapshots_after) == snapshot_count_before + 1
+
+    # Verify latest snapshot has append operation
+    latest_snapshot = snapshots_after[-1]
+    assert latest_snapshot.summary is not None
+    # Summary.operation is an enum, not a string
+    from pyiceberg.table.snapshots import Operation
+    assert latest_snapshot.summary.operation == Operation.APPEND
+
+
+def test_append_data_partition_integrity(writable_catalog):
+    """Test partition integrity is maintained after append."""
+    table = writable_catalog.load_table("default.test_table")
+
+    # Record partition spec before append
+    spec_before = table.spec()
+
+    # Create test data for specific partition
+    test_data = pa.Table.from_pydict({
+        "split": ["test", "test"],
+        "text": ["Partition test review 1", "Partition test review 2"],
+        "label": [1, 0],
+    })
+    table.append(test_data)
+
+    # Reload table and verify partition spec unchanged
+    table = writable_catalog.load_table("default.test_table")
+    spec_after = table.spec()
+    assert len(spec_before.fields) == len(spec_after.fields)
+
+    # Verify partition filtering still works
+    scan = table.scan().filter("split = 'test'")
+    result = scan.to_arrow()
+
+    # All rows should have split == 'test'
+    split_values = result["split"].unique().to_pylist()
+    assert split_values == ["test"]
+    assert result.num_rows > 0
+
+
+# =============================================================================
+# G. Write Operations (REST Catalog)
+# =============================================================================
+
+
+@pytest.mark.skip(reason="REST server write operations not yet implemented")
+def test_rest_append_data_basic(rest_catalog):
+    """Test basic append operation via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Create test data matching schema
+    test_data = pa.Table.from_pydict({
+        "split": ["test", "test"],
+        "text": ["REST test review 1", "REST test review 2"],
+        "label": [1, 0],
+    })
+
+    # Append data - should complete without error
+    table.append(test_data)
+
+    # Verify operation completed
+    assert table is not None
+
+
+@pytest.mark.skip(reason="REST server write operations not yet implemented")
+def test_rest_append_data_verify_count(rest_catalog):
+    """Test row count increases correctly after append via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Record count before append
+    before_count = table.scan().to_arrow().num_rows
+
+    # Create and append test data
+    test_data = pa.Table.from_pydict({
+        "split": ["test", "test"],
+        "text": ["REST count test review 1", "REST count test review 2"],
+        "label": [1, 0],
+    })
+    table.append(test_data)
+
+    # Verify count increased by expected amount
+    after_count = table.scan().to_arrow().num_rows
+    assert after_count == before_count + len(test_data)
+
+
+@pytest.mark.skip(reason="REST server write operations not yet implemented")
+def test_rest_append_data_verify_scan(rest_catalog):
+    """Test appended data is readable via scan through REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Create test data with unique text for verification
+    unique_text = f"REST unique test review {uuid.uuid4()}"
+    test_data = pa.Table.from_pydict({
+        "split": ["test"],
+        "text": [unique_text],
+        "label": [1],
+    })
+
+    # Append data
+    table.append(test_data)
+
+    # Scan for appended data
+    scan = table.scan().filter(f"text = '{unique_text}'")
+    result = scan.to_arrow()
+
+    # Verify appended data is present
+    assert result.num_rows == 1
+    assert result["text"][0].as_py() == unique_text
+
+
+@pytest.mark.skip(reason="REST server write operations not yet implemented")
+def test_rest_append_data_snapshot_history(rest_catalog):
+    """Test snapshot history is updated after append via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Record snapshot count before append
+    snapshots_before = list(table.snapshots())
+    snapshot_count_before = len(snapshots_before)
+
+    # Create and append test data
+    test_data = pa.Table.from_pydict({
+        "split": ["test"],
+        "text": ["REST snapshot test review"],
+        "label": [1],
+    })
+    table.append(test_data)
+
+    # Reload table to get updated snapshots
+    table = rest_catalog.load_table("default.imdb_plain_text")
+    snapshots_after = list(table.snapshots())
+
+    # Verify new snapshot was created
+    assert len(snapshots_after) == snapshot_count_before + 1
+
+    # Verify latest snapshot has append operation
+    latest_snapshot = snapshots_after[-1]
+    assert latest_snapshot.summary is not None
+    # Summary.operation is an enum, not a string
+    from pyiceberg.table.snapshots import Operation
+    assert latest_snapshot.summary.operation == Operation.APPEND
+
+
+@pytest.mark.skip(reason="REST server write operations not yet implemented")
+def test_rest_append_data_partition_integrity(rest_catalog):
+    """Test partition integrity is maintained after append via REST catalog."""
+    table = rest_catalog.load_table("default.imdb_plain_text")
+
+    # Record partition spec before append
+    spec_before = table.spec()
+
+    # Create test data for specific partition
+    test_data = pa.Table.from_pydict({
+        "split": ["test", "test"],
+        "text": ["REST partition test review 1", "REST partition test review 2"],
+        "label": [1, 0],
+    })
+    table.append(test_data)
+
+    # Reload table and verify partition spec unchanged
+    table = rest_catalog.load_table("default.imdb_plain_text")
+    spec_after = table.spec()
+    assert len(spec_before.fields) == len(spec_after.fields)
+
+    # Verify partition filtering still works
+    scan = table.scan().filter("split = 'test'")
+    result = scan.to_arrow()
+
+    # All rows should have split == 'test'
+    split_values = result["split"].unique().to_pylist()
+    assert split_values == ["test"]
+    assert result.num_rows > 0

@@ -159,13 +159,13 @@ class HfLocationProvider(LocationProvider):
 
     def new_data_location(
         self,
-        _data_file_name: str,
+        data_file_name: str,
         partition_key: Optional[PartitionKey] = None,
     ) -> str:
         """Generate a new data file location.
 
         Args:
-            _data_file_name: Original filename (ignored, we use our pattern)
+            data_file_name: Original filename (ignored, we use our pattern)
             partition_key: Optional partition key for extracting split
 
         Returns:
@@ -810,7 +810,12 @@ class BaseCatalog(Catalog):
         """Drop table and delete all files."""
         raise NotImplementedError("Purge table not supported")
 
-    def commit_table(self, request: CommitTableRequest) -> CommitTableResponse:
+    def commit_table(
+        self,
+        table: Table,
+        requirements: tuple,
+        updates: tuple,
+    ) -> CommitTableResponse:
         """Commit table updates (data files and metadata).
 
         Called by pyiceberg after data files are written. This method:
@@ -820,26 +825,27 @@ class BaseCatalog(Catalog):
         4. Updates huggingface.write.next-index in table properties
 
         Args:
-            request: Commit request with requirements and updates
+            table: Table being committed
+            requirements: Validation requirements for the commit
+            updates: Updates to apply to the table
 
         Returns:
             Commit response with updated metadata
         """
-        # Parse identifier
-        identifier = Identifier(request.identifier)
+        # Get identifier from table
+        identifier = table._identifier  # noqa: SLF001
 
-        # Load current table
-        table = self.load_table(identifier)
+        # Get current metadata
         base_metadata = table.metadata
 
         # Validate requirements
-        for requirement in request.requirements:
+        for requirement in requirements:
             requirement.validate(base_metadata)
 
         # Apply updates to create new metadata
         updated_metadata = update_table_metadata(
             base_metadata=base_metadata,
-            updates=request.updates,
+            updates=updates,
             enforce_validation=True,
             metadata_location=table.metadata_location,
         )

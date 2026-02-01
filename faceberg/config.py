@@ -67,7 +67,15 @@ class Node:
 
 @dataclass
 class Table(Node):
-    """Physical Iceberg table."""
+    """Physical Iceberg table.
+
+    Attributes:
+        uri: Optional URI for the table's data location. If provided, new data files
+             will be written to this location. If not provided, data files will be
+             written to the default catalog location.
+    """
+
+    uri: str = None
 
 
 @dataclass
