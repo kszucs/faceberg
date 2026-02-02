@@ -210,7 +210,7 @@ def test_yaml_preserves_all_types(tmp_path):
     cfg = Config()
     cfg[("data", "dataset1")] = Dataset(repo="org/repo1", config="cfg1")
     cfg[("data", "view1")] = View(query="SELECT 1")
-    cfg[("data", "table1")] = Table()
+    cfg[("data", "table1")] = Table(uri="")
 
     yaml_path = tmp_path / "types.yaml"
     cfg.to_yaml(yaml_path)
@@ -232,7 +232,7 @@ def test_yaml_preserves_all_types(tmp_path):
 
 def test_node_from_dict_table():
     """Test Node.from_dict for Table type."""
-    data = {"type": "table"}
+    data = {"type": "table", "uri": ""}
     node = Node.from_dict(data)
     assert isinstance(node, Table)
 
@@ -266,13 +266,13 @@ def test_node_from_dict_view():
 def test_node_from_dict_namespace():
     """Test Node.from_dict for Namespace type (explicit and implicit)."""
     # Explicit type
-    data = {"type": "namespace", "child1": {"type": "table"}}
+    data = {"type": "namespace", "child1": {"type": "table", "uri": ""}}
     node = Node.from_dict(data)
     assert isinstance(node, Namespace)
     assert isinstance(node["child1"], Table)
 
     # Implicit type (no type field defaults to namespace)
-    data = {"child1": {"type": "table"}, "child2": {"type": "view", "query": "SELECT 1"}}
+    data = {"child1": {"type": "table", "uri": ""}, "child2": {"type": "view", "query": "SELECT 1"}}
     node = Node.from_dict(data)
     assert isinstance(node, Namespace)
     assert isinstance(node["child1"], Table)
@@ -313,7 +313,7 @@ def test_node_to_dict():
 def test_namespace_repr():
     """Test Namespace string representation."""
     ns = Namespace()
-    ns["child"] = Table()
+    ns["child"] = Table(uri="")
     repr_str = repr(ns)
     assert "Namespace" in repr_str
 

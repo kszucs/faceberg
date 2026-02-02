@@ -31,9 +31,9 @@ def browser_type_launch_args(browser_type_launch_args):
 # =============================================================================
 
 
-def test_landing_page_loads(session_session_rest_server: str, page: Page):
+def test_landing_page_loads(session_rest_server: str, page: Page):
     """Test that the landing page loads successfully."""
-    page.goto(session_session_rest_server)
+    page.goto(session_rest_server)
 
     # Check that the page title contains "Faceberg"
     expect(page).to_have_title(re.compile("Faceberg"))
@@ -378,7 +378,7 @@ def test_namespaces_endpoint_accessible(session_rest_server: str, page: Page):
 
     assert namespaces_response["status"] == 200
     assert "namespaces" in namespaces_response["data"]
-    # Catalog should have at least one namespace (stanfordnlp)
+    # Catalog should have at least one namespace (google-research-datasets)
     assert len(namespaces_response["data"]["namespaces"]) > 0
 
 
@@ -389,7 +389,7 @@ def test_tables_endpoint_accessible(session_rest_server: str, page: Page):
     # Use page.evaluate to fetch tables endpoint
     tables_response = page.evaluate("""
         async () => {
-            const response = await fetch('/v1/namespaces/stanfordnlp/tables');
+            const response = await fetch('/v1/namespaces/google-research-datasets/tables');
             return {
                 status: response.status,
                 data: await response.json()
@@ -399,7 +399,7 @@ def test_tables_endpoint_accessible(session_rest_server: str, page: Page):
 
     assert tables_response["status"] == 200
     assert "identifiers" in tables_response["data"]
-    # Should have at least one table (imdb)
+    # Should have at least one table (mbpp)
     assert len(tables_response["data"]["identifiers"]) > 0
 
 

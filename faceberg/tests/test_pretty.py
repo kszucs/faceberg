@@ -73,7 +73,7 @@ def test_tree_with_table():
     """Test tree building with table node."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
-    config["default"]["my_table"] = cfg.Table()
+    config["default"]["my_table"] = cfg.Table(uri="")
 
     result = tree(config)
 
@@ -125,7 +125,7 @@ def test_tree_with_states():
     """Test tree building with state tracking."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
-    config["default"]["test_table"] = cfg.Table()
+    config["default"]["test_table"] = cfg.Table(uri="")
 
     states = {("default", "test_table"): TableState(kind="in_progress", progress=50)}
 
@@ -142,7 +142,7 @@ def test_tree_with_error_state():
     """Test tree building with error state."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
-    config["default"]["failed_table"] = cfg.Table()
+    config["default"]["failed_table"] = cfg.Table(uri="")
 
     states = {("default", "failed_table"): TableState(kind="complete", error="Connection timeout")}
 
@@ -161,7 +161,7 @@ def test_tree_with_error_state():
 def test_node_namespace():
     """Test node function with namespace."""
     ns = cfg.Namespace()
-    ns["child_table"] = cfg.Table()
+    ns["child_table"] = cfg.Table(uri="")
     parent = Tree("root")
     states = {}
 
@@ -177,7 +177,7 @@ def test_node_namespace():
 
 def test_node_table():
     """Test node function with table."""
-    table = cfg.Table()
+    table = cfg.Table(uri="")
     parent = Tree("root")
     states = {}
 
@@ -239,7 +239,7 @@ def test_progress_tree_context_manager():
     """Test progress_tree context manager."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
-    config["default"]["test_table"] = cfg.Table()
+    config["default"]["test_table"] = cfg.Table(uri="")
 
     string_io = io.StringIO()
     console = Console(file=string_io, force_terminal=True, width=80)
@@ -261,7 +261,7 @@ def test_progress_tree_updater_with_error():
     """Test progress_tree updater with error."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
-    config["default"]["test_table"] = cfg.Table()
+    config["default"]["test_table"] = cfg.Table(uri="")
 
     string_io = io.StringIO()
     console = Console(file=string_io, force_terminal=True, width=80)
@@ -334,7 +334,7 @@ def test_nested_namespaces():
     config = cfg.Config()
     config["level1"] = cfg.Namespace()
     config["level1"]["level2"] = cfg.Namespace()
-    config["level1"]["level2"]["table"] = cfg.Table()
+    config["level1"]["level2"]["table"] = cfg.Table(uri="")
 
     result = tree(config)
 
@@ -354,9 +354,9 @@ def test_multiple_tables_in_namespace():
     """Test tree building with multiple tables in a namespace."""
     config = cfg.Config()
     config["default"] = cfg.Namespace()
-    config["default"]["table1"] = cfg.Table()
-    config["default"]["table2"] = cfg.Table()
-    config["default"]["table3"] = cfg.Table()
+    config["default"]["table1"] = cfg.Table(uri="")
+    config["default"]["table2"] = cfg.Table(uri="")
+    config["default"]["table3"] = cfg.Table(uri="")
 
     result = tree(config)
 

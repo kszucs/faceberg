@@ -18,7 +18,7 @@ def test_list_command_with_tree_view(tmp_path):
     config["default"]["imdb"] = cfg.Dataset(repo="stanfordnlp/imdb", config="plain_text")
     config["default"]["squad"] = cfg.Dataset(repo="squad", config="plain_text")
     config["analytics"] = cfg.Namespace()
-    config["analytics"]["aggregated"] = cfg.Table()
+    config["analytics"]["aggregated"] = cfg.Table(uri="")
 
     # Save config
     config.to_yaml(catalog_dir / "faceberg.yml")
