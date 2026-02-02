@@ -11,7 +11,6 @@ import pytest
 import requests
 import uvicorn
 from datasets import Dataset
-from huggingface_hub import HfApi
 from pyiceberg.catalog.rest import RestCatalog
 
 from faceberg.catalog import LocalCatalog, RemoteCatalog
@@ -202,7 +201,6 @@ def remote_dataset(hf_org, hf_token):
     Yields:
         Dataset repo ID
     """
-    hf_api = HfApi(token=hf_token)
     dataset_repo = f"{hf_org}/faceberg-test-dataset"
     try:
         # Create small synthetic dataset

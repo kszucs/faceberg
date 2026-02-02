@@ -327,7 +327,7 @@ class TestTableWriteProperties:
             location=get_table_location("default.write_test"),
             properties={
                 "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
-                "huggingface.write.split": "train",
+                "hf.write.split": "train",
             },
         )
 
@@ -543,10 +543,10 @@ class TestDatasetOperations:
 
         # Verify table properties
         props = table.properties
-        assert "huggingface.dataset.repo" in props
-        assert props["huggingface.dataset.repo"] == "stanfordnlp/imdb"
-        assert "huggingface.dataset.config" in props
-        assert props["huggingface.dataset.config"] == "plain_text"
+        assert "hf.dataset.repo" in props
+        assert props["hf.dataset.repo"] == "stanfordnlp/imdb"
+        assert "hf.dataset.config" in props
+        assert props["hf.dataset.config"] == "plain_text"
 
 
 # =============================================================================
@@ -787,13 +787,13 @@ class TestTableMetadata:
         properties = table.properties
 
         # Verify HuggingFace properties exist
-        assert "huggingface.dataset.repo" in properties
-        assert properties["huggingface.dataset.repo"] == "stanfordnlp/imdb"
+        assert "hf.dataset.repo" in properties
+        assert properties["hf.dataset.repo"] == "stanfordnlp/imdb"
 
-        assert "huggingface.dataset.config" in properties
-        assert properties["huggingface.dataset.config"] == "plain_text"
+        assert "hf.dataset.config" in properties
+        assert properties["hf.dataset.config"] == "plain_text"
 
-        assert "huggingface.dataset.revision" in properties
+        assert "hf.dataset.revision" in properties
 
         # Verify schema name mapping is present
         assert "schema.name-mapping.default" in properties
@@ -962,8 +962,8 @@ class TestRestCatalogMetadata:
         properties = table.properties
 
         # Verify HuggingFace properties exist
-        assert "huggingface.dataset.repo" in properties
-        assert properties["huggingface.dataset.repo"] == "stanfordnlp/imdb"
+        assert "hf.dataset.repo" in properties
+        assert properties["hf.dataset.repo"] == "stanfordnlp/imdb"
 
     def test_rest_read_snapshots(self, rest_catalog):
         """Test reading table snapshots via REST catalog."""
@@ -1203,7 +1203,7 @@ class TestHfLocationProvider:
     """Tests for HfLocationProvider."""
 
     def test_default_pattern(self):
-        """Test default file naming pattern."""
+        """Test default file naming pattern with UUIDv7."""
         provider = HfLocationProvider(
             table_location="hf://datasets/test-org/test-dataset",
             table_properties={},
@@ -1211,62 +1211,72 @@ class TestHfLocationProvider:
 
         # First file
         path1 = provider.new_data_location("ignored.parquet")
-        assert path1.endswith("/train-00000-iceberg.parquet")
+        assert path1.endswith("-iceberg.parquet")
+        assert "train-" in path1
+        # UUIDv7 is 36 characters with hyphens
+        filename1 = path1.split("/")[-1]
+        uuid_part1 = filename1.replace("train-", "").replace("-iceberg.parquet", "")
+        assert len(uuid_part1) == 36
 
-        # Second file
+        # Second file - should have different UUID
         path2 = provider.new_data_location("ignored.parquet")
-        assert path2.endswith("/train-00001-iceberg.parquet")
+        assert path2.endswith("-iceberg.parquet")
+        assert "train-" in path2
+        assert path1 != path2  # Different UUIDs
 
     def test_custom_split(self):
         """Test custom split name."""
         provider = HfLocationProvider(
             table_location="hf://datasets/test-org/test-dataset",
-            table_properties={"huggingface.write.split": "validation"},
+            table_properties={"hf.write.split": "validation"},
         )
 
         path = provider.new_data_location("ignored.parquet")
-        assert "validation-00000-iceberg.parquet" in path
+        assert "validation-" in path
+        assert path.endswith("-iceberg.parquet")
 
     def test_custom_pattern(self):
         """Test custom file pattern."""
         provider = HfLocationProvider(
             table_location="hf://datasets/test-org/test-dataset",
             table_properties={
-                "huggingface.write.pattern": "data-{split}-{index:03d}.parquet",
+                "hf.write.pattern": "data-{split}-{uuid}.parquet",
             },
         )
 
         path = provider.new_data_location("ignored.parquet")
-        assert path.endswith("/data-train-000.parquet")
+        assert "data-train-" in path
+        assert path.endswith(".parquet")
 
-    def test_uuid_mode(self):
-        """Test UUID-based naming."""
+    def test_uuidv7_sortability(self):
+        """Test that UUIDv7 generates sortable identifiers."""
+        import time
+
         provider = HfLocationProvider(
             table_location="hf://datasets/test-org/test-dataset",
             table_properties={
-                "huggingface.write.use-uuid": "true",
-                "huggingface.write.pattern": "{split}-{uuid}.parquet",
+                "hf.write.pattern": "{split}-{uuid}.parquet",
             },
         )
 
-        path = provider.new_data_location("ignored.parquet")
-        # UUID is 36 characters (8-4-4-4-12 with hyphens)
-        assert path.endswith(".parquet")
-        assert "train-" in path
-        # Extract UUID part and verify format
-        filename = path.split("/")[-1]
-        uuid_part = filename.replace("train-", "").replace(".parquet", "")
-        assert len(uuid_part) == 36
+        # Generate first UUID
+        path1 = provider.new_data_location("ignored.parquet")
+        filename1 = path1.split("/")[-1]
+        uuid1 = filename1.replace("train-", "").replace(".parquet", "")
 
-    def test_start_index(self):
-        """Test starting from a specific index."""
-        provider = HfLocationProvider(
-            table_location="hf://datasets/test-org/test-dataset",
-            table_properties={"huggingface.write.next-index": "10"},
-        )
+        # Small delay to ensure different timestamp
+        time.sleep(0.001)
 
-        path = provider.new_data_location("ignored.parquet")
-        assert path.endswith("/train-00010-iceberg.parquet")
+        # Generate second UUID
+        path2 = provider.new_data_location("ignored.parquet")
+        filename2 = path2.split("/")[-1]
+        uuid2 = filename2.replace("train-", "").replace(".parquet", "")
+
+        # UUIDv7 should be sortable (later UUIDs are lexicographically greater)
+        assert uuid1 < uuid2, "UUIDv7 should be sortable by timestamp"
+        # UUIDs are 36 characters with hyphens
+        assert len(uuid1) == 36
+        assert len(uuid2) == 36
 
 
 # =============================================================================

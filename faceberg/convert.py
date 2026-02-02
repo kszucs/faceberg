@@ -421,16 +421,16 @@ class IcebergMetadataWriter:
             "total-records": str(total_records),
         }
 
-        # Add huggingface.* fields from properties to snapshot summary
-        if "huggingface.dataset.repo" in properties:
-            summary_fields["huggingface.dataset.repo"] = properties["huggingface.dataset.repo"]
-        if "huggingface.dataset.config" in properties:
-            summary_fields["huggingface.dataset.config"] = properties["huggingface.dataset.config"]
-        if "huggingface.dataset.revision" in properties:
-            revision = properties["huggingface.dataset.revision"]
-            summary_fields["huggingface.dataset.revision"] = revision
+        # Add hf.* fields from properties to snapshot summary
+        if "hf.dataset.repo" in properties:
+            summary_fields["hf.dataset.repo"] = properties["hf.dataset.repo"]
+        if "hf.dataset.config" in properties:
+            summary_fields["hf.dataset.config"] = properties["hf.dataset.config"]
+        if "hf.dataset.revision" in properties:
+            revision = properties["hf.dataset.revision"]
+            summary_fields["hf.dataset.revision"] = revision
             # Add short revision (first 7 chars)
-            summary_fields["huggingface.dataset.revision.short"] = revision[:7]
+            summary_fields["hf.dataset.revision.short"] = revision[:7]
 
         return Snapshot(  # type: ignore[call-arg]
             snapshot_id=1,
@@ -765,16 +765,16 @@ class IcebergMetadataWriter:
             "total-records": str(total_records),
         }
 
-        # Add huggingface.* fields from properties to snapshot summary
-        if "huggingface.dataset.repo" in properties:
-            summary_fields["huggingface.dataset.repo"] = properties["huggingface.dataset.repo"]
-        if "huggingface.dataset.config" in properties:
-            summary_fields["huggingface.dataset.config"] = properties["huggingface.dataset.config"]
-        if "huggingface.dataset.revision" in properties:
-            revision = properties["huggingface.dataset.revision"]
-            summary_fields["huggingface.dataset.revision"] = revision
+        # Add hf.* fields from properties to snapshot summary
+        if "hf.dataset.repo" in properties:
+            summary_fields["hf.dataset.repo"] = properties["hf.dataset.repo"]
+        if "hf.dataset.config" in properties:
+            summary_fields["hf.dataset.config"] = properties["hf.dataset.config"]
+        if "hf.dataset.revision" in properties:
+            revision = properties["hf.dataset.revision"]
+            summary_fields["hf.dataset.revision"] = revision
             # Add short revision (first 7 chars)
-            summary_fields["huggingface.dataset.revision.short"] = revision[:7]
+            summary_fields["hf.dataset.revision.short"] = revision[:7]
 
         return Snapshot(  # type: ignore[call-arg]
             snapshot_id=snapshot_id,

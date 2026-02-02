@@ -99,14 +99,12 @@ class TableInfo:
             "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
             "write.data.path": data_path,
             # HuggingFace source metadata
-            "huggingface.dataset.repo": self.dataset_repo,
-            "huggingface.dataset.config": self.dataset_config,
-            "huggingface.dataset.revision": self.dataset_revision,
+            "hf.dataset.repo": self.dataset_repo,
+            "hf.dataset.config": self.dataset_config,
+            "hf.dataset.revision": self.dataset_revision,
             # Write configuration
-            "huggingface.write.pattern": "{split}-{index:05d}-iceberg.parquet",
-            "huggingface.write.next-index": "0",
-            "huggingface.write.use-uuid": "false",
-            "huggingface.write.split": "train",
+            "hf.write.pattern": "{split}-{uuid}-iceberg.parquet",
+            "hf.write.split": "train",
             # Schema mapping
             "schema.name-mapping.default": json.dumps(name_mapping),
         }
@@ -388,8 +386,7 @@ def dataset_builder_safe(
 
 
 def dataset_data_files(
-    data_files: Dict[str, List[str]],
-    filter_paths: Optional[List[str]] = None
+    data_files: Dict[str, List[str]], filter_paths: Optional[List[str]] = None
 ) -> Tuple[Dict[str, List[str]], str]:
     """Filter data files and extract data directory.
 
@@ -524,8 +521,7 @@ class DatasetInfo:
 
         # Filter data files and extract data directory
         data_files, data_dir = dataset_data_files(
-            builder.config.data_files,
-            filter_paths=filter_paths
+            builder.config.data_files, filter_paths=filter_paths
         )
 
         splits = list(data_files.keys())

@@ -151,8 +151,8 @@ def landing_page(state: State) -> Template:
 
                 # Extract HuggingFace dataset info from properties
                 props = table.properties
-                dataset_repo = props.get("huggingface.dataset.repo", "")
-                dataset_config = props.get("huggingface.dataset.config", "")
+                dataset_repo = props.get("hf.dataset.repo", "")
+                dataset_config = props.get("hf.dataset.config", "")
 
                 # Build table data structure
                 table_data = {

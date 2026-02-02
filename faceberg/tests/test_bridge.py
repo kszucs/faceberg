@@ -97,8 +97,8 @@ def test_to_table_infos():
 
     # Check properties
     props = table_info.get_table_properties()
-    assert props["huggingface.dataset.repo"] == "stanfordnlp/imdb"
-    assert props["huggingface.dataset.config"] == "plain_text"
+    assert props["hf.dataset.repo"] == "stanfordnlp/imdb"
+    assert props["hf.dataset.config"] == "plain_text"
 
 
 # =============================================================================
@@ -268,8 +268,8 @@ def test_dataset_builder_safe_nonexistent():
         dataset_builder_safe("nonexistent/fake-dataset-12345")
 
 
-def test_table_properties_use_huggingface_prefix():
-    """Test that table properties use huggingface.dataset.* prefix."""
+def test_table_properties_use_hf_prefix():
+    """Test that table properties use hf.dataset.* prefix."""
     dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
     table_info = dataset_info.to_table_info(
         namespace="default",
@@ -278,15 +278,15 @@ def test_table_properties_use_huggingface_prefix():
 
     props = table_info.get_table_properties()
 
-    # Check that properties use huggingface.dataset prefix
-    assert "huggingface.dataset.repo" in props
-    assert "huggingface.dataset.config" in props
-    assert props["huggingface.dataset.repo"] == "stanfordnlp/imdb"
-    assert props["huggingface.dataset.config"] == "plain_text"
+    # Check that properties use hf.dataset prefix
+    assert "hf.dataset.repo" in props
+    assert "hf.dataset.config" in props
+    assert props["hf.dataset.repo"] == "stanfordnlp/imdb"
+    assert props["hf.dataset.config"] == "plain_text"
 
     # Check that revision is always included (now mandatory)
-    assert "huggingface.dataset.revision" in props
-    assert props["huggingface.dataset.revision"] == table_info.dataset_revision
+    assert "hf.dataset.revision" in props
+    assert props["hf.dataset.revision"] == table_info.dataset_revision
 
     # Verify old prefix is not used
     assert "faceberg.source.repo" not in props
@@ -688,20 +688,25 @@ def test_discover_with_since_revision():
 
     # Mock HfFileSystem to resolve file URIs
     mock_fs = Mock()
+
     def mock_resolve_path(uri):
         # Extract path from URI: "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"
-        # Split: ['hf:', '', 'datasets', 'test', 'dataset@def456', 'plain_text', 'train-00001.parquet']
+        # Split: ['hf:', '', 'datasets', 'test', 'dataset@def456', 'plain_text',
+        #         'train-00001.parquet']
         parts = uri.split("/")
         # Join everything after repo@revision (starting from index 5)
         path = "/".join(parts[5:])
         mock_result = Mock()
         mock_result.path_in_repo = path
         return mock_result
+
     mock_fs.resolve_path.side_effect = mock_resolve_path
 
-    with patch("faceberg.bridge.dataset_builder_safe", return_value=mock_builder), \
-         patch("faceberg.bridge.dataset_new_files", mock_get_new_files), \
-         patch("faceberg.bridge.HfFileSystem", return_value=mock_fs):
+    with (
+        patch("faceberg.bridge.dataset_builder_safe", return_value=mock_builder),
+        patch("faceberg.bridge.dataset_new_files", mock_get_new_files),
+        patch("faceberg.bridge.HfFileSystem", return_value=mock_fs),
+    ):
         # Discover with since_revision (should return only new files)
         dataset_info = DatasetInfo.discover(
             repo_id="test/dataset",

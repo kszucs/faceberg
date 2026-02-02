@@ -31,6 +31,7 @@ from pyiceberg.table.metadata import new_table_metadata
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
 from pyiceberg.table.update import update_table_metadata
 from pyiceberg.typedef import EMPTY_DICT, Properties
+from uuid_utils import uuid7
 
 from . import config as cfg
 from .bridge import DatasetInfo
@@ -107,31 +108,27 @@ class HfFileIO(FsspecFileIO):
 
 
 class HfLocationProvider(LocationProvider):
-    """LocationProvider for HuggingFace datasets with configurable naming.
+    """LocationProvider for HuggingFace datasets with sortable, concurrent-safe file naming.
 
-    Generates paths using configurable patterns:
-    - Default: {split}-{index:05d}-iceberg.parquet
-    - UUID mode: {split}-{uuid}-iceberg.parquet
+    Generates paths using UUIDv7 (timestamp-based, sortable UUIDs) for distributed writes.
+    Default pattern: {split}-{uuid}-iceberg.parquet
 
     Pattern placeholders:
     - {split}: Partition split name (from partition key or default)
-    - {index:05d}: Auto-incremented file index (zero-padded)
-    - {uuid}: Random UUID for concurrent-safe writes
+    - {uuid}: UUIDv7 (sortable by timestamp, collision-resistant)
 
     Table properties:
     - write.py-location-provider.impl: faceberg.catalog.HfLocationProvider
-    - huggingface.write.split: Default split name (default: "train")
-    - huggingface.write.pattern: File naming pattern
-    - huggingface.write.use-uuid: Use UUID instead of index (default: false)
-    - huggingface.write.next-index: Starting index for file counter
+    - hf.write.split: Default split name (default: "train")
+    - hf.write.pattern: File naming pattern (default: "{split}-{uuid}-iceberg.parquet")
 
     Example:
         ```python
         table_properties = {
             "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
             "write.data.path": "hf://datasets/my-org/my-dataset",
-            "huggingface.write.split": "train",
-            "huggingface.write.pattern": "{split}-{index:05d}-iceberg.parquet",
+            "hf.write.split": "train",
+            "hf.write.pattern": "{split}-{uuid}-iceberg.parquet",
         }
         ```
     """
@@ -143,26 +140,16 @@ class HfLocationProvider(LocationProvider):
             table_location: Base location of the table
             table_properties: Table properties for configuration
         """
-        import itertools
-
         super().__init__(table_location, table_properties)
-        self._default_split = table_properties.get("huggingface.write.split", "train")
-        self._pattern = table_properties.get(
-            "huggingface.write.pattern", "{split}-{index:05d}-iceberg.parquet"
-        )
-        self._use_uuid = (
-            table_properties.get("huggingface.write.use-uuid", "false").lower() == "true"
-        )
-        # Index read from table properties (stored there by commit_table)
-        self._start_index = int(table_properties.get("huggingface.write.next-index", "0"))
-        self._file_counter = itertools.count(self._start_index)
+        self._default_split = table_properties.get("hf.write.split", "train")
+        self._pattern = table_properties.get("hf.write.pattern", "{split}-{uuid}-iceberg.parquet")
 
     def new_data_location(
         self,
         data_file_name: str,
         partition_key: Optional[PartitionKey] = None,
     ) -> str:
-        """Generate a new data file location.
+        """Generate a new data file location with sortable UUIDv7.
 
         Args:
             data_file_name: Original filename (ignored, we use our pattern)
@@ -171,39 +158,25 @@ class HfLocationProvider(LocationProvider):
         Returns:
             Full path for the new data file
         """
-        split = self._extract_split_from_partition(partition_key) or self._default_split
-
-        if self._use_uuid:
-            file_id = str(uuid.uuid4())
-            filename = self._pattern.format(split=split, uuid=file_id)
-        else:
-            index = next(self._file_counter)
-            filename = self._pattern.format(split=split, index=index)
-
+        split = self._extract_split_from_partition(partition_key)
+        file_id = str(uuid7())
+        filename = self._pattern.format(split=split, uuid=file_id)
         return f"{self.data_path}/{filename}"
 
-    def _extract_split_from_partition(self, partition_key: Optional[PartitionKey]) -> Optional[str]:
-        """Extract split value from partition key if present.
+    def _extract_split_from_partition(self, partition_key: Optional[PartitionKey]) -> str:
+        """Extract split value from partition key, falling back to default.
 
         Args:
             partition_key: Partition key that may contain a split field
 
         Returns:
-            Split value if found, None otherwise
+            Split value from partition key, or default split if not found
         """
-        if partition_key is None:
-            return None
-        # Look for 'split' field in partition key
-        # PartitionKey stores values as a Record with field access
-        try:
-            partition_data = partition_key.partition
-            if hasattr(partition_data, "__iter__"):
-                for field_name, value in partition_data.items():
-                    if field_name.lower() == "split":
-                        return str(value)
-        except (AttributeError, TypeError):
-            pass
-        return None
+        if partition_key is not None:
+            for field_value in partition_key.field_values:
+                if field_value.field.name.lower() == "split":
+                    return str(field_value.value)
+        return self._default_split
 
 
 # =============================================================================
@@ -823,7 +796,6 @@ class BaseCatalog(Catalog):
         1. Validates requirements against current metadata
         2. Applies updates to create new metadata
         3. Writes new metadata file atomically
-        4. Updates huggingface.write.next-index in table properties
 
         Args:
             table: Table being committed
@@ -1129,10 +1101,10 @@ class BaseCatalog(Catalog):
         table = self.load_table(identifier)
 
         # Get old revision from table properties (required)
-        old_revision = table.metadata.properties.get("huggingface.dataset.revision")
+        old_revision = table.metadata.properties.get("hf.dataset.revision")
         if not old_revision:
             raise ValueError(
-                f"Table {'.'.join(identifier)} missing 'huggingface.dataset.revision' property. "
+                f"Table {'.'.join(identifier)} missing 'hf.dataset.revision' property. "
                 "This table was created before revision tracking was implemented. "
                 "Please recreate the table to enable incremental sync."
             )
