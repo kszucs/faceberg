@@ -433,7 +433,11 @@ def dataset_data_files(
         raise ValueError("No data files found to determine data directory")
 
     try:
-        data_dir = os.path.commonpath(all_files)
+        # Extract directory from each file path, then find common directory
+        # This ensures we get a directory path, not a file path (which would happen
+        # with os.path.commonpath when there's only one file)
+        directories = [os.path.dirname(f) for f in all_files]
+        data_dir = os.path.commonpath(directories)
     except ValueError as e:
         raise ValueError(
             f"Unable to determine common data directory from files: {all_files}"

@@ -1335,28 +1335,3 @@ class TestWriteToExistingDataset:
         result = scan.to_arrow()
         assert result.num_rows == 1
         assert result["text"][0].as_py() == "Appended test review"
-
-        # # Verify files follow HuggingFace naming pattern by checking data files in manifest
-        # snapshot = table.current_snapshot()
-        # if snapshot:
-        #     # Get data files from the manifest
-        #     data_files = [file.file_path for file in table.scan().to_arrow().to_batches()]
-
-        #     # For remote catalog, check data file paths from manifest entries
-        #     manifest_list = snapshot.manifest_list
-        #     if manifest_list:
-        #         # Get actual data file paths from the table scan
-        #         data_file_paths = []
-        #         for task in table.scan().plan_files():
-        #             data_file_paths.append(task.file.file_path)
-
-        #         # Extract filenames and verify pattern
-        #         filenames = [path.split("/")[-1] for path in data_file_paths]
-        #         assert len(filenames) > 0, "No data files found in table"
-
-        #         # Verify files follow pattern: train-{index:05d}-iceberg.parquet
-        #         pattern = re.compile(r"^train-\d{5}-iceberg\.parquet$")
-        #         matching_files = [f for f in filenames if pattern.match(f)]
-        #         assert len(matching_files) > 0, (
-        #             f"No files matching HF pattern found. Files: {filenames}"
-        #         )

@@ -11,6 +11,7 @@ import pytest
 import requests
 import uvicorn
 from datasets import Dataset
+from huggingface_hub import HfApi
 from pyiceberg.catalog.rest import RestCatalog
 
 from faceberg.catalog import LocalCatalog, RemoteCatalog
@@ -51,7 +52,7 @@ def hf_test_credentials(request):
 @contextmanager
 def local_catalog(path):
     uri = f"file://{path.as_posix()}"
-    catalog = LocalCatalog(name="test-local-catalog", uri=uri)
+    catalog = LocalCatalog(name="local", uri=uri)
     try:
         catalog.init()
         yield catalog
@@ -62,8 +63,8 @@ def local_catalog(path):
 @contextmanager
 def remote_catalog(hf_org, hf_token):
     # Create unique repo name for this test session
-    uri = f"hf://datasets/{hf_org}/faceberg-test"
-    catalog = RemoteCatalog(name="faceberg-test", uri=uri, hf_token=hf_token)
+    uri = f"hf://datasets/{hf_org}/faceberg-catalog"
+    catalog = RemoteCatalog(name="remote", uri=uri, hf_token=hf_token)
 
     # Remove the testing repo if it exists from previous runs
     catalog.hf_api.delete_repo(catalog.hf_repo, repo_type=catalog.hf_repo_type, missing_ok=True)
@@ -188,7 +189,7 @@ def rest_catalog(rest_server):
 
 
 @contextmanager
-def remote_dataset(hf_org, hf_token):
+def remote_dataset(hf_org, hf_token, postfix):
     """Create a small synthetic dataset for testing writes.
 
     Creates and publishes a small synthetic dataset to HuggingFace Hub that can
@@ -201,7 +202,9 @@ def remote_dataset(hf_org, hf_token):
     Yields:
         Dataset repo ID
     """
-    dataset_repo = f"{hf_org}/faceberg-test-dataset"
+    hf_repo = f"{hf_org}/faceberg-dataset-{postfix}"
+    hf_api = HfApi(token=hf_token)
+    hf_api.delete_repo(repo_id=hf_repo, repo_type="dataset", missing_ok=True)
     try:
         # Create small synthetic dataset
         # Note: "split" column is added automatically by add_dataset, not in the data
@@ -214,14 +217,13 @@ def remote_dataset(hf_org, hf_token):
 
         # Push dataset to hub (creates repo and uploads data)
         dataset.push_to_hub(
-            dataset_repo,
+            hf_repo,
             token=hf_token,
             private=False,
         )
 
-        yield dataset_repo
+        yield hf_repo
     finally:
-        # hf_api.delete_repo(repo_id=dataset_repo, repo_type="dataset", missing_ok=True)
         pass
 
 
@@ -244,7 +246,7 @@ def writable_dataset(catalog, request):
     hf_org, hf_token = hf_test_credentials(request)
 
     # Create a small synthetic test dataset on HuggingFace Hub
-    with remote_dataset(hf_org, hf_token) as dataset_repo:
+    with remote_dataset(hf_org, hf_token, postfix=catalog.name) as dataset_repo:
         # Add dataset to catalog - this discovers the uploaded files and creates Iceberg metadata
         # No config specified - let it auto-detect from parquet files
         catalog.add_dataset(
