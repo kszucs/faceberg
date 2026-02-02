@@ -25,7 +25,7 @@ from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionKey, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.serializers import FromInputFile
-from pyiceberg.table import CommitTableRequest, CommitTableResponse, Table
+from pyiceberg.table import CommitTableResponse, Table
 from pyiceberg.table.locations import LocationProvider
 from pyiceberg.table.metadata import new_table_metadata
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER, SortOrder
@@ -217,37 +217,21 @@ class StagingContext:
         self.changes = []
 
     def add(self, path_in_repo: Union[str, Path]) -> None:
-        """Record a file addition in staged changes.
+        """Record a file addition in staged changes."""
+        path = self.path / path_in_repo
 
-        Args:
-            path_in_repo: Relative path in repository
-        """
-        self.changes.append(("add", str(path_in_repo)))
+        if path.is_dir():
+            # add all files under the folder
+            for file_path in path.rglob("*"):
+                if file_path.is_file():
+                    relative_path = file_path.relative_to(self.path)
+                    self.changes.append(CommitOperationAdd(str(relative_path), file_path))
+        else:
+            self.changes.append(CommitOperationAdd(str(path_in_repo), path))
 
-    def delete(self, path_in_repo: Union[str, Path]) -> None:
-        """Record a file/directory deletion in staged changes.
-
-        Args:
-            path_in_repo: Relative path in repository to delete
-        """
-        self.changes.append(("delete", str(path_in_repo)))
-
-    def write(self, filename: str, content: str) -> None:
-        """Write content to a file in the staging directory.
-
-        Args:
-            filename: Name of the file to write
-            content: Content to write to the file
-        """
-        file_path = self.path / filename
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        self.changes.append(("add", filename))
-
-    # TODO(kszucs): maybe add move
-
-    def __iter__(self):
-        return iter(self.changes)
+    def delete(self, path_in_repo: Union[str, Path], is_folder: bool = False) -> None:
+        """Record a file/directory deletion in staged changes."""
+        self.changes.append(CommitOperationDelete(str(path_in_repo), is_folder=is_folder))
 
     def __truediv__(self, other: str | Path) -> Path:
         return self.path / other
@@ -327,6 +311,7 @@ class BaseCatalog(Catalog):
         """
         # Set default properties for HuggingFace hf:// protocol support
         # These can be overridden by user-provided properties
+        # TODO(kszucs): receive hf_token as a property?
         default_properties = {
             # Use custom HfFileIO that creates HfFileSystem with skip_instance_cache=True
             # This avoids deepcopy issues without needing monkey patching or single-threaded mode
@@ -391,7 +376,7 @@ class BaseCatalog(Catalog):
         config_path = self._checkout("faceberg.yml")
         return cfg.Config.from_yaml(config_path)
 
-    def _checkout(self, path: str) -> Path:
+    def _checkout(self, path: str | Path, is_dir: bool = False) -> Path:
         """Get local path to a file in the catalog.
 
         For LocalCatalog, returns path in catalog directory.
@@ -467,12 +452,13 @@ class BaseCatalog(Catalog):
             # save config since we added a namespace
             config.to_yaml(staging / "faceberg.yml")
 
-            # create the directory in staging
+            # create the directory in staging with a .gitkeep file
             (staging / identifier.path).mkdir(parents=True, exist_ok=True)
+            (staging / identifier.path / ".gitkeep").touch()
 
             # stage the changes
             staging.add("faceberg.yml")
-            staging.add(identifier.path)
+            staging.add(identifier.path / ".gitkeep")
 
     def drop_namespace(self, namespace: Union[str, Identifier]) -> None:
         """Drop a namespace.
@@ -503,7 +489,7 @@ class BaseCatalog(Catalog):
 
             # stage the changes
             staging.add("faceberg.yml")
-            staging.delete(identifier.path)
+            staging.delete(identifier.path, is_folder=True)
 
     def list_namespaces(self, namespace: Union[str, Identifier] = ()) -> List[Identifier]:
         """List namespaces.
@@ -734,7 +720,7 @@ class BaseCatalog(Catalog):
 
             # Mark the directory for deletion and stage config change
             staging.add("faceberg.yml")
-            staging.delete(identifier.path)
+            staging.delete(identifier.path, is_folder=True)
 
     def rename_table(
         self, from_identifier: Union[str, Identifier], to_identifier: Union[str, Identifier]
@@ -767,30 +753,23 @@ class BaseCatalog(Catalog):
                 raise TableAlreadyExistsError(f"Table {to_identifier} already exists")
 
             # Get source table directory
-            source_table_dir = self._checkout(from_identifier.path)
-            new_table_dir = staging / to_identifier.path
+            source_dir = self._checkout(from_identifier.path, is_dir=True)
+            destination_dir = staging / to_identifier.path
 
-            if source_table_dir.exists():
-                # Copy from source to new location in staging
-                shutil.copytree(source_table_dir, new_table_dir)
+            # Copy from source to new location in staging
+            shutil.copytree(source_dir, destination_dir)
 
-                # Record all files in the new table directory
-                for path in new_table_dir.rglob("*"):
-                    if path.is_file():
-                        staging.add(path.relative_to(staging.path))
-
-                # Add new table to config
-                config[to_identifier] = from_table
-
-            # Record deletion of old table directory
-            staging.delete(from_identifier.path)
-
-            # Remove old table from config
+            # Add new table to config and remove old table
+            config[to_identifier] = from_table
             del config[from_identifier]
 
             # Save config since we renamed a table (modified config structure)
             config.to_yaml(staging / "faceberg.yml")
+
+            # Stage the changes
             staging.add("faceberg.yml")
+            staging.add(destination_dir)
+            staging.delete(from_identifier.path, is_folder=True)
 
         return self.load_table(to_identifier)
 
@@ -1263,11 +1242,12 @@ class LocalCatalog(BaseCatalog):
         # Create and save empty config
         config.to_yaml(self.catalog_dir / "faceberg.yml")
 
-    def _checkout(self, path: str) -> Path:
+    def _checkout(self, path: str | Path, is_dir: bool = False) -> Path:
         """Get local path to a file/directory in the catalog.
 
         Args:
             path: Relative path within the catalog
+            is_dir: Whether the path is a directory
 
         Returns:
             Path in catalog directory (may or may not exist)
@@ -1283,37 +1263,23 @@ class LocalCatalog(BaseCatalog):
 
         Must be called within _staging() context.
         """
-        # Apply each operation
-        for action, path_in_repo in staging_ctx:
-            if action == "add":
+        for op in staging_ctx.changes:
+            if isinstance(op, CommitOperationAdd):
                 # Move file from staging to catalog_dir
-                src = staging_ctx.path / path_in_repo
-                dest = self.catalog_dir / path_in_repo
+                src = staging_ctx.path / op.path_in_repo
+                dest = self.catalog_dir / op.path_in_repo
 
-                # Ensure destination directory exists
+                # Ensure destination directory exists then move
                 dest.parent.mkdir(parents=True, exist_ok=True)
-
-                # Remove existing file/dir if present
-                if dest.exists():
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
-
-                # Move file from staging to catalog_dir
-                shutil.move(str(src), str(dest))
-
-            elif action == "delete":
-                # Remove directory from catalog_dir
-                path_to_delete = self.catalog_dir / path_in_repo
-                if path_to_delete.exists():
-                    if path_to_delete.is_dir():
-                        shutil.rmtree(path_to_delete)
-                    else:
-                        path_to_delete.unlink()
-
+                src.replace(dest)
+            elif isinstance(op, CommitOperationDelete):
+                path = self.catalog_dir / op.path_in_repo
+                if op.is_folder:
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
             else:
-                raise ValueError(f"Unknown action: {action}")
+                raise ValueError(f"Unknown action type: {type(op).__name__}")
 
 
 class RemoteCatalog(BaseCatalog):
@@ -1343,6 +1309,7 @@ class RemoteCatalog(BaseCatalog):
             name: Catalog name
             uri: HuggingFace Hub URI (e.g., "hf://datasets/org/repo" or "hf://spaces/org/repo")
             hf_token: HuggingFace authentication token (optional)
+            hf_api: HuggingFace API instance for dependency injection (optional, for testing)
             **properties: Additional catalog properties
         """
         # Parse HuggingFace Hub URI to extract repo type and repo ID
@@ -1358,7 +1325,7 @@ class RemoteCatalog(BaseCatalog):
                 f"Expected format: hf://{{repo_type}}/{{org}}/{{repo}}"
             )
 
-        # Hub-specific attributes
+        # Hub-specific attributes - use provided API or create new one
         self._hf_api = HfApi(token=hf_token)
 
         repo_type, self._hf_repo = parts
@@ -1398,8 +1365,14 @@ class RemoteCatalog(BaseCatalog):
             # For spaces, add README and Dockerfile
             if self._hf_repo_type == "space":
                 spaces_dir = Path(__file__).parent / "spaces"
-                staging.write("README.md", (spaces_dir / "README.md").read_text())
-                staging.write("Dockerfile", (spaces_dir / "Dockerfile").read_text())
+                readme_content = (spaces_dir / "README.md").read_text()
+                dockerfile_content = (spaces_dir / "Dockerfile").read_text()
+
+                (staging / "README.md").write_text(readme_content)
+                (staging / "Dockerfile").write_text(dockerfile_content)
+
+                staging.add("README.md")
+                staging.add("Dockerfile")
 
     def _commit(self, staging_ctx) -> None:
         """Persist staged changes to HuggingFace Hub.
@@ -1409,58 +1382,52 @@ class RemoteCatalog(BaseCatalog):
 
         Must be called within _staging() context.
         """
-        # Convert staging changes to HF operations
-        operations = []
-        for action, path_in_repo in staging_ctx:
-            if action == "add":
-                # File is in staging directory
-                path_or_fileobj = staging_ctx.path / path_in_repo
-                operations.append(
-                    CommitOperationAdd(
-                        path_in_repo=path_in_repo, path_or_fileobj=str(path_or_fileobj)
-                    )
-                )
-            elif action == "delete":
-                operations.append(CommitOperationDelete(path_in_repo=path_in_repo))
-            else:
-                raise ValueError(f"Unknown staging action: {action}")
-
-        # Create commit with all operations
+        # Create commit with all operations already stored in HF flavor in staging_ctx
         self._hf_api.create_commit(
             repo_id=self._hf_repo,
             repo_type=self._hf_repo_type,
-            operations=operations,
+            operations=staging_ctx.changes,
             commit_message="Sync catalog metadata",
         )
 
-    def _checkout(self, path: str) -> Path:
-        """Get local path to a file in the catalog.
+    def _checkout(self, path: str | Path, is_dir: bool = False) -> Path:
+        """Get local path to a file or directory in the catalog.
 
-        Downloads file from HF Hub and returns cached path.
+        For files: downloads individual file using hf_hub_download.
+        For directories: downloads directory contents using snapshot_download with allow_patterns.
 
         Args:
             path: Relative path within the catalog
 
         Returns:
-            Path to the file in HF cache
+            Path to the file or directory in local cache
 
         Raises:
-            FileNotFoundError: If file doesn't exist
+            FileNotFoundError: If file/directory doesn't exist
         """
-        try:
-            local_path = self._hf_api.hf_hub_download(
+        path = Path(path)
+
+        if is_dir:
+            # download directory using snapshot_download
+            local_path = self._hf_api.snapshot_download(
                 repo_id=self._hf_repo,
-                filename=path,
+                repo_type=self._hf_repo_type,
+                allow_patterns=f"{path.as_posix()}/**",
+            )
+            return Path(local_path) / path
+        else:
+            # download single file using hf_hub_download
+            local_path = self._hf_api.hf_hub_download(
+                filename=str(path),
+                repo_id=self._hf_repo,
                 repo_type=self._hf_repo_type,
             )
             return Path(local_path)
-        except Exception as e:
-            if "not found" in str(e).lower() or "404" in str(e):
-                raise FileNotFoundError(
-                    f"File '{path}' not found in repository {self._hf_repo}. "
-                    f"Initialize the catalog first by calling catalog.init()"
-                ) from e
-            raise
+
+    @property
+    def hf_api(self) -> HfApi:
+        """HuggingFace API instance."""
+        return self._hf_api
 
     @property
     def hf_repo(self) -> str:

@@ -1,73 +1,123 @@
 """Shared pytest fixtures for catalog tests."""
 
+import os
+import shutil
 import socket
 import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 import requests
 import uvicorn
 
-from faceberg.catalog import LocalCatalog
-from faceberg.config import Config, Dataset, Namespace, Table
+from faceberg.catalog import LocalCatalog, RemoteCatalog
+from faceberg.config import Config, Namespace
 from faceberg.server import create_app
 
 
-@pytest.fixture(scope="session")
-def synced_catalog_dir(tmp_path_factory):
-    """Create temp directory for synced catalog (session-scoped)."""
-    return tmp_path_factory.mktemp("synced_catalog")
+def pytest_addoption(parser):
+    """Add custom pytest command line options."""
+    parser.addoption(
+        "--hf-live",
+        action="store_true",
+        default=False,
+        help="Enable live HuggingFace Hub testing (requires HF_TOKEN)",
+    )
 
 
-@pytest.fixture(scope="session")
-def synced_catalog(synced_catalog_dir):
-    """Create and sync catalog with test dataset (session-scoped).
+@contextmanager
+def local_catalog(path):
+    uri = f"file://{path.as_posix()}"
+    catalog = LocalCatalog(name="test-local-catalog", uri=uri)
+    try:
+        catalog.init()
+        yield catalog
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+@contextmanager
+def remote_catalog(hf_org, hf_token):
+    # Create unique repo name for this test session
+    uri = f"hf://datasets/{hf_org}/faceberg-test"
+    catalog = RemoteCatalog(name="faceberg-test", uri=uri, hf_token=hf_token)
+
+    # Remove the testing repo if it exists from previous runs
+    catalog.hf_api.delete_repo(catalog.hf_repo, repo_type=catalog.hf_repo_type, missing_ok=True)
+    try:
+        catalog.init()
+        yield catalog
+    finally:
+        # Do not cleanup to allow inspection of test artifacts
+        pass
+
+
+@pytest.fixture(params=["local", "remote"])
+def catalog(request, tmp_path):
+    """Parametrized empty catalog fixture for both local and remote catalogs.
+
+    This fixture provides an empty LocalCatalog or RemoteCatalog for testing
+    catalog operations.
+
+    For remote catalogs:
+    - Requires --hf-live flag and HF_TOKEN environment variable
+    - Creates a unique repository per test session to avoid conflicts
+    - Repository format: hf://datasets/{org}/faceberg-test-{session_id}
+
+    Args:
+        request: Pytest request object with param ("local" or "remote")
+        tmp_path: Temporary directory for this test
+
+    Returns:
+        Either an empty LocalCatalog or RemoteCatalog instance
+    """
+    if request.param == "local":
+        # Create local catalog within context manager
+        with local_catalog(tmp_path) as catalog:
+            yield catalog
+    elif request.param == "remote":
+        # Check if live HF testing is enabled
+        hf_live = request.config.getoption("--hf-live")
+        hf_org = os.environ.get("FACEBERG_TEST_ORG")
+        hf_token = os.environ.get("FACEBERG_TEST_TOKEN")
+        # TODO(kszucs): hf_repo should be the unique repo name per test session
+        # maybe also check the token scopes
+        if not hf_live:
+            pytest.skip("Live HF testing not enabled (use --hf-live)")
+        if not (hf_org and hf_token):
+            pytest.skip(
+                "FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables must be set"
+            )
+        # Create remote catalog within context manager
+        with remote_catalog(hf_org, hf_token) as catalog:
+            yield catalog
+    else:
+        raise ValueError(f"Unknown catalog type: {request.param}")
+
+
+@pytest.fixture
+def synced_catalog(catalog):
+    """Catalog with synced test dataset (inherits parametrization from catalog).
 
     Syncs stanfordnlp/imdb (plain_text config) - a small public dataset with
     org prefix compatible with DuckDB's httpfs hf:// URL requirements.
 
-    This fixture is session-scoped to minimize API calls and improve test speed.
-    The catalog is synced once and shared across all tests.
+    Note: Tests that access table data or metadata (schema, snapshots, scanning)
+    with hf:// URLs will be skipped for remote catalog because PyIceberg's HfFileSystem
+    tries to validate repository existence which requires network access.
+
+    Args:
+        catalog: Empty catalog instance (local or remote, from parametrized fixture)
+
+    Returns:
+        Catalog instance with synced imdb dataset
     """
-    # Create catalog directory
-    synced_catalog_dir.mkdir(parents=True, exist_ok=True)
+    catalog.add_dataset("stanfordnlp.imdb", repo="stanfordnlp/imdb", config="plain_text")
 
-    # Create store with test dataset
-    # Use file:// + absolute path (file:// + /path gives file:///path)
-    catalog_uri = f"file://{synced_catalog_dir.as_posix()}"
-    store_obj = Config(
-        default=Namespace(
-            imdb_plain_text=Dataset(
-                repo="stanfordnlp/imdb",
-                config="plain_text",
-            )
-        )
-    )
-
-    # Write config to faceberg.yml
-    config_file = synced_catalog_dir / "faceberg.yml"
-    store_obj.to_yaml(config_file)
-
-    # Create catalog instance (hf:// protocol support is built-in)
-    catalog = LocalCatalog(name=str(synced_catalog_dir), uri=catalog_uri)
-
-    # Sync all tables (token=None works for public datasets)
-    synced_tables = catalog.sync_datasets()
-
-    # Verify sync was successful
-    assert len(synced_tables) == 1, f"Expected 1 table, got {len(synced_tables)}"
+    assert ("stanfordnlp",) in catalog.list_namespaces()
 
     return catalog
-
-
-@pytest.fixture
-def catalog(synced_catalog):
-    """Provide catalog instance (function-scoped wrapper).
-
-    This is a function-scoped fixture that provides access to the session-scoped
-    synced catalog. The catalog has built-in hf:// protocol support via HfFileIO.
-    """
-    return synced_catalog
 
 
 @pytest.fixture
@@ -89,9 +139,7 @@ def writable_catalog(tmp_path):
 
     # Create config with empty default namespace
     catalog_uri = f"file://{catalog_dir.as_posix()}"
-    store_obj = Config(
-        default=Namespace()
-    )
+    store_obj = Config(default=Namespace())
 
     # Write config to faceberg.yml
     config_file = catalog_dir / "faceberg.yml"
@@ -111,9 +159,7 @@ def writable_catalog(tmp_path):
     from pyiceberg.transforms import IdentityTransform
 
     partition_spec = PartitionSpec(
-        PartitionField(
-            source_id=1, field_id=1000, transform=IdentityTransform(), name="split"
-        )
+        PartitionField(source_id=1, field_id=1000, transform=IdentityTransform(), name="split")
     )
 
     # Create the table

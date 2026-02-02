@@ -20,8 +20,9 @@ from pyiceberg.transforms import IdentityTransform
 # =============================================================================
 
 
-def test_scan_basic(catalog):
+def test_scan_basic(synced_catalog):
     """Test creating a basic scan object."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     scan = table.scan()
 
@@ -34,8 +35,9 @@ def test_scan_basic(catalog):
     assert hasattr(scan, "to_arrow_batch_reader")
 
 
-def test_scan_to_arrow(catalog):
+def test_scan_to_arrow(synced_catalog):
     """Test scanning table to Arrow table."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     scan = table.scan()
 
@@ -59,8 +61,9 @@ def test_scan_to_arrow(catalog):
     assert any(split in split_values for split in ["train", "test", "unsupervised"])
 
 
-def test_scan_to_pandas(catalog):
+def test_scan_to_pandas(synced_catalog):
     """Test scanning table to Pandas DataFrame."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     scan = table.scan()
 
@@ -78,8 +81,9 @@ def test_scan_to_pandas(catalog):
     assert is_string_dtype(df["text"].dtype)
 
 
-def test_scan_with_selected_fields(catalog):
+def test_scan_with_selected_fields(synced_catalog):
     """Test scanning with column projection."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
 
     # Scan with only specific columns selected
@@ -93,8 +97,9 @@ def test_scan_with_selected_fields(catalog):
     assert "split" not in column_names
 
 
-def test_scan_limit(catalog):
+def test_scan_limit(synced_catalog):
     """Test scanning with row limit."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
 
     # PyIceberg doesn't support limit() directly on scan, need to materialize first
@@ -113,8 +118,9 @@ def test_scan_limit(catalog):
 # =============================================================================
 
 
-def test_read_schema(catalog):
+def test_read_schema(synced_catalog):
     """Test reading table schema."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     schema = table.schema()
 
@@ -132,8 +138,9 @@ def test_read_schema(catalog):
     assert schema.fields[0].name == "split"
 
 
-def test_read_partition_spec(catalog):
+def test_read_partition_spec(synced_catalog):
     """Test reading partition specification."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     spec = table.spec()
 
@@ -152,8 +159,9 @@ def test_read_partition_spec(catalog):
     assert isinstance(split_partition.transform, IdentityTransform)
 
 
-def test_read_properties(catalog):
+def test_read_properties(synced_catalog):
     """Test reading table properties."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     properties = table.properties
 
@@ -170,8 +178,9 @@ def test_read_properties(catalog):
     assert "schema.name-mapping.default" in properties
 
 
-def test_read_snapshots(catalog):
+def test_read_snapshots(synced_catalog):
     """Test reading table snapshots."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     snapshots = list(table.snapshots())
 
@@ -185,8 +194,9 @@ def test_read_snapshots(catalog):
     assert snapshot.snapshot_id > 0
 
 
-def test_current_snapshot(catalog):
+def test_current_snapshot(synced_catalog):
     """Test reading current snapshot."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
     snapshot = table.current_snapshot()
 
@@ -205,8 +215,9 @@ def test_current_snapshot(catalog):
 # =============================================================================
 
 
-def test_partition_filter_single_split(catalog):
+def test_partition_filter_single_split(synced_catalog):
     """Test partition pruning with single split filter."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
 
     # Scan with split filter
@@ -221,8 +232,9 @@ def test_partition_filter_single_split(catalog):
     assert arrow_table.num_rows > 0
 
 
-def test_partition_filter_multiple_splits(catalog):
+def test_partition_filter_multiple_splits(synced_catalog):
     """Test partition pruning with multiple split filter."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
 
     # Scan with IN filter for multiple splits
@@ -240,8 +252,9 @@ def test_partition_filter_multiple_splits(catalog):
     assert len(df) > 0
 
 
-def test_scan_all_partitions(catalog):
+def test_scan_all_partitions(synced_catalog):
     """Test scanning all partitions without filter."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
 
     # Scan without filter
@@ -263,8 +276,9 @@ def test_scan_all_partitions(catalog):
 # =============================================================================
 
 
-def test_scan_empty_result(catalog):
+def test_scan_empty_result(synced_catalog):
     """Test scanning with filter that returns no rows."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
 
     # Scan with impossible filter
@@ -279,8 +293,9 @@ def test_scan_empty_result(catalog):
     assert "text" in arrow_table.schema.names
 
 
-def test_multiple_scans_same_table(catalog):
+def test_multiple_scans_same_table(synced_catalog):
     """Test multiple independent scans from the same table."""
+    catalog = synced_catalog
     table = catalog.load_table("default.imdb_plain_text")
 
     # Create two independent scans
@@ -471,11 +486,13 @@ def test_append_data_basic(writable_catalog):
     table = writable_catalog.load_table("default.test_table")
 
     # Create test data matching schema
-    test_data = pa.Table.from_pydict({
-        "split": ["test", "test"],
-        "text": ["Test review 1", "Test review 2"],
-        "label": [1, 0],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test", "test"],
+            "text": ["Test review 1", "Test review 2"],
+            "label": [1, 0],
+        }
+    )
 
     # Append data - should complete without error
     table.append(test_data)
@@ -492,11 +509,13 @@ def test_append_data_verify_count(writable_catalog):
     before_count = table.scan().to_arrow().num_rows
 
     # Create and append test data
-    test_data = pa.Table.from_pydict({
-        "split": ["test", "test"],
-        "text": ["Count test review 1", "Count test review 2"],
-        "label": [1, 0],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test", "test"],
+            "text": ["Count test review 1", "Count test review 2"],
+            "label": [1, 0],
+        }
+    )
     table.append(test_data)
 
     # Verify count increased by expected amount
@@ -510,11 +529,13 @@ def test_append_data_verify_scan(writable_catalog):
 
     # Create test data with unique text for verification
     unique_text = f"Unique test review {uuid.uuid4()}"
-    test_data = pa.Table.from_pydict({
-        "split": ["test"],
-        "text": [unique_text],
-        "label": [1],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test"],
+            "text": [unique_text],
+            "label": [1],
+        }
+    )
 
     # Append data
     table.append(test_data)
@@ -537,11 +558,13 @@ def test_append_data_snapshot_history(writable_catalog):
     snapshot_count_before = len(snapshots_before)
 
     # Create and append test data
-    test_data = pa.Table.from_pydict({
-        "split": ["test"],
-        "text": ["Snapshot test review"],
-        "label": [1],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test"],
+            "text": ["Snapshot test review"],
+            "label": [1],
+        }
+    )
     table.append(test_data)
 
     # Reload table to get updated snapshots
@@ -556,6 +579,7 @@ def test_append_data_snapshot_history(writable_catalog):
     assert latest_snapshot.summary is not None
     # Summary.operation is an enum, not a string
     from pyiceberg.table.snapshots import Operation
+
     assert latest_snapshot.summary.operation == Operation.APPEND
 
 
@@ -567,11 +591,13 @@ def test_append_data_partition_integrity(writable_catalog):
     spec_before = table.spec()
 
     # Create test data for specific partition
-    test_data = pa.Table.from_pydict({
-        "split": ["test", "test"],
-        "text": ["Partition test review 1", "Partition test review 2"],
-        "label": [1, 0],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test", "test"],
+            "text": ["Partition test review 1", "Partition test review 2"],
+            "label": [1, 0],
+        }
+    )
     table.append(test_data)
 
     # Reload table and verify partition spec unchanged
@@ -600,11 +626,13 @@ def test_rest_append_data_basic(rest_catalog):
     table = rest_catalog.load_table("default.imdb_plain_text")
 
     # Create test data matching schema
-    test_data = pa.Table.from_pydict({
-        "split": ["test", "test"],
-        "text": ["REST test review 1", "REST test review 2"],
-        "label": [1, 0],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test", "test"],
+            "text": ["REST test review 1", "REST test review 2"],
+            "label": [1, 0],
+        }
+    )
 
     # Append data - should complete without error
     table.append(test_data)
@@ -622,11 +650,13 @@ def test_rest_append_data_verify_count(rest_catalog):
     before_count = table.scan().to_arrow().num_rows
 
     # Create and append test data
-    test_data = pa.Table.from_pydict({
-        "split": ["test", "test"],
-        "text": ["REST count test review 1", "REST count test review 2"],
-        "label": [1, 0],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test", "test"],
+            "text": ["REST count test review 1", "REST count test review 2"],
+            "label": [1, 0],
+        }
+    )
     table.append(test_data)
 
     # Verify count increased by expected amount
@@ -641,11 +671,13 @@ def test_rest_append_data_verify_scan(rest_catalog):
 
     # Create test data with unique text for verification
     unique_text = f"REST unique test review {uuid.uuid4()}"
-    test_data = pa.Table.from_pydict({
-        "split": ["test"],
-        "text": [unique_text],
-        "label": [1],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test"],
+            "text": [unique_text],
+            "label": [1],
+        }
+    )
 
     # Append data
     table.append(test_data)
@@ -669,11 +701,13 @@ def test_rest_append_data_snapshot_history(rest_catalog):
     snapshot_count_before = len(snapshots_before)
 
     # Create and append test data
-    test_data = pa.Table.from_pydict({
-        "split": ["test"],
-        "text": ["REST snapshot test review"],
-        "label": [1],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test"],
+            "text": ["REST snapshot test review"],
+            "label": [1],
+        }
+    )
     table.append(test_data)
 
     # Reload table to get updated snapshots
@@ -688,6 +722,7 @@ def test_rest_append_data_snapshot_history(rest_catalog):
     assert latest_snapshot.summary is not None
     # Summary.operation is an enum, not a string
     from pyiceberg.table.snapshots import Operation
+
     assert latest_snapshot.summary.operation == Operation.APPEND
 
 
@@ -700,11 +735,13 @@ def test_rest_append_data_partition_integrity(rest_catalog):
     spec_before = table.spec()
 
     # Create test data for specific partition
-    test_data = pa.Table.from_pydict({
-        "split": ["test", "test"],
-        "text": ["REST partition test review 1", "REST partition test review 2"],
-        "label": [1, 0],
-    })
+    test_data = pa.Table.from_pydict(
+        {
+            "split": ["test", "test"],
+            "text": ["REST partition test review 1", "REST partition test review 2"],
+            "label": [1, 0],
+        }
+    )
     table.append(test_data)
 
     # Reload table and verify partition spec unchanged
