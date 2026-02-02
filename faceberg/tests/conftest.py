@@ -10,9 +10,9 @@ from contextlib import contextmanager
 import pytest
 import requests
 import uvicorn
+from pyiceberg.catalog.rest import RestCatalog
 
 from faceberg.catalog import LocalCatalog, RemoteCatalog
-from faceberg.config import Config, Namespace
 from faceberg.server import create_app
 
 
@@ -121,59 +121,6 @@ def synced_catalog(catalog):
 
 
 @pytest.fixture
-def writable_catalog(tmp_path):
-    """Create catalog with writable table for testing write operations.
-
-    Creates a catalog with a writable table (not from HuggingFace dataset)
-    that can be used to test append and other write operations.
-    """
-    from pyiceberg.schema import Schema
-    from pyiceberg.types import LongType, NestedField, StringType
-
-    # Create catalog directory
-    catalog_dir = tmp_path / "writable_catalog"
-    catalog_dir.mkdir()
-
-    # Define table data URI
-    table_data_uri = f"file://{(catalog_dir / 'data').as_posix()}"
-
-    # Create config with empty default namespace
-    catalog_uri = f"file://{catalog_dir.as_posix()}"
-    store_obj = Config(default=Namespace())
-
-    # Write config to faceberg.yml
-    config_file = catalog_dir / "faceberg.yml"
-    store_obj.to_yaml(config_file)
-
-    # Create catalog instance
-    catalog = LocalCatalog(name=str(catalog_dir), uri=catalog_uri)
-
-    # Create the table with schema matching imdb dataset
-    schema = Schema(
-        NestedField(field_id=1, name="split", field_type=StringType(), required=False),
-        NestedField(field_id=2, name="text", field_type=StringType(), required=False),
-        NestedField(field_id=3, name="label", field_type=LongType(), required=False),
-    )
-
-    from pyiceberg.partitioning import PartitionField, PartitionSpec
-    from pyiceberg.transforms import IdentityTransform
-
-    partition_spec = PartitionSpec(
-        PartitionField(source_id=1, field_id=1000, transform=IdentityTransform(), name="split")
-    )
-
-    # Create the table
-    catalog.create_table(
-        identifier="default.test_table",
-        schema=schema,
-        partition_spec=partition_spec,
-        properties={"write.data.path": table_data_uri},
-    )
-
-    return catalog
-
-
-@pytest.fixture(scope="session")
 def rest_server(synced_catalog):
     """Start REST catalog server for testing (session-scoped).
 
@@ -186,7 +133,7 @@ def rest_server(synced_catalog):
         port = s.getsockname()[1]
 
     base_url = f"http://127.0.0.1:{port}"
-    app = create_app(str(synced_catalog.catalog_dir))
+    app = create_app(synced_catalog.uri)
 
     # Start server in background thread
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
@@ -209,3 +156,18 @@ def rest_server(synced_catalog):
     # Cleanup
     server.should_exit = True
     thread.join(timeout=5)
+
+
+@pytest.fixture
+def rest_catalog(rest_server):
+    """Create PyIceberg RestCatalog connected to test server.
+
+    Configures the catalog to use HfFileIO for handling hf:// URIs.
+    """
+    return RestCatalog(
+        name="faceberg_rest",
+        uri=rest_server,
+        **{
+            "py-io-impl": "faceberg.catalog.HfFileIO",
+        },
+    )

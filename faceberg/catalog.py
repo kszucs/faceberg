@@ -564,15 +564,15 @@ class BaseCatalog(Catalog):
         if identifier in config:
             raise TableAlreadyExistsError(f"Table {identifier} already exists")
 
-        if location is not None:
-            raise NotImplementedError("Custom table locations are not supported yet")
-
         # Convert schema if needed
         schema = self._convert_schema_if_needed(schema)
 
+        if location is None:
+            raise ValueError("location parameter is required")
+
         with self._staging() as staging:
             # Create table URI for metadata
-            table_uri = self.uri / identifier.path
+            table_uri = URI(location)
 
             # Create table metadata with URI location
             metadata = new_table_metadata(
@@ -594,7 +594,7 @@ class BaseCatalog(Catalog):
             (staging / version_hint_path).write_text(str(metadata.last_sequence_number))
 
             # Add table to config
-            config[identifier] = cfg.Table()
+            config[identifier] = cfg.Table(uri=str(table_uri))
             config.to_yaml(staging / "faceberg.yml")
 
             # Record metadata and version hint additions
