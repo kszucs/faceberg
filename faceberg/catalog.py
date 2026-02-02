@@ -20,7 +20,7 @@ from pyiceberg.exceptions import (
     NoSuchTableError,
     TableAlreadyExistsError,
 )
-from pyiceberg.io import load_file_io
+from pyiceberg.io import FileIO
 from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionKey, PartitionSpec
 from pyiceberg.schema import Schema
@@ -376,6 +376,28 @@ class BaseCatalog(Catalog):
         config_path = self._checkout("faceberg.yml")
         return cfg.Config.from_yaml(config_path)
 
+    def _load_file_io(self, location: str) -> FileIO:
+        """Load FileIO with runtime authentication.
+
+        Wraps load_file_io to inject runtime-only credentials (like HuggingFace token)
+        that should never be persisted to metadata files.
+
+        Args:
+            location: URI location for the FileIO
+
+        Returns:
+            FileIO instance with authentication configured
+        """
+        from pyiceberg.io import load_file_io
+
+        # Start with catalog's persisted properties
+        props = dict(self.properties)
+        # Add runtime-only token if available
+        if self._hf_token:
+            props["hf.token"] = self._hf_token
+
+        return load_file_io(properties=props, location=location)
+
     def _checkout(self, path: str | Path, is_dir: bool = False) -> Path:
         """Get local path to a file in the catalog.
 
@@ -631,7 +653,7 @@ class BaseCatalog(Catalog):
         version_hint_uri = table_uri / "metadata/version-hint.text"
 
         # Load FileIO to read version hint
-        io = load_file_io(properties=self.properties, location=table_uri)
+        io = self._load_file_io(location=str(table_uri))
 
         # Read version hint to find current metadata version
         try:
@@ -946,7 +968,7 @@ class BaseCatalog(Catalog):
             # Check if metadata files exist
             table_uri = self.uri / identifier.path
             version_hint_uri = table_uri / "metadata/version-hint.text"
-            io = load_file_io(properties=self.properties, location=version_hint_uri)
+            io = self._load_file_io(location=str(version_hint_uri))
 
             try:
                 with io.new_input(version_hint_uri).open():
@@ -1085,7 +1107,7 @@ class BaseCatalog(Catalog):
         table_uri = self.uri / identifier.path
         version_hint_uri = table_uri / "metadata/version-hint.text"
 
-        io = load_file_io(properties=self.properties, location=table_uri)
+        io = self._load_file_io(location=str(table_uri))
         has_metadata = False
         try:
             with io.new_input(version_hint_uri).open():
@@ -1309,7 +1331,6 @@ class RemoteCatalog(BaseCatalog):
             name: Catalog name
             uri: HuggingFace Hub URI (e.g., "hf://datasets/org/repo" or "hf://spaces/org/repo")
             hf_token: HuggingFace authentication token (optional)
-            hf_api: HuggingFace API instance for dependency injection (optional, for testing)
             **properties: Additional catalog properties
         """
         # Parse HuggingFace Hub URI to extract repo type and repo ID

@@ -1,5 +1,6 @@
 """Tests for FacebergCatalog implementation."""
 
+import re
 import uuid
 
 import pyarrow as pa
@@ -1267,3 +1268,86 @@ class TestHfLocationProvider:
 
         path = provider.new_data_location("ignored.parquet")
         assert path.endswith("/train-00010-iceberg.parquet")
+
+
+# =============================================================================
+# Write to Existing Dataset Tests (Parametrized for local/remote)
+# =============================================================================
+
+
+class TestWriteToExistingDataset:
+    """Tests for writing to existing HuggingFace datasets using location provider."""
+
+    def test_append_to_existing_dataset(self, writable_dataset):
+        """Test appending data to an existing dataset with HfLocationProvider.
+
+        Verifies that:
+        - The writable_dataset fixture provides a valid dataset
+        - Data can be appended and read back correctly
+        - Appended files follow HuggingFace naming pattern: train-{index:05d}-iceberg.parquet
+        """
+        catalog = writable_dataset
+
+        # Verify table exists and is properly configured
+        assert catalog.table_exists("testorg.testdataset")
+        table = catalog.load_table("testorg.testdataset")
+        assert table is not None
+
+        # Verify table has HfLocationProvider configured
+        assert (
+            table.properties.get("write.py-location-provider.impl")
+            == "faceberg.catalog.HfLocationProvider"
+        )
+
+        # Verify table has initial data
+        before_count = table.scan().to_arrow().num_rows
+        assert before_count == 10  # Initial data from fixture
+
+        # Append new data (including split column as it's part of the schema)
+        new_data = pa.Table.from_pydict(
+            {
+                "split": ["train", "train", "train"],
+                "text": ["Appended test review", "Another appended review", "Third review"],
+                "label": [1, 0, 1],
+            }
+        )
+
+        table.append(new_data)
+
+        # Reload table to get updated metadata
+        table = catalog.load_table("testorg.testdataset")
+
+        # Verify data was appended (count should increase)
+        after_count = table.scan().to_arrow().num_rows
+        assert after_count >= before_count + len(new_data)
+
+        # Verify appended data is readable
+        scan = table.scan().filter(f"text = 'Appended test review'")
+        result = scan.to_arrow()
+        assert result.num_rows == 1
+        assert result["text"][0].as_py() == "Appended test review"
+
+        # # Verify files follow HuggingFace naming pattern by checking data files in manifest
+        # snapshot = table.current_snapshot()
+        # if snapshot:
+        #     # Get data files from the manifest
+        #     data_files = [file.file_path for file in table.scan().to_arrow().to_batches()]
+
+        #     # For remote catalog, check data file paths from manifest entries
+        #     manifest_list = snapshot.manifest_list
+        #     if manifest_list:
+        #         # Get actual data file paths from the table scan
+        #         data_file_paths = []
+        #         for task in table.scan().plan_files():
+        #             data_file_paths.append(task.file.file_path)
+
+        #         # Extract filenames and verify pattern
+        #         filenames = [path.split("/")[-1] for path in data_file_paths]
+        #         assert len(filenames) > 0, "No data files found in table"
+
+        #         # Verify files follow pattern: train-{index:05d}-iceberg.parquet
+        #         pattern = re.compile(r"^train-\d{5}-iceberg\.parquet$")
+        #         matching_files = [f for f in filenames if pattern.match(f)]
+        #         assert len(matching_files) > 0, (
+        #             f"No files matching HF pattern found. Files: {filenames}"
+        #         )

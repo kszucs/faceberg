@@ -56,6 +56,7 @@ class TableInfo:
 
     # Data files
     files: List[FileInfo]  # List of data files with metadata
+    data_dir: str  # Data directory path relative to repo root
 
     # Source metadata (for traceability)
     source_repo: str  # HuggingFace repo ID
@@ -86,11 +87,19 @@ class TableInfo:
         # Create schema name mapping for Parquet files without embedded field IDs
         name_mapping = build_name_mapping(self.schema)
 
+        # Use data directory from discovery
+        data_path = (
+            f"hf://datasets/{self.source_repo}/{self.data_dir}"
+            if self.data_dir
+            else f"hf://datasets/{self.source_repo}"
+        )
+
         # TODO(kszucs): split should be configurable
         properties = {
             "format-version": "3",
             "write.parquet.compression-codec": "snappy",
             "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
+            "write.data.path": data_path,
             # HuggingFace source metadata
             "huggingface.dataset.repo": self.source_repo,
             "huggingface.dataset.config": self.source_config,
@@ -440,6 +449,7 @@ class DatasetInfo:
     configs: List[str]
     splits: Dict[str, List[str]]  # config -> list of splits
     parquet_files: Dict[str, Dict[str, List[str]]]  # config -> split -> list of files
+    data_dirs: Dict[str, str]  # config -> data directory path
     revision: Optional[str] = None  # Git revision/SHA of the dataset
 
     @classmethod
@@ -481,17 +491,19 @@ class DatasetInfo:
         else:
             discovered_configs = all_configs
 
-        # Discover splits and files for each config
+        # Discover splits, files, and data directories for each config
         splits_dict = {}
         parquet_files = {}
+        data_dirs_dict = {}
         revision = None
 
         for config_name in discovered_configs:
-            config_splits, config_files, config_revision = cls._discover_config(
+            config_splits, config_files, config_revision, config_data_dir = cls._discover_config(
                 repo_id, config_name, token
             )
             splits_dict[config_name] = config_splits
             parquet_files[config_name] = config_files
+            data_dirs_dict[config_name] = config_data_dir
             if config_revision and not revision:
                 revision = config_revision
 
@@ -503,14 +515,15 @@ class DatasetInfo:
             configs=discovered_configs,
             splits=splits_dict,
             parquet_files=parquet_files,
+            data_dirs=data_dirs_dict,
             revision=revision,
         )
 
     @staticmethod
     def _discover_config(
         repo_id: str, config_name: str, token: Optional[str]
-    ) -> tuple[List[str], Dict[str, List[str]], Optional[str]]:
-        """Discover splits and files for a specific config.
+    ) -> tuple[List[str], Dict[str, List[str]], Optional[str], str]:
+        """Discover splits, files, and data directory for a specific config.
 
         Uses the datasets library's official inspection utilities for robust discovery.
 
@@ -520,11 +533,13 @@ class DatasetInfo:
             token: HuggingFace API token
 
         Returns:
-            Tuple of (splits list, files dict mapping split -> file paths, revision)
+            Tuple of (splits list, files dict mapping split -> file paths, revision, data_dir)
 
         Raises:
             ValueError: If no data files found or builder cannot be loaded
         """
+        import os
+
         builder = load_dataset_builder_safe(repo_id, config_name=config_name, token=token)
 
         # Get dataset revision using official HuggingFace Hub API
@@ -557,7 +572,24 @@ class DatasetInfo:
             for split, paths in data_files.items()
         }
 
-        return splits, files, revision
+        # Infer data directory from resolved file paths
+        all_files = [f for file_list in files.values() for f in file_list]
+        if all_files:
+            try:
+                common = os.path.commonpath(all_files)
+                # If common path is a file, get its directory
+                if any(common == path for path in all_files):
+                    data_dir = os.path.dirname(common)
+                else:
+                    data_dir = common
+            except ValueError:
+                # No common path
+                data_dir = ""
+        else:
+            # Default to 'data' for configs with no files
+            data_dir = "data"
+
+        return splits, files, revision, data_dir
 
     def get_parquet_files_for_table(self, config: str) -> List[str]:
         """Get all Parquet files for a specific config across all splits.
@@ -737,6 +769,7 @@ class DatasetInfo:
             schema=schema,
             partition_spec=partition_spec,
             files=files,
+            data_dir=self.data_dirs[config],
             source_repo=self.repo_id,
             source_config=config,
             source_revision=self.revision,
@@ -825,6 +858,7 @@ class DatasetInfo:
             schema=schema,
             partition_spec=partition_spec,
             files=files,
+            data_dir=self.data_dirs[config],
             source_repo=self.repo_id,
             source_config=config,
             source_revision=self.revision,

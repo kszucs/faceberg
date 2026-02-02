@@ -326,6 +326,7 @@ def test_to_table_info_without_features():
         configs=["default"],
         splits={"default": ["train"]},
         parquet_files={"default": {"train": []}},
+        data_dirs={"default": "data"},
         revision=None,
     )
 
@@ -397,6 +398,7 @@ def test_table_info_name_mapping_with_nested_structs():
         schema=schema,
         partition_spec=UNPARTITIONED_PARTITION_SPEC,
         files=[],
+        data_dir="data",
         source_repo="test/repo",
         source_config="default",
         source_revision="abc123",
@@ -464,6 +466,7 @@ def test_table_info_name_mapping_with_lists():
         schema=schema,
         partition_spec=UNPARTITIONED_PARTITION_SPEC,
         files=[],
+        data_dir="data",
         source_repo="test/repo",
         source_config="default",
         source_revision="abc123",
@@ -540,6 +543,7 @@ def test_table_info_name_mapping_with_maps():
         schema=schema,
         partition_spec=UNPARTITIONED_PARTITION_SPEC,
         files=[],
+        data_dir="data",
         source_repo="test/repo",
         source_config="default",
         source_revision="abc123",
@@ -757,6 +761,7 @@ def test_to_table_info_incremental_with_old_revision():
                 "test": ["plain_text/test-00000.parquet"],
             }
         },
+        data_dirs={"plain_text": "plain_text"},
         revision="def456",
     )
 

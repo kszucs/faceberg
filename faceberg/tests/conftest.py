@@ -10,6 +10,8 @@ from contextlib import contextmanager
 import pytest
 import requests
 import uvicorn
+from datasets import Dataset
+from huggingface_hub import HfApi
 from pyiceberg.catalog.rest import RestCatalog
 
 from faceberg.catalog import LocalCatalog, RemoteCatalog
@@ -24,6 +26,27 @@ def pytest_addoption(parser):
         default=False,
         help="Enable live HuggingFace Hub testing (requires HF_TOKEN)",
     )
+
+
+def hf_test_credentials(request):
+    """Get HuggingFace credentials for testing.
+
+    Returns:
+        Tuple of (hf_org, hf_token)
+
+    Raises:
+        pytest.skip: If credentials are not available
+    """
+    hf_live = request.config.getoption("--hf-live")
+    hf_org = os.environ.get("FACEBERG_TEST_ORG")
+    hf_token = os.environ.get("FACEBERG_TEST_TOKEN")
+
+    if not hf_live:
+        pytest.skip("Live HF testing not enabled (use --hf-live)")
+    if not (hf_org and hf_token):
+        pytest.skip("FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables must be set")
+
+    return hf_org, hf_token
 
 
 @contextmanager
@@ -77,18 +100,10 @@ def catalog(request, tmp_path):
         with local_catalog(tmp_path) as catalog:
             yield catalog
     elif request.param == "remote":
-        # Check if live HF testing is enabled
-        hf_live = request.config.getoption("--hf-live")
-        hf_org = os.environ.get("FACEBERG_TEST_ORG")
-        hf_token = os.environ.get("FACEBERG_TEST_TOKEN")
+        # Get HF credentials
+        hf_org, hf_token = hf_test_credentials(request)
         # TODO(kszucs): hf_repo should be the unique repo name per test session
         # maybe also check the token scopes
-        if not hf_live:
-            pytest.skip("Live HF testing not enabled (use --hf-live)")
-        if not (hf_org and hf_token):
-            pytest.skip(
-                "FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables must be set"
-            )
         # Create remote catalog within context manager
         with remote_catalog(hf_org, hf_token) as catalog:
             yield catalog
@@ -171,3 +186,69 @@ def rest_catalog(rest_server):
             "py-io-impl": "faceberg.catalog.HfFileIO",
         },
     )
+
+
+@contextmanager
+def remote_dataset(hf_org, hf_token):
+    """Create a small synthetic dataset for testing writes.
+
+    Creates and publishes a small synthetic dataset to HuggingFace Hub that can
+    be used for testing write operations.
+
+    Args:
+        hf_org: Organization to create the dataset in
+        hf_token: HuggingFace authentication token
+
+    Yields:
+        Dataset repo ID
+    """
+    hf_api = HfApi(token=hf_token)
+    dataset_repo = f"{hf_org}/faceberg-test-dataset"
+    try:
+        # Create small synthetic dataset
+        # Note: "split" column is added automatically by add_dataset, not in the data
+        dataset = Dataset.from_dict({
+            "text": [f"Test review {i}" for i in range(10)],
+            "label": [i % 2 for i in range(10)],
+        })
+
+        # Push dataset to hub (creates repo and uploads data)
+        dataset.push_to_hub(
+            dataset_repo,
+            token=hf_token,
+            private=False,
+        )
+
+        yield dataset_repo
+    finally:
+        #hf_api.delete_repo(repo_id=dataset_repo, repo_type="dataset", missing_ok=True)
+        pass
+
+
+@pytest.fixture
+def writable_dataset(catalog, request):
+    """Parametrized writable dataset for both local and remote catalogs.
+
+    Creates a small test dataset on HuggingFace Hub that can be written to.
+    The dataset is always created on HF Hub regardless of catalog type.
+    Inherits parametrization from catalog fixture.
+
+    Requires:
+    - --hf-live flag
+    - FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables
+
+    Returns:
+        Catalog instance with writable testorg.testdataset table
+    """
+    # Get HF credentials
+    hf_org, hf_token = hf_test_credentials(request)
+
+    # Create a small synthetic test dataset on HuggingFace Hub
+    with remote_dataset(hf_org, hf_token) as dataset_repo:
+        # Add dataset to catalog - this discovers the uploaded files and creates Iceberg metadata
+        # No config specified - let it auto-detect from parquet files
+        catalog.add_dataset(
+            identifier="testorg.testdataset",
+            repo=dataset_repo,
+        )
+        yield catalog
