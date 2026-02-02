@@ -14,8 +14,8 @@ from pyiceberg.types import (
 
 from faceberg.bridge import (
     DatasetInfo,
-    iceberg_schema_from_features,
     dataset_builder_safe,
+    iceberg_schema_from_features,
 )
 
 
@@ -504,22 +504,6 @@ def test_table_info_name_mapping_with_maps():
     assert value_mapping["fields"][1]["names"] == ["name"]
 
 
-def test_extract_index_from_hf_pattern():
-    """Test extracting index from HF-style filenames."""
-    # Test data-NNNNN-of-NNNNN pattern
-    assert DatasetInfo._extract_index_from_filename("data-00005-of-00010.parquet") == 5
-    assert DatasetInfo._extract_index_from_filename("train-00000-of-00001.parquet") == 0
-
-    # Test split-NNNNN-iceberg pattern
-    assert DatasetInfo._extract_index_from_filename("train-00005-iceberg.parquet") == 5
-
-    # Test simple split-NNNNN pattern
-    assert DatasetInfo._extract_index_from_filename("train-00003.parquet") == 3
-
-    # Test no index pattern
-    assert DatasetInfo._extract_index_from_filename("random-file.parquet") is None
-
-
 # =============================================================================
 # Revision Diff Tests
 # =============================================================================
@@ -547,8 +531,8 @@ def test_dataset_new_files_no_new_files():
             new_revision="def456",
         )
 
-    # Should return empty list when files are the same
-    assert result == []
+    # Should return empty dict when files are the same
+    assert result == {}
 
     # Verify API was called with both revisions
     assert mock_api.list_repo_files.call_count == 2
@@ -594,11 +578,11 @@ def test_dataset_new_files_with_new_files():
             new_revision="def456",
         )
 
-    # Should return only the 2 new parquet files in sorted order
-    assert result == [
-        "plain_text/train-00001.parquet",
-        "plain_text/validation-00000.parquet",
-    ]
+    # Should return dict with new files organized by split with fully qualified URIs
+    assert result == {
+        "train": ["hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"],
+        "validation": ["hf://datasets/test/dataset@def456/plain_text/validation-00000.parquet"],
+    }
 
 
 def test_dataset_new_files_filters_by_config():
@@ -631,8 +615,10 @@ def test_dataset_new_files_filters_by_config():
             new_revision="def456",
         )
 
-    # Should return only plain_text config files
-    assert result == ["plain_text/train-00000.parquet"]
+    # Should return only plain_text config files with fully qualified URIs
+    assert result == {
+        "train": ["hf://datasets/test/dataset@def456/plain_text/train-00000.parquet"]
+    }
 
 
 def test_dataset_new_files_ignores_non_parquet():
@@ -666,57 +652,61 @@ def test_dataset_new_files_ignores_non_parquet():
             new_revision="def456",
         )
 
-    # Should return only parquet files
-    assert result == ["plain_text/train-00000.parquet"]
+    # Should return only parquet files with fully qualified URIs
+    assert result == {
+        "train": ["hf://datasets/test/dataset@def456/plain_text/train-00000.parquet"]
+    }
 
 
-def test_to_table_info_incremental_with_old_revision():
-    """Test that passing old_revision filters to new files only."""
+def test_discover_with_since_revision():
+    """Test that passing since_revision to discover filters to new files only."""
     from unittest.mock import Mock, patch
 
     from datasets.features import Value
 
-    # Create a mock DatasetInfo with features
-    dataset_info = DatasetInfo(
-        repo_id="test/dataset",
-        config="plain_text",
-        splits=["train", "test"],
-        data_files={
-            "train": ["plain_text/train-00000.parquet", "plain_text/train-00001.parquet"],
-            "test": ["plain_text/test-00000.parquet"],
-        },
-        data_dir="plain_text",
-        features=Features(
-            {
-                "text": Value("string"),
-                "label": Value("int64"),
-            }
-        ),
-        revision="def456",
+    # Mock dataset_builder_safe to return a mock builder
+    mock_builder = Mock()
+    mock_builder.hash = "def456"
+    mock_builder.info.features = Features(
+        {
+            "text": Value("string"),
+            "label": Value("int64"),
+        }
     )
+    mock_builder.config.data_dir = "plain_text"
 
-    # Mock dataset_new_files to return only 2 new files
+    # Mock dataset_new_files to return dict with new files organized by split
     mock_get_new_files = Mock(
-        return_value=[
-            "plain_text/train-00001.parquet",  # New train file
-            "plain_text/test-00000.parquet",  # New test file
-        ]
+        return_value={
+            "train": ["hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"],
+            "test": ["hf://datasets/test/dataset@def456/plain_text/test-00000.parquet"],
+        }
     )
 
-    with patch("faceberg.bridge.dataset_new_files", mock_get_new_files):
-        # Call with old_revision (should return only new files)
-        table_info = dataset_info.to_table_info_incremental(
-            namespace="default",
-            table_name="test_table",
-            old_revision="abc123",
+    with patch("faceberg.bridge.dataset_builder_safe", return_value=mock_builder), patch(
+        "faceberg.bridge.dataset_new_files", mock_get_new_files
+    ):
+        # Discover with since_revision (should return only new files)
+        dataset_info = DatasetInfo.discover(
+            repo_id="test/dataset",
+            config="plain_text",
+            since_revision="abc123",
         )
 
     # Should have only 2 files (the new ones)
-    assert len(table_info.data_files) == 2
-    file_paths = [f.uri for f in table_info.data_files]
-    # URIs now include revision
-    assert "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet" in file_paths
-    assert "hf://datasets/test/dataset@def456/plain_text/test-00000.parquet" in file_paths
+    assert len(dataset_info.splits) == 2
+    assert "train" in dataset_info.splits
+    assert "test" in dataset_info.splits
+
+    # Verify data files are populated with new files
+    assert "train" in dataset_info.data_files
+    assert "test" in dataset_info.data_files
+    assert dataset_info.data_files["train"] == [
+        "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"
+    ]
+    assert dataset_info.data_files["test"] == [
+        "hf://datasets/test/dataset@def456/plain_text/test-00000.parquet"
+    ]
 
     # Verify dataset_new_files was called with correct args
     mock_get_new_files.assert_called_once_with(
@@ -726,6 +716,18 @@ def test_to_table_info_incremental_with_old_revision():
         new_revision="def456",
         token=None,
     )
+
+    # Now convert to TableInfo and verify
+    table_info = dataset_info.to_table_info(
+        namespace="default",
+        table_name="test_table",
+    )
+
+    # Should have only 2 files (the new ones)
+    assert len(table_info.data_files) == 2
+    file_paths = [f.uri for f in table_info.data_files]
+    assert "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet" in file_paths
+    assert "hf://datasets/test/dataset@def456/plain_text/test-00000.parquet" in file_paths
 
     # Verify files are properly organized by split
     splits = {f.split for f in table_info.data_files}

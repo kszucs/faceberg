@@ -31,9 +31,9 @@ class FileInfo:
     """Information about a data file in Iceberg table."""
 
     uri: str  # Full hf:// URI to the file
-    size_bytes: int  # File size in bytes
-    row_count: int  # Number of rows in the file
     split: Optional[str] = None  # Split name (train, test, validation, etc.)
+    size_bytes: Optional[int] = None  # File size in bytes (enriched later)
+    row_count: Optional[int] = None  # Number of rows in the file (enriched later)
 
 
 @dataclass
@@ -69,12 +69,12 @@ class TableInfo:
     @property
     def total_rows(self) -> int:
         """Get total row count across all files."""
-        return sum(f.row_count for f in self.data_files)
+        return sum(f.row_count for f in self.data_files if f.row_count is not None)
 
     @property
     def total_size(self) -> int:
         """Get total size in bytes across all files."""
-        return sum(f.size_bytes for f in self.data_files)
+        return sum(f.size_bytes for f in self.data_files if f.size_bytes is not None)
 
     def get_table_properties(self) -> Dict[str, str]:
         """Get table properties for Iceberg metadata.
@@ -297,7 +297,7 @@ def dataset_new_files(
     old_revision: str,
     new_revision: str,
     token: Optional[str] = None,
-) -> List[str]:
+) -> Dict[str, List[str]]:
     """Find new parquet files added between two revisions.
 
     Uses HuggingFace Hub API to diff two git revisions and identify
@@ -311,7 +311,8 @@ def dataset_new_files(
         token: HuggingFace API token
 
     Returns:
-        List of new parquet file paths relative to repo root
+        Dictionary mapping split names to lists of fully qualified URIs with revision,
+        matching the format of builder.config.data_files
 
     Example:
         >>> dataset_new_files(
@@ -320,8 +321,10 @@ def dataset_new_files(
         ...     "abc123",
         ...     "def456"
         ... )
-        ['plain_text/train-00000-of-00001.parquet',
-         'plain_text/validation-00000-of-00001.parquet']
+        {
+            'train': ['hf://datasets/squad@def456/plain_text/train-00000-of-00001.parquet'],
+            'validation': ['hf://datasets/squad@def456/plain_text/validation-00000-of-00001.parquet']
+        }
     """
     api = HfApi(token=token)
 
@@ -348,11 +351,27 @@ def dataset_new_files(
 
     # Filter for parquet files in this config
     config_prefix = f"{config}/"
-    data_files = [
+    relative_paths = sorted(
         f for f in added_files if f.endswith(".parquet") and f.startswith(config_prefix)
-    ]
+    )
 
-    return sorted(data_files)
+    # Organize by split and create fully qualified URIs
+    data_files = {}
+    for file_path in relative_paths:
+        # Extract split from path: "config/split-00000.parquet" -> "split"
+        parts = file_path.split("/")
+        if len(parts) >= 2:
+            split_part = parts[1]  # e.g., "train-00000-of-00001.parquet"
+            split_name = split_part.split("-")[0]  # e.g., "train"
+
+            if split_name not in data_files:
+                data_files[split_name] = []
+
+            # Build fully qualified hf:// URI with revision
+            hf_uri = f"hf://datasets/{repo_id}@{new_revision}/{file_path}"
+            data_files[split_name].append(hf_uri)
+
+    return data_files
 
 
 def dataset_builder_safe(
@@ -419,7 +438,9 @@ def dataset_data_dir(data_files: Dict[str, List[str]]) -> str:
     try:
         return os.path.commonpath(all_files)
     except ValueError as e:
-        raise ValueError(f"Unable to determine common data directory from files: {all_files}") from e
+        raise ValueError(
+            f"Unable to determine common data directory from files: {all_files}"
+        ) from e
 
 
 # =============================================================================
@@ -451,6 +472,7 @@ class DatasetInfo:
         repo_id: str,
         config: str,
         token: Optional[str] = None,
+        since_revision: Optional[str] = None,
     ) -> "DatasetInfo":
         """Discover Parquet files and structure in a HuggingFace dataset.
 
@@ -459,6 +481,8 @@ class DatasetInfo:
         2. Load dataset builder to get metadata
         3. Extract splits from builder
         4. Get data files (fully qualified URIs with revision)
+           - If since_revision is provided, only get files added since that revision
+           - Otherwise, get all files from builder
         5. Get dataset revision (SHA) from Hub
         6. Extract data directory from config or URIs
         7. Return DatasetInfo with all metadata
@@ -467,6 +491,7 @@ class DatasetInfo:
             repo_id: HuggingFace dataset repository ID (e.g., "kszucs/dataset1")
             config: Configuration name to discover
             token: HuggingFace API token (uses HF_TOKEN env var if not provided)
+            since_revision: Optional revision SHA to get only files added since that revision
 
         Returns:
             DatasetInfo with discovered structure
@@ -477,13 +502,28 @@ class DatasetInfo:
         try:
             builder = dataset_builder_safe(repo_id, config=config, token=token)
         except Exception as e:
-            raise ValueError(f"Dataset {repo_id} config {config} not found or not accessible: {e}") from e
+            raise ValueError(
+                f"Dataset {repo_id} config {config} not found or not accessible: {e}"
+            ) from e
 
         revision = builder.hash
-        # Keep fully qualified URIs with revision from builder
-        data_files = builder.config.data_files
-        splits = list(data_files.keys())
         features = builder.info.features
+
+        # Get data files - either all files or only new files since since_revision
+        if since_revision:
+            # Get only files added since since_revision
+            data_files = dataset_new_files(
+                repo_id=repo_id,
+                config=config,
+                old_revision=since_revision,
+                new_revision=revision,
+                token=token,
+            )
+        else:
+            # Get all files from builder
+            data_files = builder.config.data_files
+
+        splits = list(data_files.keys())
 
         if not data_files:
             raise ValueError("No Parquet files found in dataset configuration")
@@ -503,76 +543,6 @@ class DatasetInfo:
             features=features,
             revision=revision,
         )
-
-    def discover_file_pattern(self) -> tuple[str, int]:
-        """Discover file naming pattern and next index from existing files.
-
-        Analyzes existing parquet files to determine the next available index
-        for new files. The pattern returned is always the default Iceberg
-        pattern since we don't try to match existing HF conventions.
-
-        Returns:
-            Tuple of (pattern, next_index) where pattern is the default
-            Iceberg pattern and next_index is one more than the highest
-            index found in existing files (or 0 if no indexed files exist)
-        """
-        default_pattern = "{split}-{index:05d}-iceberg.parquet"
-
-        # Collect all files across all splits
-        all_files = []
-        for split_files in self.data_files.values():
-            all_files.extend(split_files)
-
-        if not all_files:
-            return default_pattern, 0
-
-        # Analyze filenames to find max index
-        max_index = -1
-        for filepath in all_files:
-            filename = filepath.split("/")[-1]
-            index = self._extract_index_from_filename(filename)
-            if index is not None and index > max_index:
-                max_index = index
-
-        next_index = max_index + 1 if max_index >= 0 else 0
-        return default_pattern, next_index
-
-    @staticmethod
-    def _extract_index_from_filename(filename: str) -> Optional[int]:
-        """Extract numeric index from common HF dataset filename patterns.
-
-        Handles patterns like:
-        - data-00005-of-00010.parquet
-        - train-00005-iceberg.parquet
-        - train-00005.parquet
-
-        Args:
-            filename: Filename to parse
-
-        Returns:
-            Extracted index or None if no index pattern found
-        """
-        import re
-
-        # Remove extension
-        name = filename.rsplit(".", 1)[0] if "." in filename else filename
-
-        # Pattern: data-NNNNN-of-NNNNN or similar with "of"
-        match = re.search(r"-(\d+)-of-\d+$", name)
-        if match:
-            return int(match.group(1))
-
-        # Pattern: split-NNNNN-iceberg or split-NNNNN
-        match = re.search(r"-(\d+)(?:-iceberg)?$", name)
-        if match:
-            return int(match.group(1))
-
-        # Pattern: data-NNNNN or similar ending with digits
-        match = re.search(r"-(\d+)$", name)
-        if match:
-            return int(match.group(1))
-
-        return None
 
     def to_table_info(
         self,
@@ -599,95 +569,14 @@ class DatasetInfo:
 
         # Collect file information with fully qualified URIs
         files = []
-        for split_name, file_paths in self.data_files.items():
-            for file_path in file_paths:
-                # file_path is already a fully qualified URI from builder.config.data_files
-                files.append(
-                    FileInfo(
-                        uri=file_path,
-                        size_bytes=0,  # Will be enriched later
-                        row_count=0,  # Will be enriched later
-                        split=split_name,
-                    )
-                )
+        for split, file_uris in self.data_files.items():
+            for uri in file_uris:
+                files.append(FileInfo(uri=uri, split=split))
 
         # Create TableInfo with explicit naming
         return TableInfo(
             namespace=namespace,
             table_name=table_name,  # Direct from config, no auto-generation
-            schema=schema,
-            partition_spec=partition_spec,
-            data_files=files,
-            data_dir=self.data_dir,
-            dataset_repo=self.repo_id,
-            dataset_config=self.config,
-            dataset_revision=self.revision,
-        )
-
-    def to_table_info_incremental(
-        self,
-        namespace: str,
-        table_name: str,
-        old_revision: str,
-        token: Optional[str] = None,
-    ) -> TableInfo:
-        """Convert DatasetInfo to TableInfo with only new files since old_revision.
-
-        This method is optimized for incremental updates - it only includes files
-        that are new since the specified old_revision.
-
-        Args:
-            namespace: Iceberg namespace for the table
-            table_name: Explicit table name
-            old_revision: Previous revision SHA to diff against (required)
-            token: HuggingFace API token
-
-        Returns:
-            TableInfo object with only new files
-        """
-        schema = iceberg_schema_from_features(self.features, include_split_column=True)
-        partition_spec = iceberg_partition_spec(schema)
-
-        # Get only new files added since old_revision (returns relative paths)
-        new_file_paths = dataset_new_files(
-            repo_id=self.repo_id,
-            config=self.config,
-            old_revision=old_revision,
-            new_revision=self.revision,
-            token=token,
-        )
-
-        # Organize by split (extract split from path)
-        file_paths_by_split = {}
-        for file_path in new_file_paths:
-            # Extract split from path: "config/split-00000.parquet" -> "split"
-            parts = file_path.split("/")
-            if len(parts) >= 2:
-                split_part = parts[1]  # e.g., "train-00000-of-00001.parquet"
-                split_name = split_part.split("-")[0]  # e.g., "train"
-
-                if split_name not in file_paths_by_split:
-                    file_paths_by_split[split_name] = []
-                file_paths_by_split[split_name].append(file_path)
-
-        # Create FileInfo objects with fully qualified URIs
-        files = []
-        for split_name, file_paths in file_paths_by_split.items():
-            for file_path in file_paths:
-                # Build fully qualified hf:// URI from relative path
-                hf_uri = f"hf://datasets/{self.repo_id}@{self.revision}/{file_path}"
-                files.append(
-                    FileInfo(
-                        uri=hf_uri,
-                        size_bytes=0,  # Will be enriched later
-                        row_count=0,  # Will be enriched later
-                        split=split_name,
-                    )
-                )
-
-        return TableInfo(
-            namespace=namespace,
-            table_name=table_name,
             schema=schema,
             partition_spec=partition_spec,
             data_files=files,

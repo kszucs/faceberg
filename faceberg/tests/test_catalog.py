@@ -1,6 +1,5 @@
 """Tests for FacebergCatalog implementation."""
 
-import re
 import uuid
 
 import pyarrow as pa
@@ -1322,7 +1321,7 @@ class TestWriteToExistingDataset:
         assert after_count >= before_count + len(new_data)
 
         # Verify appended data is readable
-        scan = table.scan().filter(f"text = 'Appended test review'")
+        scan = table.scan().filter("text = 'Appended test review'")
         result = scan.to_arrow()
         assert result.num_rows == 1
         assert result["text"][0].as_py() == "Appended test review"

@@ -129,19 +129,27 @@ class IcebergMetadataWriter:
         Raises:
             ValueError: If file path cannot be parsed or file size cannot be determined
         """
-        # Parse hf:// URL - format is hf://datasets/org/repo/path/to/file
+        # Parse hf:// URL - format is hf://datasets/org/repo@revision/path/to/file
+        # or hf://datasets/org/repo/path/to/file (without revision)
         if not file_path.startswith("hf://datasets/"):
             raise ValueError(f"Invalid HuggingFace file path: {file_path}")
 
-        # Split into repo_id (org/repo) and filename (path/to/file)
+        # Split into repo_id@revision (org/repo@revision) and filename (path/to/file)
         remaining = file_path[len("hf://datasets/") :]
         parts = remaining.split("/")
         if len(parts) < 3:
             raise ValueError(f"Invalid HuggingFace file path format: {file_path}")
 
-        repo_id = f"{parts[0]}/{parts[1]}"  # org/repo
+        # Handle repo_id with optional @revision
+        repo_part = f"{parts[0]}/{parts[1]}"  # org/repo@revision or org/repo
+        if "@" in repo_part:
+            repo_id, revision = repo_part.split("@", 1)
+        else:
+            repo_id = repo_part
+            revision = None
+
         filename = "/".join(parts[2:])  # path/to/file
-        url = hf_hub_url(repo_id=repo_id, filename=filename, repo_type="dataset")
+        url = hf_hub_url(repo_id=repo_id, filename=filename, repo_type="dataset", revision=revision)
         metadata = get_hf_file_metadata(url)
         return metadata.size
 
@@ -169,21 +177,21 @@ class IcebergMetadataWriter:
 
         for i, file_info in enumerate(file_infos):
             # Read metadata directly from HF Hub without downloading the file
-            metadata = pq.read_metadata(file_info.path)
+            metadata = pq.read_metadata(file_info.uri)
             row_count = metadata.num_rows
 
             # Use provided size if available, otherwise get from HuggingFace API
             file_size = file_info.size_bytes
-            if file_size == 0:
+            if not file_size:
                 # Get exact file size from HuggingFace Hub API
-                file_size = self._get_hf_file_size(file_info.path)
+                file_size = self._get_hf_file_size(file_info.uri)
 
             enriched.append(
                 FileInfo(
-                    path=file_info.path,
+                    uri=file_info.uri,
+                    split=file_info.split,
                     size_bytes=file_size,
                     row_count=row_count,
-                    split=file_info.split,
                 )
             )
 
@@ -230,7 +238,7 @@ class IcebergMetadataWriter:
                 partition = {}
 
             # Determine file_sequence_number: inherit from previous snapshot if file unchanged
-            prev_file = previous_files_map.get(file_info.path)
+            prev_file = previous_files_map.get(file_info.uri)
             if prev_file and self._files_identical(prev_file, file_info):
                 # File unchanged - inherit sequence number
                 file_seq_num = prev_file.file_sequence_number
@@ -240,7 +248,7 @@ class IcebergMetadataWriter:
 
             data_file = DataFile.from_args(
                 content=DataFileContent.DATA,
-                file_path=file_info.path,
+                file_path=file_info.uri,
                 file_format=FileFormat.PARQUET,
                 partition=partition,
                 record_count=file_info.row_count,

@@ -999,7 +999,6 @@ class BaseCatalog(Catalog):
         table_info = dataset_info.to_table_info(
             namespace=namespace,
             table_name=table_name,
-            token=self._hf_token,
         )
 
         # Create the table with full metadata in staging context
@@ -1138,15 +1137,16 @@ class BaseCatalog(Catalog):
                 "Please recreate the table to enable incremental sync."
             )
 
-        # Discover dataset at current revision
+        # Discover dataset at current revision with only new files since old_revision
         dataset_info = DatasetInfo.discover(
             repo_id=table_entry.repo,
             config=table_entry.config,
             token=self._hf_token,
+            since_revision=old_revision,
         )
 
-        # Check if already up to date
-        if old_revision == dataset_info.revision:
+        # Check if already up to date (no new files)
+        if not dataset_info.data_files:
             logger.info(f"Table {identifier} already at revision {old_revision}")
             if progress_callback:
                 progress_callback(
@@ -1154,13 +1154,11 @@ class BaseCatalog(Catalog):
                 )
             return table
 
-        # Get only new files since old revision (incremental update)
-        # TODO(kszucs): support nested namespace, pass identifier to to_table_info_incremental
-        table_info = dataset_info.to_table_info_incremental(
+        # Convert to TableInfo with only new files
+        # TODO(kszucs): support nested namespace, pass identifier to to_table_info
+        table_info = dataset_info.to_table_info(
             namespace=identifier[0],
             table_name=identifier[1],
-            old_revision=old_revision,
-            token=self._hf_token,
         )
 
         # If no new files, table is already up to date

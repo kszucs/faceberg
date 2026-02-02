@@ -207,10 +207,12 @@ def remote_dataset(hf_org, hf_token):
     try:
         # Create small synthetic dataset
         # Note: "split" column is added automatically by add_dataset, not in the data
-        dataset = Dataset.from_dict({
-            "text": [f"Test review {i}" for i in range(10)],
-            "label": [i % 2 for i in range(10)],
-        })
+        dataset = Dataset.from_dict(
+            {
+                "text": [f"Test review {i}" for i in range(10)],
+                "label": [i % 2 for i in range(10)],
+            }
+        )
 
         # Push dataset to hub (creates repo and uploads data)
         dataset.push_to_hub(
@@ -221,7 +223,7 @@ def remote_dataset(hf_org, hf_token):
 
         yield dataset_repo
     finally:
-        #hf_api.delete_repo(repo_id=dataset_repo, repo_type="dataset", missing_ok=True)
+        # hf_api.delete_repo(repo_id=dataset_repo, repo_type="dataset", missing_ok=True)
         pass
 
 
