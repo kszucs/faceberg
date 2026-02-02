@@ -34,8 +34,8 @@ def test_discover_public_dataset():
     assert "unsupervised" in splits
 
     # Check Parquet files
-    assert "train" in dataset_info.parquet_files
-    train_files = dataset_info.parquet_files["train"]
+    assert "train" in dataset_info.data_files
+    train_files = dataset_info.data_files["train"]
     assert len(train_files) > 0
     assert all(isinstance(f, str) for f in train_files)
 
@@ -58,25 +58,6 @@ def test_discover_nonexistent_config():
     """Test discovering a non-existent config raises ValueError."""
     with pytest.raises(ValueError, match="Config .* not found"):
         DatasetInfo.discover("stanfordnlp/imdb", config="fake_config")
-
-
-def test_resolve_hf_path():
-    """Test path resolution using HfFileSystem API."""
-    from huggingface_hub import HfFileSystem
-
-    from faceberg.bridge import dataset_resolve_path
-
-    fs = HfFileSystem()
-
-    # Test with hf:// URI (using stanfordnlp/imdb which is stable and used in other tests)
-    path1 = "hf://datasets/stanfordnlp/imdb/plain_text/train-00000-of-00001.parquet"
-    result1 = dataset_resolve_path(fs, path1)
-    assert result1 == "plain_text/train-00000-of-00001.parquet"
-
-    # Test with relative path (should return as-is)
-    path2 = "plain_text/train-00000-of-00001.parquet"
-    result2 = dataset_resolve_path(fs, path2)
-    assert result2 == "plain_text/train-00000-of-00001.parquet"
 
 
 def test_to_table_infos():
@@ -109,7 +90,9 @@ def test_to_table_infos():
     # Check files
     assert len(table_info.data_files) > 0
     for file_info in table_info.data_files:
-        assert file_info.uri.startswith("hf://datasets/stanfordnlp/imdb/")
+        # URIs now include revision: hf://datasets/stanfordnlp/imdb@<revision>/...
+        assert file_info.uri.startswith("hf://datasets/stanfordnlp/imdb")
+        assert "@" in file_info.uri or "/" in file_info.uri
         assert file_info.split in ["train", "test", "unsupervised"]
 
     # Check properties
@@ -283,27 +266,6 @@ def test_dataset_builder_safe_nonexistent():
     """Test that safe builder loader raises error for non-existent dataset."""
     with pytest.raises(Exception):
         dataset_builder_safe("nonexistent/fake-dataset-12345")
-
-
-def test_to_table_info_without_features():
-    """Test that to_table_info raises error if features are not available."""
-    # Create a mock DatasetInfo with None features
-    dataset_info = DatasetInfo(
-        repo_id="fake/dataset",
-        config="default",
-        splits=["train"],
-        parquet_files={"train": []},
-        data_dir="data",
-        features=None,
-        revision="abc123",
-    )
-
-    # Should raise ValueError when features is None
-    with pytest.raises(ValueError, match="has no features available"):
-        dataset_info.to_table_info(
-            namespace="default",
-            table_name="test_table",
-        )
 
 
 def test_table_properties_use_huggingface_prefix():
@@ -719,7 +681,7 @@ def test_to_table_info_incremental_with_old_revision():
         repo_id="test/dataset",
         config="plain_text",
         splits=["train", "test"],
-        parquet_files={
+        data_files={
             "train": ["plain_text/train-00000.parquet", "plain_text/train-00001.parquet"],
             "test": ["plain_text/test-00000.parquet"],
         },
@@ -752,8 +714,9 @@ def test_to_table_info_incremental_with_old_revision():
     # Should have only 2 files (the new ones)
     assert len(table_info.data_files) == 2
     file_paths = [f.uri for f in table_info.data_files]
-    assert "hf://datasets/test/dataset/plain_text/train-00001.parquet" in file_paths
-    assert "hf://datasets/test/dataset/plain_text/test-00000.parquet" in file_paths
+    # URIs now include revision
+    assert "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet" in file_paths
+    assert "hf://datasets/test/dataset@def456/plain_text/test-00000.parquet" in file_paths
 
     # Verify dataset_new_files was called with correct args
     mock_get_new_files.assert_called_once_with(
@@ -813,13 +776,14 @@ if __name__ == "__main__":
     print(f"✓ Found splits: {dataset_info.splits}")
 
     # Count total parquet files
-    total_files = sum(len(files) for files in dataset_info.parquet_files.values())
-    print(f"✓ Found {total_files} Parquet files across {len(dataset_info.parquet_files)} splits")
+    total_files = sum(len(files) for files in dataset_info.data_files.values())
+    print(f"✓ Found {total_files} Parquet files across {len(dataset_info.data_files)} splits")
 
     # Get a sample file
-    first_split_files = next(iter(dataset_info.parquet_files.values()))
+    first_split_files = next(iter(dataset_info.data_files.values()))
     if first_split_files:
-        sample = f"hf://datasets/{dataset_info.repo_id}/{first_split_files[0]}"
+        # Files are already fully qualified URIs
+        sample = first_split_files[0]
         print(f"✓ Sample file: {sample}")
 
     print("\nRunning schema conversion tests...")

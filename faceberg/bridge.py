@@ -348,43 +348,11 @@ def dataset_new_files(
 
     # Filter for parquet files in this config
     config_prefix = f"{config}/"
-    parquet_files = [
+    data_files = [
         f for f in added_files if f.endswith(".parquet") and f.startswith(config_prefix)
     ]
 
-    return sorted(parquet_files)
-
-
-def dataset_resolve_path(fs: HfFileSystem, file_path: str) -> str:
-    """Resolve HuggingFace file path to relative path using official API.
-
-    Uses HfFileSystem.resolve_path to properly parse file paths from the datasets
-    library, which can come in various formats.
-
-    Args:
-        fs: HfFileSystem instance for path resolution
-        file_path: File path in various formats (hf://, repo@revision/path, etc.)
-
-    Returns:
-        Relative path suitable for hf:// URIs
-
-    Raises:
-        Exception: If path cannot be resolved
-    """
-    # Handle hf:// URIs
-    if file_path.startswith("hf://"):
-        resolved = fs.resolve_path(file_path)
-        return resolved.path_in_repo
-
-    # Handle format from datasets library: {repo_id}@{revision}/{relative_path}
-    if "@" in file_path and "/" in file_path:
-        # Convert to datasets/repo_id@revision/path format for resolve_path
-        datasets_path = f"datasets/{file_path}"
-        resolved = fs.resolve_path(datasets_path)
-        return resolved.path_in_repo
-
-    # Already a relative path
-    return file_path
+    return sorted(data_files)
 
 
 def dataset_builder_safe(
@@ -420,6 +388,40 @@ def dataset_builder_safe(
         os.chdir(original_cwd)
 
 
+def dataset_data_dir(data_files: Dict[str, List[str]]) -> str:
+    """Extract data directory by resolving file URIs.
+
+    Resolves the file URIs to extract the common directory path.
+
+    Args:
+        data_files: Dictionary mapping splits to lists of file URIs (with revision)
+
+    Returns:
+        Data directory path relative to repo root
+
+    Example:
+        >>> dataset_data_dir({
+        ...     "train": ["repo@rev/plain_text/train-00000.parquet"],
+        ...     "test": ["repo@rev/plain_text/test-00000.parquet"]
+        ... })
+        'plain_text'
+    """
+    fs = HfFileSystem()
+    all_files = []
+    for file_list in data_files.values():
+        for file_path in file_list:
+            resolved = fs.resolve_path(file_path)
+            all_files.append(resolved.path_in_repo)
+
+    if not all_files:
+        raise ValueError("No data files found to determine data directory")
+
+    try:
+        return os.path.commonpath(all_files)
+    except ValueError as e:
+        raise ValueError(f"Unable to determine common data directory from files: {all_files}") from e
+
+
 # =============================================================================
 # Dataset Discovery and Bridging
 # =============================================================================
@@ -438,10 +440,10 @@ class DatasetInfo:
     repo_id: str
     config: str
     splits: List[str]
-    parquet_files: Dict[str, List[str]]  # split -> list of files
+    data_files: Dict[str, List[str]]  # split -> list of fully qualified URIs (with revision)
     data_dir: str
     features: Features  # HuggingFace dataset features
-    revision: Optional[str] = None  # Git revision/SHA of the dataset
+    revision: str  # Git revision/SHA of the dataset
 
     @classmethod
     def discover(
@@ -456,11 +458,10 @@ class DatasetInfo:
         1. Validate config exists in dataset
         2. Load dataset builder to get metadata
         3. Extract splits from builder
-        4. Get data files (parquet file paths)
-        5. Resolve file paths to relative paths
-        6. Get dataset revision (SHA) from Hub
-        7. Infer data directory from file paths
-        8. Return DatasetInfo with all metadata
+        4. Get data files (fully qualified URIs with revision)
+        5. Get dataset revision (SHA) from Hub
+        6. Extract data directory from config or URIs
+        7. Return DatasetInfo with all metadata
 
         Args:
             repo_id: HuggingFace dataset repository ID (e.g., "kszucs/dataset1")
@@ -479,57 +480,29 @@ class DatasetInfo:
             raise ValueError(f"Dataset {repo_id} config {config} not found or not accessible: {e}") from e
 
         revision = builder.hash
+        # Keep fully qualified URIs with revision from builder
         data_files = builder.config.data_files
         splits = list(data_files.keys())
         features = builder.info.features
 
-        parquet_files = cls._resolve_file_paths(data_files, token)
-        data_dir = cls._infer_data_dir(parquet_files)
+        if not data_files:
+            raise ValueError("No Parquet files found in dataset configuration")
+
+        # Extract data directory from config or infer from URIs
+        if builder.config.data_dir:
+            data_dir = builder.config.data_dir
+        else:
+            data_dir = dataset_data_dir(data_files=data_files)
 
         return cls(
             repo_id=repo_id,
             config=config,
             splits=splits,
-            parquet_files=parquet_files,
+            data_files=data_files,  # Store fully qualified URIs
             data_dir=data_dir,
             features=features,
             revision=revision,
         )
-
-    @staticmethod
-    def _resolve_file_paths(
-        data_files: Dict[str, List[str]], token: Optional[str]
-    ) -> Dict[str, List[str]]:
-        """Resolve file paths to relative paths and organize by split."""
-        fs = HfFileSystem(token=token)
-        parquet_files = {
-            split: [dataset_resolve_path(fs, path) for path in paths]
-            for split, paths in data_files.items()
-        }
-
-        if not parquet_files:
-            raise ValueError("No Parquet files found after resolving paths")
-
-        return parquet_files
-
-    @staticmethod
-    def _infer_data_dir(parquet_files: Dict[str, List[str]]) -> str:
-        """Infer data directory from resolved file paths."""
-        import os
-
-        all_files = [f for file_list in parquet_files.values() for f in file_list]
-        if not all_files:
-            return "data"
-
-        try:
-            common = os.path.commonpath(all_files)
-            # If common path is a file, get its directory
-            if any(common == path for path in all_files):
-                return os.path.dirname(common)
-            return common
-        except ValueError:
-            # No common path
-            return ""
 
     def discover_file_pattern(self) -> tuple[str, int]:
         """Discover file naming pattern and next index from existing files.
@@ -547,7 +520,7 @@ class DatasetInfo:
 
         # Collect all files across all splits
         all_files = []
-        for split_files in self.parquet_files.values():
+        for split_files in self.data_files.values():
             all_files.extend(split_files)
 
         if not all_files:
@@ -618,30 +591,20 @@ class DatasetInfo:
         Returns:
             TableInfo object
         """
-        # Use features stored in DatasetInfo from discover()
-        features = self.features
-
-        # Features must be available
-        if not features:
-            raise ValueError(
-                f"Dataset {self.repo_id} config {self.config} has no features available. "
-                "Features must be provided by the dataset builder."
-            )
-
         # Build Iceberg schema with split column
-        schema = iceberg_schema_from_features(features, include_split_column=True)
+        schema = iceberg_schema_from_features(self.features, include_split_column=True)
 
         # Build partition spec (partitioned by split)
         partition_spec = iceberg_partition_spec(schema)
 
-        # Collect file information
+        # Collect file information with fully qualified URIs
         files = []
-        for split_name, file_paths in self.parquet_files.items():
+        for split_name, file_paths in self.data_files.items():
             for file_path in file_paths:
-                hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
+                # file_path is already a fully qualified URI from builder.config.data_files
                 files.append(
                     FileInfo(
-                        uri=hf_uri,
+                        uri=file_path,
                         size_bytes=0,  # Will be enriched later
                         row_count=0,  # Will be enriched later
                         split=split_name,
@@ -682,15 +645,10 @@ class DatasetInfo:
         Returns:
             TableInfo object with only new files
         """
-        # Use features stored in DatasetInfo from discover()
-        features = self.features
-        if not features:
-            raise ValueError(f"Dataset {self.repo_id} config {self.config} has no features available.")
-
-        schema = iceberg_schema_from_features(features, include_split_column=True)
+        schema = iceberg_schema_from_features(self.features, include_split_column=True)
         partition_spec = iceberg_partition_spec(schema)
 
-        # Get only new files added since old_revision
+        # Get only new files added since old_revision (returns relative paths)
         new_file_paths = dataset_new_files(
             repo_id=self.repo_id,
             config=self.config,
@@ -712,11 +670,12 @@ class DatasetInfo:
                     file_paths_by_split[split_name] = []
                 file_paths_by_split[split_name].append(file_path)
 
-        # Create FileInfo objects
+        # Create FileInfo objects with fully qualified URIs
         files = []
         for split_name, file_paths in file_paths_by_split.items():
             for file_path in file_paths:
-                hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
+                # Build fully qualified hf:// URI from relative path
+                hf_uri = f"hf://datasets/{self.repo_id}@{self.revision}/{file_path}"
                 files.append(
                     FileInfo(
                         uri=hf_uri,
