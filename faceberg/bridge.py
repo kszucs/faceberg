@@ -461,7 +461,15 @@ class DatasetInfo:
     ) -> "DatasetInfo":
         """Discover Parquet files and structure in a HuggingFace dataset.
 
-        Uses the datasets library to get proper metadata about config and splits.
+        Discovery process:
+        1. Validate config exists in dataset
+        2. Load dataset builder to get metadata
+        3. Extract splits from builder
+        4. Get data files (parquet file paths)
+        5. Resolve file paths to relative paths
+        6. Get dataset revision (SHA) from Hub
+        7. Infer data directory from file paths
+        8. Return DatasetInfo with all metadata
 
         Args:
             repo_id: HuggingFace dataset repository ID (e.g., "kszucs/dataset1")
@@ -474,25 +482,13 @@ class DatasetInfo:
         Raises:
             ValueError: If dataset not found or config doesn't exist
         """
-        # Get all available configs to validate the requested one
-        try:
-            all_configs = get_dataset_config_names(repo_id, token=token)
-        except DatasetNotFoundError as e:
-            raise ValueError(f"Dataset {repo_id} not found or not accessible") from e
-
-        # Validate requested config exists
-        if config not in all_configs:
-            raise ValueError(
-                f"Config '{config}' not found in dataset {repo_id}. Available: {all_configs}"
-            )
-
-        # Discover splits, files, and data directory for the config
-        splits, parquet_files, revision, data_dir = cls._discover_config(
-            repo_id, config, token
-        )
-
-        if not parquet_files:
-            raise ValueError(f"No Parquet files found in dataset {repo_id} config {config}")
+        cls._validate_config(repo_id, config, token)
+        builder = load_dataset_builder_safe(repo_id, config_name=config, token=token)
+        data_files = cls._get_data_files(repo_id, config, builder)
+        splits = cls._extract_splits(builder, data_files)
+        parquet_files = cls._resolve_file_paths(data_files, token)
+        revision = cls._get_revision(repo_id, token)
+        data_dir = cls._infer_data_dir(parquet_files)
 
         return cls(
             repo_id=repo_id,
@@ -504,101 +500,78 @@ class DatasetInfo:
         )
 
     @staticmethod
-    def _discover_config(
-        repo_id: str, config_name: str, token: Optional[str]
-    ) -> tuple[List[str], Dict[str, List[str]], Optional[str], str]:
-        """Discover splits, files, and data directory for a specific config.
+    def _validate_config(repo_id: str, config: str, token: Optional[str]) -> None:
+        """Validate that the requested config exists in the dataset."""
+        try:
+            all_configs = get_dataset_config_names(repo_id, token=token)
+        except DatasetNotFoundError as e:
+            raise ValueError(f"Dataset {repo_id} not found or not accessible") from e
 
-        Uses the datasets library's official inspection utilities for robust discovery.
+        if config not in all_configs:
+            raise ValueError(
+                f"Config '{config}' not found in dataset {repo_id}. Available: {all_configs}"
+            )
 
-        Args:
-            repo_id: Dataset repository ID
-            config_name: Configuration name
-            token: HuggingFace API token
-
-        Returns:
-            Tuple of (splits list, files dict mapping split -> file paths, revision, data_dir)
-
-        Raises:
-            ValueError: If no data files found or builder cannot be loaded
-        """
-        import os
-
-        builder = load_dataset_builder_safe(repo_id, config_name=config_name, token=token)
-
-        # Get dataset revision using official HuggingFace Hub API
-        api = HfApi()
-        dataset_info = api.dataset_info(repo_id, token=token)
-        revision = dataset_info.sha
-
-        # Get splits from builder.info.splits if available, otherwise from data_files
-        splits = []
+    @staticmethod
+    def _extract_splits(builder, data_files: Dict[str, List[str]]) -> List[str]:
+        """Extract split names from builder, falling back to data_files if needed."""
         if builder.info.splits:
-            splits = list(builder.info.splits.keys())
+            return list(builder.info.splits.keys())
+        return list(data_files.keys())
 
-        # Get data files for parquet file paths
+    @staticmethod
+    def _get_data_files(repo_id: str, config: str, builder) -> Dict[str, List[str]]:
+        """Get data files from builder configuration."""
         data_files = builder.config.data_files if hasattr(builder.config, "data_files") else None
 
         if not data_files or not isinstance(data_files, dict):
             raise ValueError(
-                f"No data files found for dataset {repo_id} config {config_name}. "
+                f"No data files found for dataset {repo_id} config {config}. "
                 "Cannot create Iceberg table without source data files."
             )
 
-        # Use splits from data_files if not found in builder.info
-        if not splits:
-            splits = list(data_files.keys())
+        return data_files
 
-        # Resolve all file paths using HfFileSystem
+    @staticmethod
+    def _resolve_file_paths(
+        data_files: Dict[str, List[str]], token: Optional[str]
+    ) -> Dict[str, List[str]]:
+        """Resolve file paths to relative paths and organize by split."""
         fs = HfFileSystem(token=token)
-        files = {
+        parquet_files = {
             split: [resolve_hf_path(fs, path) for path in paths]
             for split, paths in data_files.items()
         }
 
-        # Infer data directory from resolved file paths
-        all_files = [f for file_list in files.values() for f in file_list]
-        if all_files:
-            try:
-                common = os.path.commonpath(all_files)
-                # If common path is a file, get its directory
-                if any(common == path for path in all_files):
-                    data_dir = os.path.dirname(common)
-                else:
-                    data_dir = common
-            except ValueError:
-                # No common path
-                data_dir = ""
-        else:
-            # Default to 'data' for configs with no files
-            data_dir = "data"
+        if not parquet_files:
+            raise ValueError("No Parquet files found after resolving paths")
 
-        return splits, files, revision, data_dir
+        return parquet_files
 
-    def get_parquet_files_for_table(self) -> List[str]:
-        """Get all Parquet files across all splits.
+    @staticmethod
+    def _get_revision(repo_id: str, token: Optional[str]) -> str:
+        """Get dataset revision (SHA) from HuggingFace Hub."""
+        api = HfApi(token=token)
+        return api.dataset_info(repo_id).sha
 
-        Returns:
-            List of hf:// URIs for all Parquet files in this config
-        """
-        files = []
-        for split_files in self.parquet_files.values():
-            for file_path in split_files:
-                hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
-                files.append(hf_uri)
+    @staticmethod
+    def _infer_data_dir(parquet_files: Dict[str, List[str]]) -> str:
+        """Infer data directory from resolved file paths."""
+        import os
 
-        return files
+        all_files = [f for file_list in parquet_files.values() for f in file_list]
+        if not all_files:
+            return "data"
 
-    def get_sample_parquet_file(self) -> str:
-        """Get a sample Parquet file for schema inference.
-
-        Returns:
-            hf:// URI to a sample Parquet file
-        """
-        files = self.get_parquet_files_for_table()
-        if not files:
-            raise ValueError(f"No Parquet files found for config {self.config}")
-        return files[0]
+        try:
+            common = os.path.commonpath(all_files)
+            # If common path is a file, get its directory
+            if any(common == path for path in all_files):
+                return os.path.dirname(common)
+            return common
+        except ValueError:
+            # No common path
+            return ""
 
     def discover_file_pattern(self) -> tuple[str, int]:
         """Discover file naming pattern and next index from existing files.

@@ -60,27 +60,6 @@ def test_discover_nonexistent_config():
         DatasetInfo.discover("stanfordnlp/imdb", config="fake_config")
 
 
-def test_get_parquet_files_for_table():
-    """Test getting Parquet files for a specific config."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
-
-    files = dataset_info.get_parquet_files_for_table()
-
-    assert len(files) > 0
-    assert all(f.startswith("hf://datasets/stanfordnlp/imdb/") for f in files)
-    assert all(f.endswith(".parquet") for f in files)
-
-
-def test_get_sample_parquet_file():
-    """Test getting a sample Parquet file."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
-
-    sample = dataset_info.get_sample_parquet_file()
-
-    assert sample.startswith("hf://datasets/stanfordnlp/imdb/")
-    assert sample.endswith(".parquet")
-
-
 def test_resolve_hf_path():
     """Test path resolution using HfFileSystem API."""
     from huggingface_hub import HfFileSystem
@@ -805,11 +784,15 @@ if __name__ == "__main__":
     print(f"✓ Discovered config: {dataset_info.config}")
     print(f"✓ Found splits: {dataset_info.splits}")
 
-    files = dataset_info.get_parquet_files_for_table()
-    print(f"✓ Found {len(files)} Parquet files")
+    # Count total parquet files
+    total_files = sum(len(files) for files in dataset_info.parquet_files.values())
+    print(f"✓ Found {total_files} Parquet files across {len(dataset_info.parquet_files)} splits")
 
-    sample = dataset_info.get_sample_parquet_file()
-    print(f"✓ Sample file: {sample}")
+    # Get a sample file
+    first_split_files = next(iter(dataset_info.parquet_files.values()))
+    if first_split_files:
+        sample = f"hf://datasets/{dataset_info.repo_id}/{first_split_files[0]}"
+        print(f"✓ Sample file: {sample}")
 
     print("\nRunning schema conversion tests...")
     test_build_schema_from_simple_features()
