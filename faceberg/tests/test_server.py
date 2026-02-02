@@ -9,9 +9,9 @@ from faceberg.server import create_app
 class TestConfigEndpoint:
     """Tests for /v1/config endpoint."""
 
-    def test_get_config(self, synced_catalog):
+    def test_get_config(self, session_mbpp):
         """Test getting catalog configuration."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/config")
@@ -22,9 +22,9 @@ class TestConfigEndpoint:
             assert "overrides" in data
             assert "uri" in data["overrides"]
 
-    def test_get_config_with_warehouse_param(self, synced_catalog):
+    def test_get_config_with_warehouse_param(self, session_mbpp):
         """Test config endpoint with warehouse parameter."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/config?warehouse=/my/warehouse")
@@ -37,9 +37,9 @@ class TestConfigEndpoint:
 class TestNamespaceEndpoints:
     """Tests for namespace-related endpoints."""
 
-    def test_list_namespaces(self, synced_catalog):
+    def test_list_namespaces(self, session_mbpp):
         """Test listing all namespaces."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/namespaces")
@@ -49,39 +49,43 @@ class TestNamespaceEndpoints:
             assert "namespaces" in data
             namespaces = data["namespaces"]
             assert len(namespaces) > 0
-            # Check that 'stanfordnlp' namespace exists (from synced_catalog)
-            assert ["stanfordnlp"] in namespaces or ("stanfordnlp",) in namespaces
+            # Check that 'google-research-datasets' namespace exists (from session_mbpp)
+            assert ["google-research-datasets"] in namespaces or (
+                "google-research-datasets",
+            ) in namespaces
 
-    def test_load_namespace(self, synced_catalog):
+    def test_load_namespace(self, session_mbpp):
         """Test loading namespace properties."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/stanfordnlp")
+            response = client.get("/v1/namespaces/google-research-datasets")
             assert response.status_code == 200
 
             data = response.json()
             assert "namespace" in data
             assert "properties" in data
             # Namespace should be a list/tuple
-            assert data["namespace"] == ["stanfordnlp"] or data["namespace"] == ("stanfordnlp",)
+            assert data["namespace"] == ["google-research-datasets"] or data["namespace"] == (
+                "google-research-datasets",
+            )
 
-    def test_namespace_exists_head(self, synced_catalog):
+    def test_namespace_exists_head(self, session_mbpp):
         """Test checking namespace existence with HEAD request."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             # Existing namespace should return 204
-            response = client.head("/v1/namespaces/stanfordnlp")
+            response = client.head("/v1/namespaces/google-research-datasets")
             assert response.status_code == 204
 
-    def test_namespace_not_exists(self, synced_catalog):
+    def test_namespace_not_exists(self, session_mbpp):
         """Test loading non-existent namespace returns empty properties.
 
         Note: The catalog behavior is to return empty properties rather than
         raising an error for non-existent namespaces.
         """
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/namespaces/nonexistent")
@@ -97,12 +101,12 @@ class TestNamespaceEndpoints:
 class TestTableEndpoints:
     """Tests for table-related endpoints."""
 
-    def test_list_tables(self, synced_catalog):
+    def test_list_tables(self, session_mbpp):
         """Test listing tables in a namespace."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/stanfordnlp/tables")
+            response = client.get("/v1/namespaces/google-research-datasets/tables")
             assert response.status_code == 200
 
             data = response.json()
@@ -112,12 +116,12 @@ class TestTableEndpoints:
             # Check structure of table entries
             assert all("namespace" in t and "name" in t for t in tables)
 
-    def test_load_table(self, synced_catalog):
+    def test_load_table(self, session_mbpp):
         """Test loading a table."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/stanfordnlp/tables/imdb")
+            response = client.get("/v1/namespaces/google-research-datasets/tables/mbpp")
             assert response.status_code == 200
 
             data = response.json()
@@ -128,46 +132,46 @@ class TestTableEndpoints:
             metadata = data["metadata"]
             assert "format-version" in metadata or "format_version" in metadata
 
-    def test_table_exists_head(self, synced_catalog):
+    def test_table_exists_head(self, session_mbpp):
         """Test checking table existence with HEAD request."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             # Existing table should return 204
-            response = client.head("/v1/namespaces/stanfordnlp/tables/imdb")
+            response = client.head("/v1/namespaces/google-research-datasets/tables/mbpp")
             assert response.status_code == 204
 
-    def test_table_not_exists(self, synced_catalog):
+    def test_table_not_exists(self, session_mbpp):
         """Test loading non-existent table returns 404."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/stanfordnlp/tables/nonexistent")
+            response = client.get("/v1/namespaces/google-research-datasets/tables/nonexistent")
             assert response.status_code == 404
 
             data = response.json()
             assert "error" in data
             assert data["error"]["type"] == "NoSuchTableError"
 
-    def test_table_exists_wrong_namespace(self, synced_catalog):
+    def test_table_exists_wrong_namespace(self, session_mbpp):
         """Test checking table in wrong namespace returns 404."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
-            response = client.head("/v1/namespaces/nonexistent/tables/imdb")
+            response = client.head("/v1/namespaces/nonexistent/tables/mbpp")
             assert response.status_code == 404
 
 
 class TestErrorHandling:
     """Tests for error handling."""
 
-    def test_error_response_format(self, synced_catalog):
+    def test_error_response_format(self, session_mbpp):
         """Test that errors follow Iceberg REST spec format."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             # Use table not found as the test case for error format
-            response = client.get("/v1/namespaces/stanfordnlp/tables/nonexistent")
+            response = client.get("/v1/namespaces/google-research-datasets/tables/nonexistent")
             assert response.status_code == 404
 
             data = response.json()
@@ -179,9 +183,9 @@ class TestErrorHandling:
             assert error["type"] == "NoSuchTableError"
             assert error["code"] == 404
 
-    def test_internal_error_handling(self, synced_catalog):
+    def test_internal_error_handling(self, session_mbpp):
         """Test that unexpected errors are caught and formatted properly."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             # Try to cause an error by requesting invalid paths
@@ -267,9 +271,9 @@ class TestSyncedCatalogDataIntegrity:
     exposes the namespace and table information.
     """
 
-    def test_synced_catalog_has_default_namespace(self, synced_catalog):
-        """Verify synced catalog exposes the stanfordnlp namespace."""
-        app = create_app(synced_catalog.uri)
+    def test_session_mbpp_has_default_namespace(self, session_mbpp):
+        """Verify synced catalog exposes the google-research-datasets namespace."""
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/namespaces")
@@ -281,36 +285,38 @@ class TestSyncedCatalogDataIntegrity:
             # Must have at least one namespace
             assert len(namespaces) > 0, "Synced catalog should have namespaces"
 
-            # Should include stanfordnlp namespace
+            # Should include google-research-datasets namespace
             namespace_list = [list(ns) if isinstance(ns, tuple) else ns for ns in namespaces]
-            assert ["stanfordnlp"] in namespace_list or ("stanfordnlp",) in namespaces, (
-                f"Expected 'stanfordnlp' namespace in {namespace_list}"
-            )
+            assert ["google-research-datasets"] in namespace_list or (
+                "google-research-datasets",
+            ) in namespaces, f"Expected 'google-research-datasets' namespace in {namespace_list}"
 
-    def test_synced_catalog_has_imdb_table(self, synced_catalog):
-        """Verify synced catalog exposes the imdb table."""
-        app = create_app(synced_catalog.uri)
+    def test_session_mbpp_has_mbpp_table(self, session_mbpp):
+        """Verify session catalog exposes the mbpp table."""
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/stanfordnlp/tables")
+            response = client.get("/v1/namespaces/google-research-datasets/tables")
             assert response.status_code == 200
 
             data = response.json()
             tables = data["identifiers"]
 
             # Must have at least one table
-            assert len(tables) > 0, "Synced catalog should have tables in stanfordnlp namespace"
+            assert len(tables) > 0, (
+                "Session catalog should have tables in google-research-datasets namespace"
+            )
 
-            # Should include imdb table
+            # Should include mbpp table
             table_names = [t["name"] if isinstance(t, dict) else str(t) for t in tables]
-            assert "imdb" in table_names, f"Expected 'imdb' in {table_names}"
+            assert "mbpp" in table_names, f"Expected 'mbpp' in {table_names}"
 
-    def test_synced_catalog_table_has_valid_metadata(self, synced_catalog):
+    def test_session_mbpp_table_has_valid_metadata(self, session_mbpp):
         """Verify synced table returns valid Iceberg metadata."""
-        app = create_app(synced_catalog.uri)
+        app = create_app(session_mbpp.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/stanfordnlp/tables/imdb")
+            response = client.get("/v1/namespaces/google-research-datasets/tables/mbpp")
             assert response.status_code == 200
 
             data = response.json()

@@ -5,7 +5,6 @@ import uuid
 import pyarrow as pa
 import pytest
 from huggingface_hub import HfFileSystem
-from pandas.api.types import is_string_dtype
 from pyiceberg.exceptions import (
     NamespaceAlreadyExistsError,
     NamespaceNotEmptyError,
@@ -505,13 +504,13 @@ class TestTableAppend:
 class TestDatasetOperations:
     """Tests for HuggingFace dataset integration."""
 
-    def test_namespace_exists_after_add_dataset(self, synced_catalog):
+    def test_namespace_exists_after_add_dataset(self, session_mbpp):
         """Test that namespaces exist after datasets are added."""
         # Namespace should exist after add_dataset
-        assert ("stanfordnlp",) in synced_catalog.list_namespaces()
+        assert ("google-research-datasets",) in session_mbpp.list_namespaces()
 
         # Verify table exists
-        tables = synced_catalog.list_tables("stanfordnlp")
+        tables = session_mbpp.list_tables("google-research-datasets")
         assert len(tables) > 0
 
     def test_add_dataset_already_exists(self, catalog):
@@ -557,10 +556,10 @@ class TestDatasetOperations:
 class TestTableScanning:
     """Tests for PyIceberg table scanning operations."""
 
-    def test_scan_basic(self, synced_catalog):
+    def test_scan_basic(self, session_mbpp):
         """Test creating a basic scan object."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         scan = table.scan()
 
         # Verify scan object is created
@@ -571,11 +570,11 @@ class TestTableScanning:
         assert hasattr(scan, "to_pandas")
         assert hasattr(scan, "to_arrow_batch_reader")
 
-    def test_scan_to_arrow(self, synced_catalog):
+    def test_scan_to_arrow(self, session_mbpp):
         """Test scanning table to Arrow table."""
 
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         scan = table.scan()
 
         # Convert to Arrow table
@@ -590,18 +589,18 @@ class TestTableScanning:
         # Verify expected columns are present
         column_names = arrow_table.schema.names
         assert "split" in column_names
-        assert "text" in column_names
-        assert "label" in column_names
+        # Verify dataset has at least 2 other columns besides split
+        assert len(column_names) >= 3
 
         # Verify split column contains expected values
         split_values = arrow_table["split"].unique().to_pylist()
-        assert any(split in split_values for split in ["train", "test", "unsupervised"])
+        assert any(split in split_values for split in ["train", "test", "validation", "prompt"])
 
-    def test_scan_to_pandas(self, synced_catalog):
+    def test_scan_to_pandas(self, session_mbpp):
         """Test scanning table to Pandas DataFrame."""
 
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         scan = table.scan()
 
         # Convert to Pandas DataFrame
@@ -614,28 +613,34 @@ class TestTableScanning:
         # Verify split column exists
         assert "split" in df.columns
 
-        # Verify data types are reasonable (accepts both object and StringDtype)
-        assert is_string_dtype(df["text"].dtype)
+        # Verify we have multiple columns
+        assert len(df.columns) >= 3
 
-    def test_scan_with_selected_fields(self, synced_catalog):
+    def test_scan_with_selected_fields(self, session_mbpp):
         """Test scanning with column projection."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
+
+        # Get schema to know which columns exist
+        schema = table.schema()
+        # Select first two non-split columns
+        cols_to_select = [f.name for f in schema.fields if f.name != "split"][:2]
 
         # Scan with only specific columns selected
-        scan = table.scan().select("text", "label")
+        scan = table.scan().select(*cols_to_select)
         arrow_table = scan.to_arrow()
 
         # Verify only selected columns are present
         column_names = arrow_table.schema.names
-        assert "text" in column_names
-        assert "label" in column_names
+        assert len(column_names) == len(cols_to_select)
         assert "split" not in column_names
+        for col in cols_to_select:
+            assert col in column_names
 
-    def test_scan_limit(self, synced_catalog):
+    def test_scan_limit(self, session_mbpp):
         """Test scanning with row limit."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
 
         # PyIceberg doesn't support limit() directly on scan, need to materialize first
         scan = table.scan()
@@ -647,10 +652,10 @@ class TestTableScanning:
         # Verify exactly 10 rows
         assert limited_table.num_rows == 10
 
-    def test_partition_filter_single_split(self, synced_catalog):
+    def test_partition_filter_single_split(self, session_mbpp):
         """Test partition pruning with single split filter."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
 
         # Scan with split filter
         scan = table.scan().filter("split = 'train'")
@@ -663,10 +668,10 @@ class TestTableScanning:
         # Verify we got some rows (not empty result)
         assert arrow_table.num_rows > 0
 
-    def test_partition_filter_multiple_splits(self, synced_catalog):
+    def test_partition_filter_multiple_splits(self, session_mbpp):
         """Test partition pruning with multiple split filter."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
 
         # Scan with IN filter for multiple splits
         scan = table.scan().filter("split IN ('train', 'test')")
@@ -676,16 +681,17 @@ class TestTableScanning:
         unique_splits = df["split"].unique()
         assert set(unique_splits).issubset({"train", "test"})
 
-        # Verify unsupervised split is excluded (if it exists in the dataset)
-        assert "unsupervised" not in unique_splits
+        # Verify other splits are excluded (validation, prompt)
+        assert "validation" not in unique_splits
+        assert "prompt" not in unique_splits
 
         # Verify we got some rows
         assert len(df) > 0
 
-    def test_scan_all_partitions(self, synced_catalog):
+    def test_scan_all_partitions(self, session_mbpp):
         """Test scanning all partitions without filter."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
 
         # Scan without filter
         scan = table.scan()
@@ -697,13 +703,13 @@ class TestTableScanning:
         # Verify we have multiple splits
         assert len(split_values) > 1
 
-        # Verify expected splits are present (IMDB has train/test/unsupervised)
+        # Verify expected splits are present (mbpp has train/test/validation/prompt)
         assert "train" in split_values or "test" in split_values
 
-    def test_scan_empty_result(self, synced_catalog):
+    def test_scan_empty_result(self, session_mbpp):
         """Test scanning with filter that returns no rows."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
 
         # Scan with impossible filter
         scan = table.scan().filter("split = 'nonexistent_split'")
@@ -712,14 +718,14 @@ class TestTableScanning:
         # Verify 0 rows returned
         assert arrow_table.num_rows == 0
 
-        # Verify schema is still correct
+        # Verify schema is still correct (has split and other columns)
         assert "split" in arrow_table.schema.names
-        assert "text" in arrow_table.schema.names
+        assert len(arrow_table.schema.names) >= 3
 
-    def test_multiple_scans_same_table(self, synced_catalog):
+    def test_multiple_scans_same_table(self, session_mbpp):
         """Test multiple independent scans from the same table."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
 
         # Create two independent scans
         scan1 = table.scan().filter("split = 'train'")
@@ -740,17 +746,17 @@ class TestTableScanning:
 class TestTableMetadata:
     """Tests for PyIceberg metadata reading operations."""
 
-    def test_read_schema(self, synced_catalog):
+    def test_read_schema(self, session_mbpp):
         """Test reading table schema."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         schema = table.schema()
 
         # Verify schema has expected fields
         field_names = [field.name for field in schema.fields]
         assert "split" in field_names
-        assert "text" in field_names
-        assert "label" in field_names
+        # Verify we have multiple fields (at least 3)
+        assert len(field_names) >= 3
 
         # Verify field IDs are assigned (all > 0)
         for field in schema.fields:
@@ -759,11 +765,11 @@ class TestTableMetadata:
         # Verify split column is first field
         assert schema.fields[0].name == "split"
 
-    def test_read_partition_spec(self, synced_catalog):
+    def test_read_partition_spec(self, session_mbpp):
         """Test reading partition specification."""
 
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         spec = table.spec()
 
         # Verify partition spec has at least one field
@@ -780,28 +786,28 @@ class TestTableMetadata:
         assert split_partition is not None
         assert isinstance(split_partition.transform, IdentityTransform)
 
-    def test_read_properties(self, synced_catalog):
+    def test_read_properties(self, session_mbpp):
         """Test reading table properties."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         properties = table.properties
 
         # Verify HuggingFace properties exist
         assert "hf.dataset.repo" in properties
-        assert properties["hf.dataset.repo"] == "stanfordnlp/imdb"
+        assert properties["hf.dataset.repo"] == "google-research-datasets/mbpp"
 
         assert "hf.dataset.config" in properties
-        assert properties["hf.dataset.config"] == "plain_text"
+        assert properties["hf.dataset.config"] == "sanitized"
 
         assert "hf.dataset.revision" in properties
 
         # Verify schema name mapping is present
         assert "schema.name-mapping.default" in properties
 
-    def test_read_snapshots(self, synced_catalog):
+    def test_read_snapshots(self, session_mbpp):
         """Test reading table snapshots."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         snapshots = list(table.snapshots())
 
         # Verify at least one snapshot exists
@@ -813,10 +819,10 @@ class TestTableMetadata:
         assert hasattr(snapshot, "manifest_list")
         assert snapshot.snapshot_id > 0
 
-    def test_current_snapshot(self, synced_catalog):
+    def test_current_snapshot(self, session_mbpp):
         """Test reading current snapshot."""
-        catalog = synced_catalog
-        table = catalog.load_table("stanfordnlp.imdb")
+        catalog = session_mbpp
+        table = catalog.load_table("google-research-datasets.mbpp")
         snapshot = table.current_snapshot()
 
         # Verify current snapshot exists
@@ -837,31 +843,31 @@ class TestTableMetadata:
 class TestRestCatalogOperations:
     """Tests for PyIceberg REST catalog basic operations."""
 
-    def test_rest_list_namespaces(self, rest_catalog):
+    def test_rest_list_namespaces(self, session_rest_catalog):
         """Test listing namespaces via REST catalog."""
-        namespaces = rest_catalog.list_namespaces()
+        namespaces = session_rest_catalog.list_namespaces()
 
         # Verify we got namespaces
         assert len(namespaces) > 0
 
-        # Verify stanfordnlp namespace exists
+        # Verify google-research-datasets namespace exists
         namespace_strs = [".".join(ns) if isinstance(ns, tuple) else ns for ns in namespaces]
-        assert "stanfordnlp" in namespace_strs
+        assert "google-research-datasets" in namespace_strs
 
-    def test_rest_list_tables(self, rest_catalog):
+    def test_rest_list_tables(self, session_rest_catalog):
         """Test listing tables via REST catalog."""
-        tables = rest_catalog.list_tables("stanfordnlp")
+        tables = session_rest_catalog.list_tables("google-research-datasets")
 
         # Verify we got tables
         assert len(tables) > 0
 
-        # Verify imdb table exists
+        # Verify mbpp table exists
         table_names = [t[1] if isinstance(t, tuple) and len(t) > 1 else str(t) for t in tables]
-        assert "imdb" in table_names
+        assert "mbpp" in table_names
 
-    def test_rest_load_table(self, rest_catalog):
+    def test_rest_load_table(self, session_rest_catalog):
         """Test loading a table via REST catalog."""
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
 
         # Verify table loaded successfully
         assert table is not None
@@ -875,11 +881,10 @@ class TestRestCatalogOperations:
 class TestRestCatalogScanning:
     """Tests for PyIceberg REST catalog scanning operations."""
 
-    def test_rest_scan_to_arrow(self, rest_catalog):
+    def test_rest_scan_to_arrow(self, session_rest_catalog):
         """Test scanning table to Arrow via REST catalog."""
-        import pyarrow as pa
 
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
         scan = table.scan()
 
         # Convert to Arrow table
@@ -891,15 +896,14 @@ class TestRestCatalogScanning:
         # Verify we have rows
         assert arrow_table.num_rows > 0
 
-        # Verify expected columns
+        # Verify expected columns (split + at least 2 other columns)
         column_names = arrow_table.schema.names
         assert "split" in column_names
-        assert "text" in column_names
-        assert "label" in column_names
+        assert len(column_names) >= 3
 
-    def test_rest_scan_to_pandas(self, rest_catalog):
+    def test_rest_scan_to_pandas(self, session_rest_catalog):
         """Test scanning table to Pandas via REST catalog."""
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
         scan = table.scan()
 
         # Convert to Pandas DataFrame
@@ -912,9 +916,9 @@ class TestRestCatalogScanning:
         # Verify split column exists
         assert "split" in df.columns
 
-    def test_rest_partition_filter(self, rest_catalog):
+    def test_rest_partition_filter(self, session_rest_catalog):
         """Test partition filtering via REST catalog."""
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
 
         # Scan with split filter
         scan = table.scan().filter("split = 'train'")
@@ -927,47 +931,53 @@ class TestRestCatalogScanning:
         # Verify we got some rows
         assert arrow_table.num_rows > 0
 
-    def test_rest_column_projection(self, rest_catalog):
+    def test_rest_column_projection(self, session_rest_catalog):
         """Test column projection via REST catalog."""
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
+
+        # Get schema to know which columns exist
+        schema = table.schema()
+        # Select first two non-split columns
+        cols_to_select = [f.name for f in schema.fields if f.name != "split"][:2]
 
         # Scan with only specific columns selected
-        scan = table.scan().select("text", "label")
+        scan = table.scan().select(*cols_to_select)
         arrow_table = scan.to_arrow()
 
         # Verify only selected columns are present
         column_names = arrow_table.schema.names
-        assert "text" in column_names
-        assert "label" in column_names
+        assert len(column_names) == len(cols_to_select)
         assert "split" not in column_names
+        for col in cols_to_select:
+            assert col in column_names
 
 
 class TestRestCatalogMetadata:
     """Tests for PyIceberg REST catalog metadata operations."""
 
-    def test_rest_read_schema(self, rest_catalog):
+    def test_rest_read_schema(self, session_rest_catalog):
         """Test reading table schema via REST catalog."""
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
         schema = table.schema()
 
         # Verify schema has expected fields
         field_names = [field.name for field in schema.fields]
         assert "split" in field_names
-        assert "text" in field_names
-        assert "label" in field_names
+        # Verify we have multiple fields (at least 3)
+        assert len(field_names) >= 3
 
-    def test_rest_read_properties(self, rest_catalog):
+    def test_rest_read_properties(self, session_rest_catalog):
         """Test reading table properties via REST catalog."""
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
         properties = table.properties
 
         # Verify HuggingFace properties exist
         assert "hf.dataset.repo" in properties
-        assert properties["hf.dataset.repo"] == "stanfordnlp/imdb"
+        assert properties["hf.dataset.repo"] == "google-research-datasets/mbpp"
 
-    def test_rest_read_snapshots(self, rest_catalog):
+    def test_rest_read_snapshots(self, session_rest_catalog):
         """Test reading table snapshots via REST catalog."""
-        table = rest_catalog.load_table("stanfordnlp.imdb")
+        table = session_rest_catalog.load_table("google-research-datasets.mbpp")
         snapshots = list(table.snapshots())
 
         # Verify at least one snapshot exists

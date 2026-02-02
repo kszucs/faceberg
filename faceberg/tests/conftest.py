@@ -2,20 +2,15 @@
 
 import os
 import shutil
-import socket
-import threading
-import time
 from contextlib import contextmanager
 
 import pytest
-import requests
-import uvicorn
 from datasets import Dataset
 from huggingface_hub import HfApi
 from pyiceberg.catalog.rest import RestCatalog
 
 from faceberg.catalog import LocalCatalog, RemoteCatalog
-from faceberg.server import create_app
+from faceberg.server import serve_app
 
 
 def pytest_addoption(parser):
@@ -26,27 +21,6 @@ def pytest_addoption(parser):
         default=False,
         help="Enable live HuggingFace Hub testing (requires HF_TOKEN)",
     )
-
-
-def hf_test_credentials(request):
-    """Get HuggingFace credentials for testing.
-
-    Returns:
-        Tuple of (hf_org, hf_token)
-
-    Raises:
-        pytest.skip: If credentials are not available
-    """
-    hf_live = request.config.getoption("--hf-live")
-    hf_org = os.environ.get("FACEBERG_TEST_ORG")
-    hf_token = os.environ.get("FACEBERG_TEST_TOKEN")
-
-    if not hf_live:
-        pytest.skip("Live HF testing not enabled (use --hf-live)")
-    if not (hf_org and hf_token):
-        pytest.skip("FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables must be set")
-
-    return hf_org, hf_token
 
 
 @contextmanager
@@ -61,7 +35,12 @@ def local_catalog(path):
 
 
 @contextmanager
-def remote_catalog(hf_org, hf_token):
+def remote_catalog():
+    hf_org = os.environ.get("FACEBERG_TEST_ORG")
+    hf_token = os.environ.get("FACEBERG_TEST_TOKEN")
+    if not (hf_org and hf_token):
+        pytest.skip("FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables must be set")
+
     # Create unique repo name for this test session
     uri = f"hf://datasets/{hf_org}/faceberg-catalog"
     catalog = RemoteCatalog(name="remote", uri=uri, hf_token=hf_token)
@@ -100,88 +79,80 @@ def catalog(request, tmp_path):
         with local_catalog(tmp_path) as catalog:
             yield catalog
     elif request.param == "remote":
-        # Get HF credentials
-        hf_org, hf_token = hf_test_credentials(request)
-        # TODO(kszucs): hf_repo should be the unique repo name per test session
-        # maybe also check the token scopes
-        # Create remote catalog within context manager
-        with remote_catalog(hf_org, hf_token) as catalog:
+        if not request.config.getoption("--hf-live"):
+            pytest.skip("Live HF testing not enabled (use --hf-live)")
+        with remote_catalog() as catalog:
+            yield catalog
+    else:
+        raise ValueError(f"Unknown catalog type: {request.param}")
+
+
+@pytest.fixture(params=["local", "remote"], scope="session")
+def session_catalog(request, tmp_path_factory):
+    """Session-scoped parametrized catalog fixture (local and remote).
+
+    Similar to `catalog` fixture but with session scope for expensive setup.
+
+    Args:
+        request: Pytest request object with param ("local" or "remote")
+        tmp_path_factory: Factory for creating temporary directories
+
+    Returns:
+        Either an empty LocalCatalog or RemoteCatalog instance
+    """
+    if request.param == "local":
+        tmp_path = tmp_path_factory.mktemp("local_catalog_session")
+        with local_catalog(tmp_path) as catalog:
+            yield catalog
+    elif request.param == "remote":
+        if not request.config.getoption("--hf-live"):
+            pytest.skip("Live HF testing not enabled (use --hf-live)")
+        with remote_catalog() as catalog:
             yield catalog
     else:
         raise ValueError(f"Unknown catalog type: {request.param}")
 
 
 @pytest.fixture
-def synced_catalog(catalog):
-    """Catalog with synced test dataset (inherits parametrization from catalog).
-
-    Syncs stanfordnlp/imdb (plain_text config) - a small public dataset with
-    org prefix compatible with DuckDB's httpfs hf:// URL requirements.
-
-    Note: Tests that access table data or metadata (schema, snapshots, scanning)
-    with hf:// URLs will be skipped for remote catalog because PyIceberg's HfFileSystem
-    tries to validate repository existence which requires network access.
-
-    Args:
-        catalog: Empty catalog instance (local or remote, from parametrized fixture)
-
-    Returns:
-        Catalog instance with synced imdb dataset
-    """
-    catalog.add_dataset("stanfordnlp.imdb", repo="stanfordnlp/imdb", config="plain_text")
-
-    assert ("stanfordnlp",) in catalog.list_namespaces()
-
+def mbpp(catalog):
+    """Catalog with small test dataset (mbpp - ~1000 examples)."""
+    catalog.add_dataset(
+        "google-research-datasets.mbpp", repo="google-research-datasets/mbpp", config="sanitized"
+    )
+    assert ("google-research-datasets",) in catalog.list_namespaces()
     return catalog
 
 
-@pytest.fixture
-def rest_server(synced_catalog):
+@pytest.fixture(scope="session")
+def session_mbpp(session_catalog):
+    """Session-scoped catalog with small test dataset (mbpp - ~1000 examples)."""
+    session_catalog.add_dataset(
+        "google-research-datasets.mbpp", repo="google-research-datasets/mbpp", config="sanitized"
+    )
+    assert ("google-research-datasets",) in session_catalog.list_namespaces()
+    return session_catalog
+
+
+@pytest.fixture(scope="session")
+def session_rest_server(session_mbpp):
     """Start REST catalog server for testing (session-scoped).
 
     Returns the base URL of the server (e.g., http://localhost:8181).
     The server runs in a background thread and is shared across all tests.
     """
-    # Find available port
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-
-    base_url = f"http://127.0.0.1:{port}"
-    app = create_app(synced_catalog.uri)
-
-    # Start server in background thread
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-
-    # Wait for server to be ready
-    for _ in range(50):
-        try:
-            if requests.get(f"{base_url}/v1/config", timeout=1).status_code == 200:
-                break
-        except Exception:
-            time.sleep(0.1)
-    else:
-        pytest.fail("REST server failed to start")
-
-    yield base_url
-
-    # Cleanup
-    server.should_exit = True
-    thread.join(timeout=5)
+    with serve_app(session_mbpp.uri) as base_url:
+        yield base_url
 
 
-@pytest.fixture
-def rest_catalog(rest_server):
-    """Create PyIceberg RestCatalog connected to test server.
+@pytest.fixture(scope="session")
+def session_rest_catalog(session_rest_server):
+    """Create PyIceberg RestCatalog connected to test server (session-scoped).
 
     Configures the catalog to use HfFileIO for handling hf:// URIs.
     """
     return RestCatalog(
-        name="faceberg_rest",
-        uri=rest_server,
+        name="faceberg_rest_session",
+        uri=session_rest_server,
         **{
             "py-io-impl": "faceberg.catalog.HfFileIO",
         },
@@ -189,7 +160,7 @@ def rest_catalog(rest_server):
 
 
 @contextmanager
-def remote_dataset(hf_org, hf_token, postfix):
+def remote_dataset(postfix):
     """Create a small synthetic dataset for testing writes.
 
     Creates and publishes a small synthetic dataset to HuggingFace Hub that can
@@ -202,6 +173,11 @@ def remote_dataset(hf_org, hf_token, postfix):
     Yields:
         Dataset repo ID
     """
+    hf_org = os.environ.get("FACEBERG_TEST_ORG")
+    hf_token = os.environ.get("FACEBERG_TEST_TOKEN")
+    if not (hf_org and hf_token):
+        pytest.skip("FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables must be set")
+
     hf_repo = f"{hf_org}/faceberg-dataset-{postfix}"
     hf_api = HfApi(token=hf_token)
     hf_api.delete_repo(repo_id=hf_repo, repo_type="dataset", missing_ok=True)
@@ -242,11 +218,8 @@ def writable_dataset(catalog, request):
     Returns:
         Catalog instance with writable testorg.testdataset table
     """
-    # Get HF credentials
-    hf_org, hf_token = hf_test_credentials(request)
-
     # Create a small synthetic test dataset on HuggingFace Hub
-    with remote_dataset(hf_org, hf_token, postfix=catalog.name) as dataset_repo:
+    with remote_dataset(postfix=catalog.name) as dataset_repo:
         # Add dataset to catalog - this discovers the uploaded files and creates Iceberg metadata
         # No config specified - let it auto-detect from parquet files
         catalog.add_dataset(

@@ -17,9 +17,15 @@ Initial implementation supports read-only operations:
 from __future__ import annotations
 
 import os
+import socket
+import threading
+import time
+from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
+
+import requests
 
 # Disable Litestar warnings about sync handlers - all catalog operations are blocking I/O
 os.environ.setdefault("LITESTAR_WARN_IMPLICIT_SYNC_TO_THREAD", "0")
@@ -372,4 +378,62 @@ def create_app(
     return app
 
 
-__all__ = ["create_app"]
+# =========================================================================
+# Server Lifecycle Management
+# =========================================================================
+
+
+@contextmanager
+def serve_app(catalog_uri: str, hf_token: Optional[str] = None) -> Iterator[str]:
+    """Start REST catalog server in background thread.
+
+    Args:
+        catalog_uri: Catalog URI - file:// for LocalCatalog or hf:// for RemoteCatalog
+        hf_token: HuggingFace API token (required for RemoteCatalog)
+
+    Yields:
+        Base URL of the server (e.g., http://127.0.0.1:8181)
+
+    Examples:
+        >>> with serve_app("file:///path/to/catalog") as base_url:
+        ...     # Server is running, make requests to base_url
+        ...     response = requests.get(f"{base_url}/v1/config")
+        ...
+        >>> # Server is automatically stopped and cleaned up
+    """
+    import uvicorn
+
+    # Find available port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    base_url = f"http://127.0.0.1:{port}"
+    app = create_app(catalog_uri, hf_token=hf_token)
+
+    # Start server in background thread
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    # Wait for server to be ready
+
+    for _ in range(50):
+        try:
+            if requests.get(f"{base_url}/v1/config", timeout=1).status_code == 200:
+                break
+        except Exception:
+            time.sleep(0.1)
+    else:
+        raise RuntimeError("REST server failed to start")
+
+    try:
+        yield base_url
+    finally:
+        # Cleanup
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+__all__ = ["create_app", "serve_app"]

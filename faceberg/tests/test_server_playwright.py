@@ -31,9 +31,9 @@ def browser_type_launch_args(browser_type_launch_args):
 # =============================================================================
 
 
-def test_landing_page_loads(rest_server: str, page: Page):
+def test_landing_page_loads(session_session_rest_server: str, page: Page):
     """Test that the landing page loads successfully."""
-    page.goto(rest_server)
+    page.goto(session_session_rest_server)
 
     # Check that the page title contains "Faceberg"
     expect(page).to_have_title(re.compile("Faceberg"))
@@ -43,9 +43,9 @@ def test_landing_page_loads(rest_server: str, page: Page):
     expect(header).to_be_visible()
 
 
-def test_header_displays_correctly(rest_server: str, page: Page):
+def test_header_displays_correctly(session_rest_server: str, page: Page):
     """Test that the header displays catalog information correctly."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check header title
     header_title = page.locator(".header-title")
@@ -65,9 +65,9 @@ def test_header_displays_correctly(rest_server: str, page: Page):
     expect(header_meta).to_contain_text("tables")
 
 
-def test_layout_structure(rest_server: str, page: Page):
+def test_layout_structure(session_rest_server: str, page: Page):
     """Test that the page has correct layout structure."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check main container exists
     main_container = page.locator(".main-container")
@@ -82,9 +82,9 @@ def test_layout_structure(rest_server: str, page: Page):
     expect(right_sidebar).to_be_visible()
 
 
-def test_catalog_hierarchy_section_present(rest_server: str, page: Page):
+def test_catalog_hierarchy_section_present(session_rest_server: str, page: Page):
     """Test that the catalog hierarchy section is present."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check for catalog hierarchy
     catalog_hierarchy = page.locator(".catalog-hierarchy")
@@ -100,26 +100,26 @@ def test_catalog_hierarchy_section_present(rest_server: str, page: Page):
 # =============================================================================
 
 
-def test_catalog_displays_tables(rest_server: str, page: Page):
+def test_catalog_displays_tables(session_rest_server: str, page: Page):
     """Test that the catalog displays table list."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check that at least one table is visible
     table_items = page.locator(".table-item")
     expect(table_items.first).to_be_visible()
 
 
-def test_catalog_shows_table_count(rest_server: str, page: Page):
+def test_catalog_shows_table_count(session_rest_server: str, page: Page):
     """Test that the catalog shows table count in header."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     header_meta = page.locator(".header-meta")
     expect(header_meta).to_contain_text("table")
 
 
-def test_table_item_displays_metadata(rest_server: str, page: Page):
+def test_table_item_displays_metadata(session_rest_server: str, page: Page):
     """Test that table items display name and row count."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Get first table item
     first_table = page.locator(".table-item").first
@@ -134,9 +134,9 @@ def test_table_item_displays_metadata(rest_server: str, page: Page):
     expect(row_count).to_contain_text("rows")
 
 
-def test_table_expansion(rest_server: str, page: Page):
+def test_table_expansion(session_rest_server: str, page: Page):
     """Test that clicking a table expands its details."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Get first table
     first_table = page.locator(".table-item").first
@@ -157,9 +157,9 @@ def test_table_expansion(rest_server: str, page: Page):
     expect(table_content).to_be_visible()
 
 
-def test_table_schema_displays(rest_server: str, page: Page):
+def test_table_schema_displays(session_rest_server: str, page: Page):
     """Test that expanded table shows schema information."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Expand first table
     first_table = page.locator(".table-item").first
@@ -179,9 +179,9 @@ def test_table_schema_displays(rest_server: str, page: Page):
     expect(schema_table).to_contain_text("Req")
 
 
-def test_table_metadata_grid(rest_server: str, page: Page):
+def test_table_metadata_grid(session_rest_server: str, page: Page):
     """Test that expanded table shows metadata grid with stats."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Expand first table
     first_table = page.locator(".table-item").first
@@ -197,9 +197,9 @@ def test_table_metadata_grid(rest_server: str, page: Page):
     expect(metadata_grid).to_contain_text("Cols:")
 
 
-def test_query_button_present(rest_server: str, page: Page):
+def test_query_button_present(session_rest_server: str, page: Page):
     """Test that query button is present in expanded table."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Expand first table
     first_table = page.locator(".table-item").first
@@ -216,17 +216,17 @@ def test_query_button_present(rest_server: str, page: Page):
 # =============================================================================
 
 
-def test_shell_container_visible(rest_server: str, page: Page):
+def test_shell_container_visible(session_rest_server: str, page: Page):
     """Test that the shell container is visible on page load."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     shell_container = page.locator("#shell-container")
     expect(shell_container).to_be_visible()
 
 
-def test_quick_tips_section(rest_server: str, page: Page):
+def test_quick_tips_section(session_rest_server: str, page: Page):
     """Test that the quick tips section displays correctly."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     quick_tips = page.locator(".quick-tips")
     expect(quick_tips).to_be_visible()
@@ -235,7 +235,7 @@ def test_quick_tips_section(rest_server: str, page: Page):
     expect(quick_tips).to_contain_text("httpfs")
 
 
-def test_duckdb_shell_initializes(rest_server: str, page: Page):
+def test_duckdb_shell_initializes(session_rest_server: str, page: Page):
     """Test that the DuckDB shell initializes without errors."""
     # Set up console message and error listeners
     console_messages = []
@@ -245,7 +245,7 @@ def test_duckdb_shell_initializes(rest_server: str, page: Page):
     page.on("pageerror", lambda exc: errors.append(str(exc)))
 
     # Navigate to the page
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Wait for the shell container to be visible
     shell_container = page.locator("#shell-container")
@@ -274,9 +274,9 @@ def test_duckdb_shell_initializes(rest_server: str, page: Page):
     expect(terminal).to_be_visible(timeout=5000)
 
 
-def test_shell_has_xterm(rest_server: str, page: Page):
+def test_shell_has_xterm(session_rest_server: str, page: Page):
     """Test that XTerm.js terminal renders in the shell."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Wait for XTerm to initialize
     page.wait_for_timeout(8000)
@@ -290,9 +290,9 @@ def test_shell_has_xterm(rest_server: str, page: Page):
     expect(xterm_viewport).to_be_visible()
 
 
-def test_extension_badges_visible(rest_server: str, page: Page):
+def test_extension_badges_visible(session_rest_server: str, page: Page):
     """Test that extension badges are visible in quick tips."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check for extension badges
     extension_badges = page.locator(".extension-badge")
@@ -308,10 +308,10 @@ def test_extension_badges_visible(rest_server: str, page: Page):
 # =============================================================================
 
 
-def test_page_responsive_at_smaller_viewport(rest_server: str, page: Page):
+def test_page_responsive_at_smaller_viewport(session_rest_server: str, page: Page):
     """Test that the page is responsive at smaller viewport sizes."""
     page.set_viewport_size({"width": 1024, "height": 768})
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check that main components are still visible
     main_container = page.locator(".main-container")
@@ -324,9 +324,9 @@ def test_page_responsive_at_smaller_viewport(rest_server: str, page: Page):
     expect(right_sidebar).to_be_visible()
 
 
-def test_scrollbar_styling_applied(rest_server: str, page: Page):
+def test_scrollbar_styling_applied(session_rest_server: str, page: Page):
     """Test that custom scrollbar styling is applied."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check that left sidebar is scrollable
     left_sidebar = page.locator(".left-sidebar")
@@ -342,9 +342,9 @@ def test_scrollbar_styling_applied(rest_server: str, page: Page):
 # =============================================================================
 
 
-def test_config_endpoint_accessible(rest_server: str, page: Page):
+def test_config_endpoint_accessible(session_rest_server: str, page: Page):
     """Test that the /v1/config endpoint is accessible."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Use page.evaluate to fetch config endpoint
     config_response = page.evaluate("""
@@ -361,9 +361,9 @@ def test_config_endpoint_accessible(rest_server: str, page: Page):
     assert "overrides" in config_response["data"]
 
 
-def test_namespaces_endpoint_accessible(rest_server: str, page: Page):
+def test_namespaces_endpoint_accessible(session_rest_server: str, page: Page):
     """Test that the /v1/namespaces endpoint is accessible."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Use page.evaluate to fetch namespaces endpoint
     namespaces_response = page.evaluate("""
@@ -382,9 +382,9 @@ def test_namespaces_endpoint_accessible(rest_server: str, page: Page):
     assert len(namespaces_response["data"]["namespaces"]) > 0
 
 
-def test_tables_endpoint_accessible(rest_server: str, page: Page):
+def test_tables_endpoint_accessible(session_rest_server: str, page: Page):
     """Test that the /v1/namespaces/{namespace}/tables endpoint is accessible."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Use page.evaluate to fetch tables endpoint
     tables_response = page.evaluate("""
@@ -408,12 +408,12 @@ def test_tables_endpoint_accessible(rest_server: str, page: Page):
 # =============================================================================
 
 
-def test_no_javascript_errors_on_load(rest_server: str, page: Page):
+def test_no_javascript_errors_on_load(session_rest_server: str, page: Page):
     """Test that no JavaScript errors occur on page load."""
     errors = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
 
-    page.goto(rest_server)
+    page.goto(session_rest_server)
     page.wait_for_timeout(2000)
 
     # Filter out known acceptable warnings
@@ -426,7 +426,7 @@ def test_no_javascript_errors_on_load(rest_server: str, page: Page):
     assert len(critical_errors) == 0, f"Found JavaScript errors: {critical_errors}"
 
 
-def test_no_console_errors(rest_server: str, page: Page):
+def test_no_console_errors(session_rest_server: str, page: Page):
     """Test that no critical console errors are logged."""
     console_errors = []
 
@@ -436,7 +436,7 @@ def test_no_console_errors(rest_server: str, page: Page):
 
     page.on("console", handle_console)
 
-    page.goto(rest_server)
+    page.goto(session_rest_server)
     page.wait_for_timeout(3000)
 
     # Some console errors might be acceptable (DuckDB initialization messages)
@@ -458,9 +458,9 @@ def test_no_console_errors(rest_server: str, page: Page):
 # =============================================================================
 
 
-def test_logo_image_loads(rest_server: str, page: Page):
+def test_logo_image_loads(session_rest_server: str, page: Page):
     """Test that the logo image loads correctly."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     logo = page.locator(".logo-icon img")
     expect(logo).to_be_visible()
@@ -471,9 +471,9 @@ def test_logo_image_loads(rest_server: str, page: Page):
     assert "faceberg" in src.lower()
 
 
-def test_color_scheme_applied(rest_server: str, page: Page):
+def test_color_scheme_applied(session_rest_server: str, page: Page):
     """Test that the color scheme is properly applied."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check header background color
     header = page.locator(".app-header")
@@ -483,9 +483,9 @@ def test_color_scheme_applied(rest_server: str, page: Page):
     assert bg_color is not None, "Header should have background color"
 
 
-def test_section_title_visible(rest_server: str, page: Page):
+def test_section_title_visible(session_rest_server: str, page: Page):
     """Test that the section title is visible."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     section_title = page.locator(".section-title")
     expect(section_title).to_be_visible()
@@ -497,11 +497,11 @@ def test_section_title_visible(rest_server: str, page: Page):
 # =============================================================================
 
 
-def test_page_loads_quickly(rest_server: str, page: Page):
+def test_page_loads_quickly(session_rest_server: str, page: Page):
     """Test that the page loads within a reasonable time."""
     start_time = time.time()
 
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Wait for main content to be visible
     page.locator(".main-container").wait_for(state="visible")
@@ -512,9 +512,9 @@ def test_page_loads_quickly(rest_server: str, page: Page):
     assert load_time < 5.0, f"Page took too long to load: {load_time:.2f}s"
 
 
-def test_fonts_load(rest_server: str, page: Page):
+def test_fonts_load(session_rest_server: str, page: Page):
     """Test that custom fonts are loaded."""
-    page.goto(rest_server)
+    page.goto(session_rest_server)
 
     # Check that DM Sans font is applied to body
     body_font = page.locator("body").evaluate("el => window.getComputedStyle(el).fontFamily")

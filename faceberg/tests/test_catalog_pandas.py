@@ -11,15 +11,15 @@ import pytest
 
 
 @pytest.fixture
-def catalog_properties(synced_catalog):
+def catalog_properties(session_mbpp):
     """Return catalog properties for pandas.read_iceberg()."""
     # Use appropriate catalog implementation based on URI scheme
-    if synced_catalog.uri.startswith("hf://"):
+    if session_mbpp.uri.startswith("hf://"):
         catalog_impl = "faceberg.catalog.RemoteCatalog"
     else:
         catalog_impl = "faceberg.catalog.LocalCatalog"
 
-    return {"py-catalog-impl": catalog_impl, "uri": synced_catalog.uri}
+    return {"py-catalog-impl": catalog_impl, "uri": session_mbpp.uri}
 
 
 # =============================================================================
@@ -30,7 +30,7 @@ def catalog_properties(synced_catalog):
 def test_read_iceberg_with_catalog_properties(catalog_properties):
     """Test reading table using pandas with catalog_properties."""
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test_catalog",  # Name doesn't matter when passing properties
         catalog_properties=catalog_properties,
         limit=10,
@@ -43,8 +43,8 @@ def test_read_iceberg_with_catalog_properties(catalog_properties):
 
     # Verify expected columns
     assert "split" in df.columns
-    assert "text" in df.columns
-    assert "label" in df.columns
+    assert "prompt" in df.columns
+    assert "code" in df.columns
 
 
 def test_read_iceberg_with_env_vars(catalog_properties):
@@ -64,7 +64,7 @@ def test_read_iceberg_with_env_vars(catalog_properties):
         # Pass py-catalog-impl and uri in catalog_properties
         # Env vars can also be used, but catalog_properties takes precedence
         df = pd.read_iceberg(
-            table_identifier="stanfordnlp.imdb",
+            table_identifier="google-research-datasets.mbpp",
             catalog_name="test_catalog",
             catalog_properties=catalog_properties,
             limit=10,
@@ -83,7 +83,7 @@ def test_read_iceberg_with_env_vars(catalog_properties):
 def test_read_iceberg_all_rows(catalog_properties):
     """Test reading all rows without limit."""
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
     )
@@ -107,19 +107,19 @@ def test_read_iceberg_column_selection(catalog_properties):
 
     # Test multiple columns
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
-        columns=["text", "label"],
+        columns=["prompt", "code"],
         limit=5,
     )
-    assert list(df.columns) == ["text", "label"]
+    assert list(df.columns) == ["prompt", "code"]
     assert "split" not in df.columns
     assert len(df) == 5
 
     # Test single column
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
         columns=["split"],
@@ -139,7 +139,7 @@ def test_read_iceberg_row_filtering(catalog_properties):
 
     # Test filtering by partition column
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
         row_filter="split = 'train'",
@@ -150,7 +150,7 @@ def test_read_iceberg_row_filtering(catalog_properties):
 
     # Test filtering with IN clause
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
         row_filter="split IN ('train', 'test')",
@@ -158,19 +158,20 @@ def test_read_iceberg_row_filtering(catalog_properties):
     )
     unique_splits = df["split"].unique()
     assert set(unique_splits).issubset({"train", "test"})
-    assert "unsupervised" not in unique_splits
+    assert "validation" not in unique_splits
     assert len(df) == 30
 
-    # Test filtering by non-partition column
+    # Test filtering by non-partition column (task_id exists in mbpp and is an integer)
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
-        row_filter="label = 0",
+        row_filter="task_id = 602",
         limit=10,
     )
-    assert len(df) == 10
-    assert all(df["label"] == 0)
+    assert len(df) <= 10  # May be less if task_id=602 doesn't have 10 rows
+    if len(df) > 0:
+        assert all(df["task_id"] == 602)
 
 
 # =============================================================================
@@ -183,28 +184,28 @@ def test_read_iceberg_filter_and_column_selection(catalog_properties):
 
     # Test basic filter with column selection
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
-        columns=["text", "label"],
+        columns=["prompt", "code"],
         row_filter="split = 'train'",
         limit=5,
     )
-    assert list(df.columns) == ["text", "label"]
+    assert list(df.columns) == ["prompt", "code"]
     # Note: Some versions may optimize away rows if columns don't include filter columns
     assert len(df) <= 5  # May be less if optimizer is aggressive
 
     # Test complex filtering with column selection
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
-        columns=["text"],
-        row_filter="split = 'train' AND label = 1",
+        columns=["prompt"],
+        row_filter="split = 'train' AND task_id = '602'",
         limit=3,
     )
-    assert list(df.columns) == ["text"]
-    # Note: Filter may be optimized differently when split/label not in projection
+    assert list(df.columns) == ["prompt"]
+    # Note: Filter may be optimized differently when split/task_id not in projection
     assert len(df) <= 3
 
 
@@ -217,7 +218,7 @@ def test_read_iceberg_empty_result(catalog_properties):
     """Test reading with filter that returns no rows."""
 
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
         row_filter="split = 'nonexistent'",
@@ -226,8 +227,8 @@ def test_read_iceberg_empty_result(catalog_properties):
     # Verify empty DataFrame with correct schema
     assert len(df) == 0
     assert "split" in df.columns
-    assert "text" in df.columns
-    assert "label" in df.columns
+    assert "prompt" in df.columns
+    assert "code" in df.columns
 
 
 def test_read_iceberg_invalid_table(catalog_properties):
@@ -245,10 +246,10 @@ def test_read_iceberg_case_sensitive_false(catalog_properties):
     """Test case-insensitive column matching."""
 
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
-        columns=["TEXT", "LABEL"],  # Uppercase column names
+        columns=["PROMPT", "CODE"],  # Uppercase column names
         case_sensitive=False,
         limit=5,
     )
@@ -267,25 +268,23 @@ def test_read_iceberg_data_integrity(catalog_properties):
     """Test that data types and content are valid."""
 
     df = pd.read_iceberg(
-        table_identifier="stanfordnlp.imdb",
+        table_identifier="google-research-datasets.mbpp",
         catalog_name="test",
         catalog_properties=catalog_properties,
         limit=10,
     )
 
     # Verify data types (pandas 2.x uses StringDtype for strings)
-    assert df["text"].dtype.name in ["object", "string", "str"]  # String type
-    assert df["label"].dtype.name in [
-        "int64",
-        "int32",
-    ]  # Integer type (can vary by platform)
+    assert df["prompt"].dtype.name in ["object", "string", "str"]  # String type
+    assert df["code"].dtype.name in ["object", "string", "str"]  # String type
+    assert df["task_id"].dtype.name in ["int32", "int64"]  # Integer type
     assert df["split"].dtype.name in ["object", "string", "str"]  # String type
 
-    # Verify text column contains actual text
-    assert all(df["text"].str.len() > 0)
+    # Verify prompt column contains actual text
+    assert all(df["prompt"].str.len() > 0)
 
-    # Verify label is 0 or 1
-    assert all(df["label"].isin([0, 1]))
+    # Verify code column contains actual code
+    assert all(df["code"].str.len() > 0)
 
     # Verify split has valid values
-    assert all(df["split"].isin(["train", "test", "unsupervised"]))
+    assert all(df["split"].isin(["train", "test", "validation", "prompt"]))

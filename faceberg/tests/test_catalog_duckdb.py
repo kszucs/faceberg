@@ -3,13 +3,16 @@
 These tests verify that DuckDB can properly read Iceberg tables
 created by the Faceberg catalog from HuggingFace datasets.
 
-Note: DuckDB supports the hf:// protocol through the httpfs extension. The tests
-automatically load the httpfs and iceberg extensions to enable reading Iceberg
-tables with hf:// URIs in their manifest files.
+DuckDB supports both file:// and hf:// URIs:
+- file:// URIs work with local catalogs
+- hf:// URIs work through the httpfs extension for remote catalogs
 
-Limitation: DuckDB's httpfs extension requires hf:// URLs in the format
+The tests automatically load the httpfs and iceberg extensions to enable
+reading Iceberg tables with both local and remote storage.
+
+Note: DuckDB's httpfs extension requires hf:// URLs in the format
 hf://datasets/{org}/{dataset}/{file}. Datasets must have an organization/user
-prefix (e.g., stanfordnlp/imdb or glue/mrpc work, but rotten_tomatoes fails).
+prefix (e.g., google-research-datasets/mbpp or glue/mrpc work, but rotten_tomatoes fails).
 """
 
 import duckdb
@@ -40,21 +43,13 @@ def duckdb_conn():
 
 
 @pytest.fixture
-def imdb_metadata_path(synced_catalog):
-    """Return path to IMDB table metadata for DuckDB."""
-    # DuckDB expects the metadata file path
-    # synced_catalog fixture ensures catalog.sync_datasets() has been called
-    catalog_location = synced_catalog.catalog_dir
-    metadata_path = catalog_location / "default" / "imdb_plain_text" / "metadata"
+def mbpp_metadata_path(session_mbpp):
+    """Return path to MBPP table metadata for DuckDB.
 
-    # Find the actual metadata file (v1.metadata.json, v2.metadata.json, etc.)
-    metadata_files = sorted(metadata_path.glob("v*.metadata.json"))
-    if metadata_files:
-        # Return the latest version
-        return str(metadata_files[-1])
-
-    # Fallback - should not happen if catalog sync worked
-    raise FileNotFoundError(f"No metadata files found in {metadata_path}")
+    DuckDB supports both file:// and hf:// URIs through httpfs extension.
+    """
+    # Construct path to v1.metadata.json directly from catalog URI
+    return f"{session_mbpp.uri}/google-research-datasets/mbpp/metadata/v1.metadata.json"
 
 
 # =============================================================================
@@ -62,13 +57,13 @@ def imdb_metadata_path(synced_catalog):
 # =============================================================================
 
 
-def test_duckdb_iceberg_scan_basic(duckdb_conn, imdb_metadata_path):
+def test_duckdb_iceberg_scan_basic(duckdb_conn, mbpp_metadata_path):
     """Test basic DuckDB iceberg_scan functionality."""
     # Use iceberg_scan to read the table
     result = duckdb_conn.execute(
         f"""
         SELECT COUNT(*) as cnt
-        FROM iceberg_scan('{imdb_metadata_path}')
+        FROM iceberg_scan('{mbpp_metadata_path}')
     """
     ).fetchone()
 
@@ -77,14 +72,14 @@ def test_duckdb_iceberg_scan_basic(duckdb_conn, imdb_metadata_path):
     assert result[0] > 0
 
 
-def test_duckdb_query_data(duckdb_conn, imdb_metadata_path):
+def test_duckdb_query_data(duckdb_conn, mbpp_metadata_path):
     """Test querying data with WHERE clause."""
 
     # Query with WHERE clause on split column
     result = duckdb_conn.execute(
         f"""
         SELECT COUNT(*) as cnt, split
-        FROM iceberg_scan('{imdb_metadata_path}')
+        FROM iceberg_scan('{mbpp_metadata_path}')
         WHERE split = 'train'
         GROUP BY split
     """
@@ -96,14 +91,14 @@ def test_duckdb_query_data(duckdb_conn, imdb_metadata_path):
     assert result[0][0] > 0  # Count
 
 
-def test_duckdb_aggregation(duckdb_conn, imdb_metadata_path):
+def test_duckdb_aggregation(duckdb_conn, mbpp_metadata_path):
     """Test aggregation queries (GROUP BY)."""
 
     # Run GROUP BY query on split column
     result = duckdb_conn.execute(
         f"""
         SELECT split, COUNT(*) as cnt
-        FROM iceberg_scan('{imdb_metadata_path}')
+        FROM iceberg_scan('{mbpp_metadata_path}')
         GROUP BY split
         ORDER BY split
     """
@@ -115,7 +110,7 @@ def test_duckdb_aggregation(duckdb_conn, imdb_metadata_path):
     # Verify each split has a count
     for row in result:
         split_name, count = row
-        assert split_name in ["train", "test", "unsupervised"]
+        assert split_name in ["train", "test", "validation", "prompt"]
         assert count > 0
 
 
@@ -124,13 +119,13 @@ def test_duckdb_aggregation(duckdb_conn, imdb_metadata_path):
 # =============================================================================
 
 
-def test_duckdb_read_schema(duckdb_conn, imdb_metadata_path):
+def test_duckdb_read_schema(duckdb_conn, mbpp_metadata_path):
     """Test reading table schema via DuckDB."""
 
     # Use DESCRIBE to get schema information
     result = duckdb_conn.execute(
         f"""
-        DESCRIBE SELECT * FROM iceberg_scan('{imdb_metadata_path}') LIMIT 0
+        DESCRIBE SELECT * FROM iceberg_scan('{mbpp_metadata_path}') LIMIT 0
     """
     ).fetchall()
 
@@ -142,14 +137,14 @@ def test_duckdb_read_schema(duckdb_conn, imdb_metadata_path):
 
     # Verify expected columns
     assert "split" in column_names
-    assert "text" in column_names
-    assert "label" in column_names
+    assert "prompt" in column_names
+    assert "code" in column_names
 
 
-def test_duckdb_table_info(duckdb_conn, imdb_metadata_path):
+def test_duckdb_table_info(duckdb_conn, mbpp_metadata_path):
     """Test reading basic table information.
 
-    Uses stanfordnlp/imdb which has an org prefix compatible with DuckDB's
+    Uses google-research-datasets/mbpp which has an org prefix compatible with DuckDB's
     httpfs hf:// URL format requirements.
     """
 
@@ -157,7 +152,7 @@ def test_duckdb_table_info(duckdb_conn, imdb_metadata_path):
     result = duckdb_conn.execute(
         f"""
         SELECT COUNT(*)
-        FROM iceberg_scan('{imdb_metadata_path}')
+        FROM iceberg_scan('{mbpp_metadata_path}')
     """
     ).fetchone()
 
@@ -171,21 +166,21 @@ def test_duckdb_table_info(duckdb_conn, imdb_metadata_path):
 # =============================================================================
 
 
-def test_duckdb_partition_filter(duckdb_conn, imdb_metadata_path):
+def test_duckdb_partition_filter(duckdb_conn, mbpp_metadata_path):
     """Test partition pruning with WHERE clause."""
 
     # Query with and without filter to compare
     total_count = duckdb_conn.execute(
         f"""
         SELECT COUNT(*)
-        FROM iceberg_scan('{imdb_metadata_path}')
+        FROM iceberg_scan('{mbpp_metadata_path}')
     """
     ).fetchone()[0]
 
     train_count = duckdb_conn.execute(
         f"""
         SELECT COUNT(*)
-        FROM iceberg_scan('{imdb_metadata_path}')
+        FROM iceberg_scan('{mbpp_metadata_path}')
         WHERE split = 'train'
     """
     ).fetchone()[0]
@@ -195,7 +190,7 @@ def test_duckdb_partition_filter(duckdb_conn, imdb_metadata_path):
     assert train_count < total_count
 
 
-def test_duckdb_partition_comparison(catalog, duckdb_conn, imdb_metadata_path):
+def test_duckdb_partition_comparison(session_mbpp, duckdb_conn, mbpp_metadata_path):
     """Test that DuckDB partition filtering matches PyIceberg.
 
     Both DuckDB (via httpfs extension) and PyIceberg (via HfFileIO) can read
@@ -205,13 +200,13 @@ def test_duckdb_partition_comparison(catalog, duckdb_conn, imdb_metadata_path):
     duckdb_count = duckdb_conn.execute(
         f"""
         SELECT COUNT(*)
-        FROM iceberg_scan('{imdb_metadata_path}')
+        FROM iceberg_scan('{mbpp_metadata_path}')
         WHERE split = 'train'
     """
     ).fetchone()[0]
 
     # Get count from PyIceberg
-    table = catalog.load_table("default.imdb_plain_text")
+    table = session_mbpp.load_table("google-research-datasets.mbpp")
     scan = table.scan().filter("split = 'train'")
     arrow_table = scan.to_arrow()
     pyiceberg_count = arrow_table.num_rows
@@ -225,8 +220,8 @@ def test_duckdb_partition_comparison(catalog, duckdb_conn, imdb_metadata_path):
 # =============================================================================
 
 
-@pytest.fixture
-def duckdb_rest_conn(rest_server):
+@pytest.fixture(scope="session")
+def duckdb_rest_conn(session_rest_server):
     """Create a DuckDB connection configured to use REST catalog.
 
     Note: DuckDB REST catalog support is still evolving. As of DuckDB 1.4.3,
@@ -250,7 +245,7 @@ def duckdb_rest_conn(rest_server):
     conn.execute(f"""
         ATTACH 'warehouse' AS iceberg_catalog (
             TYPE ICEBERG,
-            ENDPOINT '{rest_server}',
+            ENDPOINT '{session_rest_server}',
             AUTHORIZATION_TYPE 'none'
         )
     """)
@@ -261,15 +256,15 @@ def duckdb_rest_conn(rest_server):
 
 def test_duckdb_rest_list_tables(duckdb_rest_conn):
     """Test listing tables via REST catalog in DuckDB."""
-    # List tables in the default namespace using SHOW TABLES
+    # List tables in the google-research-datasets namespace using SHOW TABLES
     result = duckdb_rest_conn.execute("""
-        SHOW TABLES FROM iceberg_catalog.default
+        SHOW TABLES FROM "iceberg_catalog"."google-research-datasets"
     """).fetchall()
 
-    # Verify we can list tables and imdb_plain_text is present
+    # Verify we can list tables and mbpp is present
     assert len(result) > 0
     table_names = [row[0] for row in result]
-    assert "imdb_plain_text" in table_names
+    assert "mbpp" in table_names
 
 
 def test_duckdb_rest_query_data(duckdb_rest_conn):
@@ -277,7 +272,7 @@ def test_duckdb_rest_query_data(duckdb_rest_conn):
     # Query with WHERE clause
     result = duckdb_rest_conn.execute("""
         SELECT COUNT(*) as cnt, split
-        FROM iceberg_catalog.default.imdb_plain_text
+        FROM iceberg_catalog."google-research-datasets".mbpp
         WHERE split = 'train'
         GROUP BY split
     """).fetchall()
@@ -293,7 +288,7 @@ def test_duckdb_rest_aggregation(duckdb_rest_conn):
     # Run GROUP BY query
     result = duckdb_rest_conn.execute("""
         SELECT split, COUNT(*) as cnt
-        FROM iceberg_catalog.default.imdb_plain_text
+        FROM iceberg_catalog."google-research-datasets".mbpp
         GROUP BY split
         ORDER BY split
     """).fetchall()
@@ -304,7 +299,7 @@ def test_duckdb_rest_aggregation(duckdb_rest_conn):
     # Verify each split has a count
     for row in result:
         split_name, count = row
-        assert split_name in ["train", "test", "unsupervised"]
+        assert split_name in ["train", "test", "validation", "prompt"]
         assert count > 0
 
 
@@ -312,7 +307,7 @@ def test_duckdb_rest_schema(duckdb_rest_conn):
     """Test reading schema via REST catalog in DuckDB."""
     # Use DESCRIBE to get schema
     result = duckdb_rest_conn.execute("""
-        DESCRIBE SELECT * FROM iceberg_catalog.default.imdb_plain_text LIMIT 0
+        DESCRIBE SELECT * FROM iceberg_catalog."google-research-datasets".mbpp LIMIT 0
     """).fetchall()
 
     # Verify we got column information
@@ -323,8 +318,8 @@ def test_duckdb_rest_schema(duckdb_rest_conn):
 
     # Verify expected columns
     assert "split" in column_names
-    assert "text" in column_names
-    assert "label" in column_names
+    assert "prompt" in column_names
+    assert "code" in column_names
 
 
 def test_duckdb_rest_partition_filter(duckdb_rest_conn):
@@ -332,12 +327,12 @@ def test_duckdb_rest_partition_filter(duckdb_rest_conn):
     # Query with and without filter
     total_count = duckdb_rest_conn.execute("""
         SELECT COUNT(*)
-        FROM iceberg_catalog.default.imdb_plain_text
+        FROM iceberg_catalog."google-research-datasets".mbpp
     """).fetchone()[0]
 
     train_count = duckdb_rest_conn.execute("""
         SELECT COUNT(*)
-        FROM iceberg_catalog.default.imdb_plain_text
+        FROM iceberg_catalog."google-research-datasets".mbpp
         WHERE split = 'train'
     """).fetchone()[0]
 
