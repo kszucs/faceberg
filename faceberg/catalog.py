@@ -1030,7 +1030,7 @@ class BaseCatalog(Catalog):
 
             # Write Iceberg metadata files (manifest, manifest list, table metadata)
             metadata_writer.create_metadata_from_files(
-                file_infos=table_info.files,
+                file_infos=table_info.data_files,
                 table_uuid=table_uuid,
                 properties=table_info.get_table_properties(),
                 progress_callback=progress_callback,
@@ -1049,8 +1049,8 @@ class BaseCatalog(Catalog):
             # Register table in config if not already there
             if identifier not in catalog_config:
                 catalog_config[identifier] = cfg.Dataset(
-                    repo=table_info.source_repo,
-                    config=table_info.source_config,
+                    repo=table_info.dataset_repo,
+                    config=table_info.dataset_config,
                 )
                 # Save config since we added a dataset table
                 catalog_config.to_yaml(staging / "faceberg.yml")
@@ -1164,7 +1164,7 @@ class BaseCatalog(Catalog):
         )
 
         # If no new files, table is already up to date
-        if not table_info.files:
+        if not table_info.data_files:
             logger.info(f"No new files for {identifier}")
             return table
 
@@ -1187,7 +1187,7 @@ class BaseCatalog(Catalog):
 
             # Append new snapshot with updated files
             metadata_writer.append_snapshot_from_files(
-                file_infos=table_info.files,
+                file_infos=table_info.data_files,
                 current_metadata=table.metadata,
                 properties=table_info.get_table_properties(),
             )

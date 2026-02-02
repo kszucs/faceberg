@@ -12,10 +12,8 @@ from typing import Dict, List, Optional
 
 from datasets import (
     Features,
-    get_dataset_config_names,
     load_dataset_builder,
 )
-from datasets.exceptions import DatasetNotFoundError
 from huggingface_hub import HfApi, HfFileSystem
 from pyiceberg.io.pyarrow import _pyarrow_to_schema_without_ids
 from pyiceberg.partitioning import PartitionField, PartitionSpec
@@ -32,7 +30,7 @@ from pyiceberg.types import ListType, MapType, NestedField, StringType, StructTy
 class FileInfo:
     """Information about a data file in Iceberg table."""
 
-    path: str  # Full hf:// URI to the file
+    uri: str  # Full hf:// URI to the file
     size_bytes: int  # File size in bytes
     row_count: int  # Number of rows in the file
     split: Optional[str] = None  # Split name (train, test, validation, etc.)
@@ -55,13 +53,13 @@ class TableInfo:
     partition_spec: PartitionSpec  # Partition specification
 
     # Data files
-    files: List[FileInfo]  # List of data files with metadata
+    data_files: List[FileInfo]  # List of data files with metadata
     data_dir: str  # Data directory path relative to repo root
 
     # Source metadata (for traceability)
-    source_repo: str  # HuggingFace repo ID
-    source_config: str  # Dataset configuration name
-    source_revision: Optional[str] = None  # Git revision/SHA of the dataset
+    dataset_repo: str  # HuggingFace repo ID
+    dataset_config: str  # Dataset configuration name
+    dataset_revision: str  # Git revision/SHA of the dataset
 
     @property
     def identifier(self) -> str:
@@ -71,12 +69,12 @@ class TableInfo:
     @property
     def total_rows(self) -> int:
         """Get total row count across all files."""
-        return sum(f.row_count for f in self.files)
+        return sum(f.row_count for f in self.data_files)
 
     @property
     def total_size(self) -> int:
         """Get total size in bytes across all files."""
-        return sum(f.size_bytes for f in self.files)
+        return sum(f.size_bytes for f in self.data_files)
 
     def get_table_properties(self) -> Dict[str, str]:
         """Get table properties for Iceberg metadata.
@@ -85,13 +83,13 @@ class TableInfo:
             Dictionary of table properties including source metadata and name mapping
         """
         # Create schema name mapping for Parquet files without embedded field IDs
-        name_mapping = build_name_mapping(self.schema)
+        name_mapping = iceberg_name_mapping(self.schema)
 
         # Use data directory from discovery
         data_path = (
-            f"hf://datasets/{self.source_repo}/{self.data_dir}"
+            f"hf://datasets/{self.dataset_repo}/{self.data_dir}"
             if self.data_dir
-            else f"hf://datasets/{self.source_repo}"
+            else f"hf://datasets/{self.dataset_repo}"
         )
 
         # TODO(kszucs): split should be configurable
@@ -101,8 +99,9 @@ class TableInfo:
             "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
             "write.data.path": data_path,
             # HuggingFace source metadata
-            "huggingface.dataset.repo": self.source_repo,
-            "huggingface.dataset.config": self.source_config,
+            "huggingface.dataset.repo": self.dataset_repo,
+            "huggingface.dataset.config": self.dataset_config,
+            "huggingface.dataset.revision": self.dataset_revision,
             # Write configuration
             "huggingface.write.pattern": "{split}-{index:05d}-iceberg.parquet",
             "huggingface.write.next-index": "0",
@@ -112,83 +111,15 @@ class TableInfo:
             "schema.name-mapping.default": json.dumps(name_mapping),
         }
 
-        # Add revision if available
-        if self.source_revision:
-            properties["huggingface.dataset.revision"] = self.source_revision
-
         return properties
 
 
 # =============================================================================
-# Schema Name Mapping Helpers
+# Iceberg Helpers (Schema and Metadata)
 # =============================================================================
 
 
-def get_new_parquet_files(
-    repo_id: str,
-    config: str,
-    old_revision: str,
-    new_revision: str,
-    token: Optional[str] = None,
-) -> List[str]:
-    """Find new parquet files added between two revisions.
-
-    Uses HuggingFace Hub API to diff two git revisions and identify
-    new parquet files for a specific dataset configuration.
-
-    Args:
-        repo_id: HuggingFace dataset repo ID (e.g., "squad")
-        config: Dataset configuration name (e.g., "plain_text")
-        old_revision: Previous commit SHA
-        new_revision: Current commit SHA or branch (usually "main")
-        token: HuggingFace API token
-
-    Returns:
-        List of new parquet file paths relative to repo root
-
-    Example:
-        >>> get_new_parquet_files(
-        ...     "squad",
-        ...     "plain_text",
-        ...     "abc123",
-        ...     "def456"
-        ... )
-        ['plain_text/train-00000-of-00001.parquet',
-         'plain_text/validation-00000-of-00001.parquet']
-    """
-    api = HfApi(token=token)
-
-    # Get all files at old revision
-    old_files = set(
-        api.list_repo_files(
-            repo_id=repo_id,
-            repo_type="dataset",
-            revision=old_revision,
-        )
-    )
-
-    # Get all files at new revision
-    new_files = set(
-        api.list_repo_files(
-            repo_id=repo_id,
-            repo_type="dataset",
-            revision=new_revision,
-        )
-    )
-
-    # Find added files (set difference)
-    added_files = new_files - old_files
-
-    # Filter for parquet files in this config
-    config_prefix = f"{config}/"
-    parquet_files = [
-        f for f in added_files if f.endswith(".parquet") and f.startswith(config_prefix)
-    ]
-
-    return sorted(parquet_files)
-
-
-def build_field_mapping(field: NestedField) -> Dict[str, any]:
+def iceberg_field_mapping(field: NestedField) -> Dict[str, any]:
     """Build name mapping for a single field, recursively handling nested types.
 
     Args:
@@ -207,7 +138,7 @@ def build_field_mapping(field: NestedField) -> Dict[str, any]:
         # Recursively map nested struct fields
         nested_fields = []
         for nested_field in field.field_type.fields:
-            nested_fields.append(build_field_mapping(nested_field))
+            nested_fields.append(iceberg_field_mapping(nested_field))
         if nested_fields:
             mapping["fields"] = nested_fields
     elif isinstance(field.field_type, ListType):
@@ -220,7 +151,7 @@ def build_field_mapping(field: NestedField) -> Dict[str, any]:
         if isinstance(field.field_type.element_type, StructType):
             element_fields = []
             for nested_field in field.field_type.element_type.fields:
-                element_fields.append(build_field_mapping(nested_field))
+                element_fields.append(iceberg_field_mapping(nested_field))
             if element_fields:
                 element_mapping["fields"] = element_fields
         mapping["fields"] = [element_mapping]
@@ -236,7 +167,7 @@ def build_field_mapping(field: NestedField) -> Dict[str, any]:
         if isinstance(field.field_type.key_type, StructType):
             key_fields = []
             for nested_field in field.field_type.key_type.fields:
-                key_fields.append(build_field_mapping(nested_field))
+                key_fields.append(iceberg_field_mapping(nested_field))
             if key_fields:
                 key_mapping["fields"] = key_fields
         map_fields.append(key_mapping)
@@ -249,7 +180,7 @@ def build_field_mapping(field: NestedField) -> Dict[str, any]:
         if isinstance(field.field_type.value_type, StructType):
             value_fields = []
             for nested_field in field.field_type.value_type.fields:
-                value_fields.append(build_field_mapping(nested_field))
+                value_fields.append(iceberg_field_mapping(nested_field))
             if value_fields:
                 value_mapping["fields"] = value_fields
         map_fields.append(value_mapping)
@@ -259,7 +190,7 @@ def build_field_mapping(field: NestedField) -> Dict[str, any]:
     return mapping
 
 
-def build_name_mapping(schema: Schema) -> List[Dict[str, any]]:
+def iceberg_name_mapping(schema: Schema) -> List[Dict[str, any]]:
     """Build Iceberg name mapping from schema, recursively handling nested fields.
 
     Name mapping is used to map Parquet column names to Iceberg field IDs for
@@ -273,16 +204,11 @@ def build_name_mapping(schema: Schema) -> List[Dict[str, any]]:
     """
     fields = []
     for field in schema.fields:
-        fields.append(build_field_mapping(field))
+        fields.append(iceberg_field_mapping(field))
     return fields
 
 
-# ============================================================================
-# Schema and Partition Spec Builders
-# ============================================================================
-
-
-def build_split_partition_spec(schema: Schema) -> PartitionSpec:
+def iceberg_partition_spec(schema: Schema) -> PartitionSpec:
     """Build a partition spec that uses 'split' as a partition key.
 
     This creates an identity partition on the split column, which means the split
@@ -312,7 +238,7 @@ def build_split_partition_spec(schema: Schema) -> PartitionSpec:
     )
 
 
-def build_iceberg_schema_from_features(features, include_split_column: bool = True) -> Schema:
+def iceberg_schema_from_features(features, include_split_column: bool = True) -> Schema:
     """
     Build an Iceberg Schema from HuggingFace dataset features using Arrow as an intermediate format.
 
@@ -361,11 +287,75 @@ def build_iceberg_schema_from_features(features, include_split_column: bool = Tr
 
 
 # =============================================================================
-# Datasets Helper Functions
+# Dataset Helpers (HuggingFace)
 # =============================================================================
 
 
-def resolve_hf_path(fs: HfFileSystem, file_path: str) -> str:
+def dataset_new_files(
+    repo_id: str,
+    config: str,
+    old_revision: str,
+    new_revision: str,
+    token: Optional[str] = None,
+) -> List[str]:
+    """Find new parquet files added between two revisions.
+
+    Uses HuggingFace Hub API to diff two git revisions and identify
+    new parquet files for a specific dataset configuration.
+
+    Args:
+        repo_id: HuggingFace dataset repo ID (e.g., "squad")
+        config: Dataset configuration name (e.g., "plain_text")
+        old_revision: Previous commit SHA
+        new_revision: Current commit SHA or branch (usually "main")
+        token: HuggingFace API token
+
+    Returns:
+        List of new parquet file paths relative to repo root
+
+    Example:
+        >>> dataset_new_files(
+        ...     "squad",
+        ...     "plain_text",
+        ...     "abc123",
+        ...     "def456"
+        ... )
+        ['plain_text/train-00000-of-00001.parquet',
+         'plain_text/validation-00000-of-00001.parquet']
+    """
+    api = HfApi(token=token)
+
+    # Get all files at old revision
+    old_files = set(
+        api.list_repo_files(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=old_revision,
+        )
+    )
+
+    # Get all files at new revision
+    new_files = set(
+        api.list_repo_files(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=new_revision,
+        )
+    )
+
+    # Find added files (set difference)
+    added_files = new_files - old_files
+
+    # Filter for parquet files in this config
+    config_prefix = f"{config}/"
+    parquet_files = [
+        f for f in added_files if f.endswith(".parquet") and f.startswith(config_prefix)
+    ]
+
+    return sorted(parquet_files)
+
+
+def dataset_resolve_path(fs: HfFileSystem, file_path: str) -> str:
     """Resolve HuggingFace file path to relative path using official API.
 
     Uses HfFileSystem.resolve_path to properly parse file paths from the datasets
@@ -397,9 +387,9 @@ def resolve_hf_path(fs: HfFileSystem, file_path: str) -> str:
     return file_path
 
 
-def load_dataset_builder_safe(
+def dataset_builder_safe(
     repo_id: str,
-    config_name: Optional[str] = None,
+    config: str,
     token: Optional[str] = None,
 ):
     """Load dataset builder while avoiding picking up local files.
@@ -424,7 +414,7 @@ def load_dataset_builder_safe(
         # Change to a temporary directory to avoid dataset library picking up local files
         with tempfile.TemporaryDirectory() as tmpdir:
             os.chdir(tmpdir)
-            return load_dataset_builder(repo_id, name=config_name, token=token)
+            return load_dataset_builder(repo_id, config, token=token)
     finally:
         # Always restore the original directory
         os.chdir(original_cwd)
@@ -450,6 +440,7 @@ class DatasetInfo:
     splits: List[str]
     parquet_files: Dict[str, List[str]]  # split -> list of files
     data_dir: str
+    features: Features  # HuggingFace dataset features
     revision: Optional[str] = None  # Git revision/SHA of the dataset
 
     @classmethod
@@ -482,12 +473,17 @@ class DatasetInfo:
         Raises:
             ValueError: If dataset not found or config doesn't exist
         """
-        cls._validate_config(repo_id, config, token)
-        builder = load_dataset_builder_safe(repo_id, config_name=config, token=token)
-        data_files = cls._get_data_files(repo_id, config, builder)
-        splits = cls._extract_splits(builder, data_files)
+        try:
+            builder = dataset_builder_safe(repo_id, config=config, token=token)
+        except Exception as e:
+            raise ValueError(f"Dataset {repo_id} config {config} not found or not accessible: {e}") from e
+
+        revision = builder.hash
+        data_files = builder.config.data_files
+        splits = list(data_files.keys())
+        features = builder.info.features
+
         parquet_files = cls._resolve_file_paths(data_files, token)
-        revision = cls._get_revision(repo_id, token)
         data_dir = cls._infer_data_dir(parquet_files)
 
         return cls(
@@ -496,41 +492,9 @@ class DatasetInfo:
             splits=splits,
             parquet_files=parquet_files,
             data_dir=data_dir,
+            features=features,
             revision=revision,
         )
-
-    @staticmethod
-    def _validate_config(repo_id: str, config: str, token: Optional[str]) -> None:
-        """Validate that the requested config exists in the dataset."""
-        try:
-            all_configs = get_dataset_config_names(repo_id, token=token)
-        except DatasetNotFoundError as e:
-            raise ValueError(f"Dataset {repo_id} not found or not accessible") from e
-
-        if config not in all_configs:
-            raise ValueError(
-                f"Config '{config}' not found in dataset {repo_id}. Available: {all_configs}"
-            )
-
-    @staticmethod
-    def _extract_splits(builder, data_files: Dict[str, List[str]]) -> List[str]:
-        """Extract split names from builder, falling back to data_files if needed."""
-        if builder.info.splits:
-            return list(builder.info.splits.keys())
-        return list(data_files.keys())
-
-    @staticmethod
-    def _get_data_files(repo_id: str, config: str, builder) -> Dict[str, List[str]]:
-        """Get data files from builder configuration."""
-        data_files = builder.config.data_files if hasattr(builder.config, "data_files") else None
-
-        if not data_files or not isinstance(data_files, dict):
-            raise ValueError(
-                f"No data files found for dataset {repo_id} config {config}. "
-                "Cannot create Iceberg table without source data files."
-            )
-
-        return data_files
 
     @staticmethod
     def _resolve_file_paths(
@@ -539,7 +503,7 @@ class DatasetInfo:
         """Resolve file paths to relative paths and organize by split."""
         fs = HfFileSystem(token=token)
         parquet_files = {
-            split: [resolve_hf_path(fs, path) for path in paths]
+            split: [dataset_resolve_path(fs, path) for path in paths]
             for split, paths in data_files.items()
         }
 
@@ -547,12 +511,6 @@ class DatasetInfo:
             raise ValueError("No Parquet files found after resolving paths")
 
         return parquet_files
-
-    @staticmethod
-    def _get_revision(repo_id: str, token: Optional[str]) -> str:
-        """Get dataset revision (SHA) from HuggingFace Hub."""
-        api = HfApi(token=token)
-        return api.dataset_info(repo_id).sha
 
     @staticmethod
     def _infer_data_dir(parquet_files: Dict[str, List[str]]) -> str:
@@ -647,7 +605,6 @@ class DatasetInfo:
         self,
         namespace: str,
         table_name: str,
-        token: Optional[str] = None,
     ) -> TableInfo:
         """Convert DatasetInfo to TableInfo.
 
@@ -657,16 +614,14 @@ class DatasetInfo:
         Args:
             namespace: Iceberg namespace for the table
             table_name: Explicit table name (no auto-generation)
-            token: HuggingFace API token (optional)
 
         Returns:
             TableInfo object
         """
-        # Get features from dataset builder
-        builder = load_dataset_builder_safe(self.repo_id, config_name=self.config, token=token)
-        features = builder.info.features
+        # Use features stored in DatasetInfo from discover()
+        features = self.features
 
-        # Features must be available from builder
+        # Features must be available
         if not features:
             raise ValueError(
                 f"Dataset {self.repo_id} config {self.config} has no features available. "
@@ -674,10 +629,10 @@ class DatasetInfo:
             )
 
         # Build Iceberg schema with split column
-        schema = build_iceberg_schema_from_features(features, include_split_column=True)
+        schema = iceberg_schema_from_features(features, include_split_column=True)
 
         # Build partition spec (partitioned by split)
-        partition_spec = build_split_partition_spec(schema)
+        partition_spec = iceberg_partition_spec(schema)
 
         # Collect file information
         files = []
@@ -686,7 +641,7 @@ class DatasetInfo:
                 hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
                 files.append(
                     FileInfo(
-                        path=hf_uri,
+                        uri=hf_uri,
                         size_bytes=0,  # Will be enriched later
                         row_count=0,  # Will be enriched later
                         split=split_name,
@@ -699,11 +654,11 @@ class DatasetInfo:
             table_name=table_name,  # Direct from config, no auto-generation
             schema=schema,
             partition_spec=partition_spec,
-            files=files,
+            data_files=files,
             data_dir=self.data_dir,
-            source_repo=self.repo_id,
-            source_config=self.config,
-            source_revision=self.revision,
+            dataset_repo=self.repo_id,
+            dataset_config=self.config,
+            dataset_revision=self.revision,
         )
 
     def to_table_info_incremental(
@@ -727,17 +682,16 @@ class DatasetInfo:
         Returns:
             TableInfo object with only new files
         """
-        # Get features and schema (same as before)
-        builder = load_dataset_builder_safe(self.repo_id, config_name=self.config, token=token)
-        features = builder.info.features
+        # Use features stored in DatasetInfo from discover()
+        features = self.features
         if not features:
             raise ValueError(f"Dataset {self.repo_id} config {self.config} has no features available.")
 
-        schema = build_iceberg_schema_from_features(features, include_split_column=True)
-        partition_spec = build_split_partition_spec(schema)
+        schema = iceberg_schema_from_features(features, include_split_column=True)
+        partition_spec = iceberg_partition_spec(schema)
 
         # Get only new files added since old_revision
-        new_file_paths = get_new_parquet_files(
+        new_file_paths = dataset_new_files(
             repo_id=self.repo_id,
             config=self.config,
             old_revision=old_revision,
@@ -765,7 +719,7 @@ class DatasetInfo:
                 hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
                 files.append(
                     FileInfo(
-                        path=hf_uri,
+                        uri=hf_uri,
                         size_bytes=0,  # Will be enriched later
                         row_count=0,  # Will be enriched later
                         split=split_name,
@@ -777,9 +731,9 @@ class DatasetInfo:
             table_name=table_name,
             schema=schema,
             partition_spec=partition_spec,
-            files=files,
+            data_files=files,
             data_dir=self.data_dir,
-            source_repo=self.repo_id,
-            source_config=self.config,
-            source_revision=self.revision,
+            dataset_repo=self.repo_id,
+            dataset_config=self.config,
+            dataset_revision=self.revision,
         )

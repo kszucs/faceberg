@@ -14,8 +14,8 @@ from pyiceberg.types import (
 
 from faceberg.bridge import (
     DatasetInfo,
-    build_iceberg_schema_from_features,
-    load_dataset_builder_safe,
+    iceberg_schema_from_features,
+    dataset_builder_safe,
 )
 
 
@@ -64,18 +64,18 @@ def test_resolve_hf_path():
     """Test path resolution using HfFileSystem API."""
     from huggingface_hub import HfFileSystem
 
-    from faceberg.bridge import resolve_hf_path
+    from faceberg.bridge import dataset_resolve_path
 
     fs = HfFileSystem()
 
     # Test with hf:// URI (using stanfordnlp/imdb which is stable and used in other tests)
     path1 = "hf://datasets/stanfordnlp/imdb/plain_text/train-00000-of-00001.parquet"
-    result1 = resolve_hf_path(fs, path1)
+    result1 = dataset_resolve_path(fs, path1)
     assert result1 == "plain_text/train-00000-of-00001.parquet"
 
     # Test with relative path (should return as-is)
     path2 = "plain_text/train-00000-of-00001.parquet"
-    result2 = resolve_hf_path(fs, path2)
+    result2 = dataset_resolve_path(fs, path2)
     assert result2 == "plain_text/train-00000-of-00001.parquet"
 
 
@@ -92,8 +92,8 @@ def test_to_table_infos():
     assert table_info.namespace == "default"
     assert table_info.table_name == "imdb_plain_text"
     assert table_info.identifier == "default.imdb_plain_text"
-    assert table_info.source_repo == "stanfordnlp/imdb"
-    assert table_info.source_config == "plain_text"
+    assert table_info.dataset_repo == "stanfordnlp/imdb"
+    assert table_info.dataset_config == "plain_text"
 
     # Check schema
     assert table_info.schema is not None
@@ -107,9 +107,9 @@ def test_to_table_infos():
     assert table_info.partition_spec.fields[0].name == "split"
 
     # Check files
-    assert len(table_info.files) > 0
-    for file_info in table_info.files:
-        assert file_info.path.startswith("hf://datasets/stanfordnlp/imdb/")
+    assert len(table_info.data_files) > 0
+    for file_info in table_info.data_files:
+        assert file_info.uri.startswith("hf://datasets/stanfordnlp/imdb/")
         assert file_info.split in ["train", "test", "unsupervised"]
 
     # Check properties
@@ -132,7 +132,7 @@ def test_build_schema_from_simple_features():
         }
     )
 
-    schema = build_iceberg_schema_from_features(features, include_split_column=True)
+    schema = iceberg_schema_from_features(features, include_split_column=True)
 
     # Check split column is first
     assert schema.fields[0].name == "split"
@@ -155,7 +155,7 @@ def test_build_schema_without_split_column():
         }
     )
 
-    schema = build_iceberg_schema_from_features(features, include_split_column=False)
+    schema = iceberg_schema_from_features(features, include_split_column=False)
 
     # No split column
     field_names = [f.name for f in schema.fields]
@@ -177,7 +177,7 @@ def test_build_schema_with_nested_features():
         }
     )
 
-    schema = build_iceberg_schema_from_features(features, include_split_column=False)
+    schema = iceberg_schema_from_features(features, include_split_column=False)
 
     # Verify structure
     field_names = [f.name for f in schema.fields]
@@ -203,7 +203,7 @@ def test_build_schema_with_class_label():
         }
     )
 
-    schema = build_iceberg_schema_from_features(features, include_split_column=False)
+    schema = iceberg_schema_from_features(features, include_split_column=False)
 
     # ClassLabel should be converted to an integer type
     label_field = next(f for f in schema.fields if f.name == "label")
@@ -227,7 +227,7 @@ def test_unique_field_ids():
         }
     )
 
-    schema = build_iceberg_schema_from_features(features, include_split_column=True)
+    schema = iceberg_schema_from_features(features, include_split_column=True)
 
     # Collect all field IDs recursively
     def collect_field_ids(field_type, ids=None):
@@ -260,7 +260,7 @@ def test_features_dict_to_features_object():
         "text": Value("string"),
     }
 
-    schema = build_iceberg_schema_from_features(features_dict, include_split_column=False)
+    schema = iceberg_schema_from_features(features_dict, include_split_column=False)
 
     # Should work the same as passing Features object
     assert isinstance(schema, Schema)
@@ -269,37 +269,37 @@ def test_features_dict_to_features_object():
     assert "text" in field_names
 
 
-def test_load_dataset_builder_safe():
+def test_dataset_builder_safe():
     """Test that the safe builder loader works and avoids local files."""
     # Test with a known public dataset
-    builder = load_dataset_builder_safe("stanfordnlp/imdb", config_name="plain_text")
+    builder = dataset_builder_safe("stanfordnlp/imdb", config="plain_text")
 
     assert builder is not None
     assert builder.info is not None
     assert builder.info.features is not None
 
 
-def test_load_dataset_builder_safe_nonexistent():
+def test_dataset_builder_safe_nonexistent():
     """Test that safe builder loader raises error for non-existent dataset."""
     with pytest.raises(Exception):
-        load_dataset_builder_safe("nonexistent/fake-dataset-12345")
+        dataset_builder_safe("nonexistent/fake-dataset-12345")
 
 
 def test_to_table_info_without_features():
     """Test that to_table_info raises error if features are not available."""
-    # Create a mock DatasetInfo with empty parquet_files
+    # Create a mock DatasetInfo with None features
     dataset_info = DatasetInfo(
         repo_id="fake/dataset",
         config="default",
         splits=["train"],
         parquet_files={"train": []},
         data_dir="data",
-        revision=None,
+        features=None,
+        revision="abc123",
     )
 
-    # Mock scenario: dataset doesn't exist or has no features
-    # load_dataset_builder_safe will raise an exception
-    with pytest.raises(Exception):
+    # Should raise ValueError when features is None
+    with pytest.raises(ValueError, match="has no features available"):
         dataset_info.to_table_info(
             namespace="default",
             table_name="test_table",
@@ -322,10 +322,9 @@ def test_table_properties_use_huggingface_prefix():
     assert props["huggingface.dataset.repo"] == "stanfordnlp/imdb"
     assert props["huggingface.dataset.config"] == "plain_text"
 
-    # Check that revision is included if available
-    if table_info.source_revision:
-        assert "huggingface.dataset.revision" in props
-        assert props["huggingface.dataset.revision"] == table_info.source_revision
+    # Check that revision is always included (now mandatory)
+    assert "huggingface.dataset.revision" in props
+    assert props["huggingface.dataset.revision"] == table_info.dataset_revision
 
     # Verify old prefix is not used
     assert "faceberg.source.repo" not in props
@@ -362,11 +361,11 @@ def test_table_info_name_mapping_with_nested_structs():
         table_name="table",
         schema=schema,
         partition_spec=UNPARTITIONED_PARTITION_SPEC,
-        files=[],
+        data_files=[],
         data_dir="data",
-        source_repo="test/repo",
-        source_config="default",
-        source_revision="abc123",
+        dataset_repo="test/repo",
+        dataset_config="default",
+        dataset_revision="abc123",
     )
 
     properties = table_info.get_table_properties()
@@ -430,11 +429,11 @@ def test_table_info_name_mapping_with_lists():
         table_name="table",
         schema=schema,
         partition_spec=UNPARTITIONED_PARTITION_SPEC,
-        files=[],
+        data_files=[],
         data_dir="data",
-        source_repo="test/repo",
-        source_config="default",
-        source_revision="abc123",
+        dataset_repo="test/repo",
+        dataset_config="default",
+        dataset_revision="abc123",
     )
 
     properties = table_info.get_table_properties()
@@ -507,11 +506,11 @@ def test_table_info_name_mapping_with_maps():
         table_name="table",
         schema=schema,
         partition_spec=UNPARTITIONED_PARTITION_SPEC,
-        files=[],
+        data_files=[],
         data_dir="data",
-        source_repo="test/repo",
-        source_config="default",
-        source_revision="abc123",
+        dataset_repo="test/repo",
+        dataset_config="default",
+        dataset_revision="abc123",
     )
 
     properties = table_info.get_table_properties()
@@ -564,11 +563,11 @@ def test_extract_index_from_hf_pattern():
 # =============================================================================
 
 
-def test_get_new_parquet_files_no_new_files():
+def test_dataset_new_files_no_new_files():
     """Test when no files were added between revisions."""
     from unittest.mock import Mock, patch
 
-    from faceberg.bridge import get_new_parquet_files
+    from faceberg.bridge import dataset_new_files
 
     # Mock HfApi
     mock_api = Mock()
@@ -579,7 +578,7 @@ def test_get_new_parquet_files_no_new_files():
     ]
 
     with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = get_new_parquet_files(
+        result = dataset_new_files(
             repo_id="test/dataset",
             config="plain_text",
             old_revision="abc123",
@@ -596,11 +595,11 @@ def test_get_new_parquet_files_no_new_files():
     assert calls[1].kwargs["revision"] == "def456"
 
 
-def test_get_new_parquet_files_with_new_files():
+def test_dataset_new_files_with_new_files():
     """Test when new parquet files were added."""
     from unittest.mock import Mock, patch
 
-    from faceberg.bridge import get_new_parquet_files
+    from faceberg.bridge import dataset_new_files
 
     # Mock HfApi
     mock_api = Mock()
@@ -626,7 +625,7 @@ def test_get_new_parquet_files_with_new_files():
     mock_api.list_repo_files.side_effect = list_files_side_effect
 
     with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = get_new_parquet_files(
+        result = dataset_new_files(
             repo_id="test/dataset",
             config="plain_text",
             old_revision="abc123",
@@ -640,11 +639,11 @@ def test_get_new_parquet_files_with_new_files():
     ]
 
 
-def test_get_new_parquet_files_filters_by_config():
+def test_dataset_new_files_filters_by_config():
     """Test that only files for specified config are returned."""
     from unittest.mock import Mock, patch
 
-    from faceberg.bridge import get_new_parquet_files
+    from faceberg.bridge import dataset_new_files
 
     # Mock HfApi
     mock_api = Mock()
@@ -663,7 +662,7 @@ def test_get_new_parquet_files_filters_by_config():
     mock_api.list_repo_files.side_effect = list_files_side_effect
 
     with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = get_new_parquet_files(
+        result = dataset_new_files(
             repo_id="test/dataset",
             config="plain_text",
             old_revision="abc123",
@@ -674,11 +673,11 @@ def test_get_new_parquet_files_filters_by_config():
     assert result == ["plain_text/train-00000.parquet"]
 
 
-def test_get_new_parquet_files_ignores_non_parquet():
+def test_dataset_new_files_ignores_non_parquet():
     """Test that non-parquet files are filtered out."""
     from unittest.mock import Mock, patch
 
-    from faceberg.bridge import get_new_parquet_files
+    from faceberg.bridge import dataset_new_files
 
     # Mock HfApi
     mock_api = Mock()
@@ -698,7 +697,7 @@ def test_get_new_parquet_files_ignores_non_parquet():
     mock_api.list_repo_files.side_effect = list_files_side_effect
 
     with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = get_new_parquet_files(
+        result = dataset_new_files(
             repo_id="test/dataset",
             config="plain_text",
             old_revision="abc123",
@@ -715,7 +714,7 @@ def test_to_table_info_incremental_with_old_revision():
 
     from datasets.features import Value
 
-    # Create a mock DatasetInfo
+    # Create a mock DatasetInfo with features
     dataset_info = DatasetInfo(
         repo_id="test/dataset",
         config="plain_text",
@@ -725,19 +724,16 @@ def test_to_table_info_incremental_with_old_revision():
             "test": ["plain_text/test-00000.parquet"],
         },
         data_dir="plain_text",
+        features=Features(
+            {
+                "text": Value("string"),
+                "label": Value("int64"),
+            }
+        ),
         revision="def456",
     )
 
-    # Mock load_dataset_builder_safe with proper Features
-    mock_builder = Mock()
-    mock_builder.info.features = Features(
-        {
-            "text": Value("string"),
-            "label": Value("int64"),
-        }
-    )
-
-    # Mock get_new_parquet_files to return only 2 new files
+    # Mock dataset_new_files to return only 2 new files
     mock_get_new_files = Mock(
         return_value=[
             "plain_text/train-00001.parquet",  # New train file
@@ -745,10 +741,7 @@ def test_to_table_info_incremental_with_old_revision():
         ]
     )
 
-    with (
-        patch("faceberg.bridge.load_dataset_builder_safe", return_value=mock_builder),
-        patch("faceberg.bridge.get_new_parquet_files", mock_get_new_files),
-    ):
+    with patch("faceberg.bridge.dataset_new_files", mock_get_new_files):
         # Call with old_revision (should return only new files)
         table_info = dataset_info.to_table_info_incremental(
             namespace="default",
@@ -757,12 +750,12 @@ def test_to_table_info_incremental_with_old_revision():
         )
 
     # Should have only 2 files (the new ones)
-    assert len(table_info.files) == 2
-    file_paths = [f.path for f in table_info.files]
+    assert len(table_info.data_files) == 2
+    file_paths = [f.uri for f in table_info.data_files]
     assert "hf://datasets/test/dataset/plain_text/train-00001.parquet" in file_paths
     assert "hf://datasets/test/dataset/plain_text/test-00000.parquet" in file_paths
 
-    # Verify get_new_parquet_files was called with correct args
+    # Verify dataset_new_files was called with correct args
     mock_get_new_files.assert_called_once_with(
         repo_id="test/dataset",
         config="plain_text",
@@ -772,9 +765,44 @@ def test_to_table_info_incremental_with_old_revision():
     )
 
     # Verify files are properly organized by split
-    splits = {f.split for f in table_info.files}
+    splits = {f.split for f in table_info.data_files}
     assert "train" in splits
     assert "test" in splits
+
+
+def test_features_stored_in_dataset_info():
+    """Test that features are stored in DatasetInfo during discover()."""
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
+
+    # Features should be stored in DatasetInfo
+    assert hasattr(dataset_info, "features")
+    assert dataset_info.features is not None
+    assert isinstance(dataset_info.features, Features)
+
+    # Features should have expected fields for this dataset
+    assert "text" in dataset_info.features
+    assert "label" in dataset_info.features
+
+
+def test_to_table_info_uses_stored_features():
+    """Test that to_table_info uses stored features instead of calling dataset_builder_safe."""
+    from unittest.mock import patch
+
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
+
+    # Mock dataset_builder_safe to ensure it's NOT called
+    with patch("faceberg.bridge.dataset_builder_safe") as mock_builder:
+        table_info = dataset_info.to_table_info(
+            namespace="default",
+            table_name="imdb_plain_text",
+        )
+
+        # dataset_builder_safe should NOT have been called since features are stored
+        mock_builder.assert_not_called()
+
+    # TableInfo should still be created successfully
+    assert table_info.schema is not None
+    assert len(table_info.schema.fields) > 0
 
 
 if __name__ == "__main__":
