@@ -986,7 +986,7 @@ class BaseCatalog(Catalog):
 
         dataset_info = DatasetInfo.discover(
             repo_id=repo,
-            configs=[config],
+            config=config,
             token=self._hf_token,
         )
 
@@ -999,7 +999,6 @@ class BaseCatalog(Catalog):
         table_info = dataset_info.to_table_info(
             namespace=namespace,
             table_name=table_name,
-            config=config,
             token=self._hf_token,
         )
 
@@ -1142,7 +1141,7 @@ class BaseCatalog(Catalog):
         # Discover dataset at current revision
         dataset_info = DatasetInfo.discover(
             repo_id=table_entry.repo,
-            configs=[table_entry.config],
+            config=table_entry.config,
             token=self._hf_token,
         )
 
@@ -1160,7 +1159,6 @@ class BaseCatalog(Catalog):
         table_info = dataset_info.to_table_info_incremental(
             namespace=identifier[0],
             table_name=identifier[1],
-            config=table_entry.config,
             old_revision=old_revision,
             token=self._hf_token,
         )

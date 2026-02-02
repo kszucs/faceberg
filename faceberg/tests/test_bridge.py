@@ -22,52 +22,49 @@ from faceberg.bridge import (
 def test_discover_public_dataset():
     """Test discovering a public HuggingFace dataset."""
     # Test with a known public dataset
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
 
     assert dataset_info.repo_id == "stanfordnlp/imdb"
-    assert len(dataset_info.configs) > 0
-    assert "plain_text" in dataset_info.configs
+    assert dataset_info.config == "plain_text"
 
     # Check splits
-    assert "plain_text" in dataset_info.splits
-    splits = dataset_info.splits["plain_text"]
+    splits = dataset_info.splits
     assert "train" in splits
     assert "test" in splits
     assert "unsupervised" in splits
 
     # Check Parquet files
-    assert "plain_text" in dataset_info.parquet_files
-    assert "train" in dataset_info.parquet_files["plain_text"]
-    train_files = dataset_info.parquet_files["plain_text"]["train"]
+    assert "train" in dataset_info.parquet_files
+    train_files = dataset_info.parquet_files["train"]
     assert len(train_files) > 0
     assert all(isinstance(f, str) for f in train_files)
 
 
 def test_discover_with_specific_config():
     """Test discovering a dataset with a specific config."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", configs=["plain_text"])
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
 
-    assert dataset_info.configs == ["plain_text"]
-    assert "plain_text" in dataset_info.splits
+    assert dataset_info.config == "plain_text"
+    assert len(dataset_info.splits) > 0
 
 
 def test_discover_nonexistent_dataset():
     """Test discovering a non-existent dataset raises ValueError."""
     with pytest.raises(ValueError, match="not found or not accessible"):
-        DatasetInfo.discover("nonexistent/fake-dataset-12345")
+        DatasetInfo.discover("nonexistent/fake-dataset-12345", config="default")
 
 
 def test_discover_nonexistent_config():
     """Test discovering a non-existent config raises ValueError."""
-    with pytest.raises(ValueError, match="Configs not found"):
-        DatasetInfo.discover("stanfordnlp/imdb", configs=["fake_config"])
+    with pytest.raises(ValueError, match="Config .* not found"):
+        DatasetInfo.discover("stanfordnlp/imdb", config="fake_config")
 
 
 def test_get_parquet_files_for_table():
     """Test getting Parquet files for a specific config."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
 
-    files = dataset_info.get_parquet_files_for_table("plain_text")
+    files = dataset_info.get_parquet_files_for_table()
 
     assert len(files) > 0
     assert all(f.startswith("hf://datasets/stanfordnlp/imdb/") for f in files)
@@ -76,20 +73,12 @@ def test_get_parquet_files_for_table():
 
 def test_get_sample_parquet_file():
     """Test getting a sample Parquet file."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
 
-    sample = dataset_info.get_sample_parquet_file("plain_text")
+    sample = dataset_info.get_sample_parquet_file()
 
     assert sample.startswith("hf://datasets/stanfordnlp/imdb/")
     assert sample.endswith(".parquet")
-
-
-def test_get_parquet_files_nonexistent_config():
-    """Test getting Parquet files for non-existent config raises ValueError."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
-
-    with pytest.raises(ValueError, match="Config .* not found"):
-        dataset_info.get_parquet_files_for_table("fake_config")
 
 
 def test_resolve_hf_path():
@@ -113,13 +102,12 @@ def test_resolve_hf_path():
 
 def test_to_table_infos():
     """Test converting DatasetInfo to TableInfo objects."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", configs=["plain_text"])
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
 
     # Convert to TableInfo
     table_info = dataset_info.to_table_info(
         namespace="default",
         table_name="imdb_plain_text",
-        config="plain_text",
     )
 
     assert table_info.namespace == "default"
@@ -323,10 +311,10 @@ def test_to_table_info_without_features():
     # Create a mock DatasetInfo with empty parquet_files
     dataset_info = DatasetInfo(
         repo_id="fake/dataset",
-        configs=["default"],
-        splits={"default": ["train"]},
-        parquet_files={"default": {"train": []}},
-        data_dirs={"default": "data"},
+        config="default",
+        splits=["train"],
+        parquet_files={"train": []},
+        data_dir="data",
         revision=None,
     )
 
@@ -336,17 +324,15 @@ def test_to_table_info_without_features():
         dataset_info.to_table_info(
             namespace="default",
             table_name="test_table",
-            config="default",
         )
 
 
 def test_table_properties_use_huggingface_prefix():
     """Test that table properties use huggingface.dataset.* prefix."""
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", configs=["plain_text"])
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
     table_info = dataset_info.to_table_info(
         namespace="default",
         table_name="imdb_plain_text",
-        config="plain_text",
     )
 
     props = table_info.get_table_properties()
@@ -753,15 +739,13 @@ def test_to_table_info_incremental_with_old_revision():
     # Create a mock DatasetInfo
     dataset_info = DatasetInfo(
         repo_id="test/dataset",
-        configs=["plain_text"],
-        splits={"plain_text": ["train", "test"]},
+        config="plain_text",
+        splits=["train", "test"],
         parquet_files={
-            "plain_text": {
-                "train": ["plain_text/train-00000.parquet", "plain_text/train-00001.parquet"],
-                "test": ["plain_text/test-00000.parquet"],
-            }
+            "train": ["plain_text/train-00000.parquet", "plain_text/train-00001.parquet"],
+            "test": ["plain_text/test-00000.parquet"],
         },
-        data_dirs={"plain_text": "plain_text"},
+        data_dir="plain_text",
         revision="def456",
     )
 
@@ -790,7 +774,6 @@ def test_to_table_info_incremental_with_old_revision():
         table_info = dataset_info.to_table_info_incremental(
             namespace="default",
             table_name="test_table",
-            config="plain_text",
             old_revision="abc123",
         )
 
@@ -818,14 +801,14 @@ def test_to_table_info_incremental_with_old_revision():
 if __name__ == "__main__":
     # Run basic smoke test
     print("Running basic discovery test...")
-    dataset_info = DatasetInfo.discover("stanfordnlp/imdb")
-    print(f"✓ Discovered {len(dataset_info.configs)} config(s)")
-    print(f"✓ Found splits: {list(dataset_info.splits.keys())}")
+    dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
+    print(f"✓ Discovered config: {dataset_info.config}")
+    print(f"✓ Found splits: {dataset_info.splits}")
 
-    files = dataset_info.get_parquet_files_for_table("plain_text")
+    files = dataset_info.get_parquet_files_for_table()
     print(f"✓ Found {len(files)} Parquet files")
 
-    sample = dataset_info.get_sample_parquet_file("plain_text")
+    sample = dataset_info.get_sample_parquet_file()
     print(f"✓ Sample file: {sample}")
 
     print("\nRunning schema conversion tests...")

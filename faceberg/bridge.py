@@ -440,82 +440,66 @@ class DatasetInfo:
     """Information about a HuggingFace dataset.
 
     This class discovers and represents the structure of a HuggingFace dataset,
-    including its configurations, splits, and Parquet files. It serves as the
+    including its configuration, splits, and Parquet files. It serves as the
     discovery layer that gathers all necessary information before conversion
     to Iceberg format.
     """
 
     repo_id: str
-    configs: List[str]
-    splits: Dict[str, List[str]]  # config -> list of splits
-    parquet_files: Dict[str, Dict[str, List[str]]]  # config -> split -> list of files
-    data_dirs: Dict[str, str]  # config -> data directory path
+    config: str
+    splits: List[str]
+    parquet_files: Dict[str, List[str]]  # split -> list of files
+    data_dir: str
     revision: Optional[str] = None  # Git revision/SHA of the dataset
 
     @classmethod
     def discover(
         cls,
         repo_id: str,
-        configs: Optional[List[str]] = None,
+        config: str,
         token: Optional[str] = None,
     ) -> "DatasetInfo":
         """Discover Parquet files and structure in a HuggingFace dataset.
 
-        Uses the datasets library to get proper metadata about configs and splits.
+        Uses the datasets library to get proper metadata about config and splits.
 
         Args:
             repo_id: HuggingFace dataset repository ID (e.g., "kszucs/dataset1")
-            configs: List of configs to discover (if None, discovers all)
+            config: Configuration name to discover
             token: HuggingFace API token (uses HF_TOKEN env var if not provided)
 
         Returns:
             DatasetInfo with discovered structure
 
         Raises:
-            ValueError: If dataset not found or has errors
+            ValueError: If dataset not found or config doesn't exist
         """
-        # Get all available configs
+        # Get all available configs to validate the requested one
         try:
             all_configs = get_dataset_config_names(repo_id, token=token)
         except DatasetNotFoundError as e:
             raise ValueError(f"Dataset {repo_id} not found or not accessible") from e
 
-        # Filter to requested configs
-        if configs:
-            missing_configs = set(configs) - set(all_configs)
-            if missing_configs:
-                raise ValueError(
-                    f"Configs not found in dataset: {missing_configs}. Available: {all_configs}"
-                )
-            discovered_configs = [c for c in all_configs if c in configs]
-        else:
-            discovered_configs = all_configs
-
-        # Discover splits, files, and data directories for each config
-        splits_dict = {}
-        parquet_files = {}
-        data_dirs_dict = {}
-        revision = None
-
-        for config_name in discovered_configs:
-            config_splits, config_files, config_revision, config_data_dir = cls._discover_config(
-                repo_id, config_name, token
+        # Validate requested config exists
+        if config not in all_configs:
+            raise ValueError(
+                f"Config '{config}' not found in dataset {repo_id}. Available: {all_configs}"
             )
-            splits_dict[config_name] = config_splits
-            parquet_files[config_name] = config_files
-            data_dirs_dict[config_name] = config_data_dir
-            if config_revision and not revision:
-                revision = config_revision
 
-        if not parquet_files or all(not files for files in parquet_files.values()):
-            raise ValueError(f"No Parquet files found in dataset {repo_id}")
+        # Discover splits, files, and data directory for the config
+        splits, parquet_files, revision, data_dir = cls._discover_config(
+            repo_id, config, token
+        )
+
+        if not parquet_files:
+            raise ValueError(f"No Parquet files found in dataset {repo_id} config {config}")
 
         return cls(
             repo_id=repo_id,
-            configs=discovered_configs,
-            splits=splits_dict,
+            config=config,
+            splits=splits,
             parquet_files=parquet_files,
-            data_dirs=data_dirs_dict,
+            data_dir=data_dir,
             revision=revision,
         )
 
@@ -591,49 +575,37 @@ class DatasetInfo:
 
         return splits, files, revision, data_dir
 
-    def get_parquet_files_for_table(self, config: str) -> List[str]:
-        """Get all Parquet files for a specific config across all splits.
-
-        Args:
-            config: Configuration name
+    def get_parquet_files_for_table(self) -> List[str]:
+        """Get all Parquet files across all splits.
 
         Returns:
             List of hf:// URIs for all Parquet files in this config
         """
-        if config not in self.parquet_files:
-            raise ValueError(f"Config {config} not found in dataset")
-
         files = []
-        for split_files in self.parquet_files[config].values():
+        for split_files in self.parquet_files.values():
             for file_path in split_files:
                 hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
                 files.append(hf_uri)
 
         return files
 
-    def get_sample_parquet_file(self, config: str) -> str:
+    def get_sample_parquet_file(self) -> str:
         """Get a sample Parquet file for schema inference.
-
-        Args:
-            config: Configuration name
 
         Returns:
             hf:// URI to a sample Parquet file
         """
-        files = self.get_parquet_files_for_table(config)
+        files = self.get_parquet_files_for_table()
         if not files:
-            raise ValueError(f"No Parquet files found for config {config}")
+            raise ValueError(f"No Parquet files found for config {self.config}")
         return files[0]
 
-    def discover_file_pattern(self, config: str) -> tuple[str, int]:
+    def discover_file_pattern(self) -> tuple[str, int]:
         """Discover file naming pattern and next index from existing files.
 
         Analyzes existing parquet files to determine the next available index
         for new files. The pattern returned is always the default Iceberg
         pattern since we don't try to match existing HF conventions.
-
-        Args:
-            config: Configuration name
 
         Returns:
             Tuple of (pattern, next_index) where pattern is the default
@@ -642,12 +614,9 @@ class DatasetInfo:
         """
         default_pattern = "{split}-{index:05d}-iceberg.parquet"
 
-        if config not in self.parquet_files:
-            return default_pattern, 0
-
         # Collect all files across all splits
         all_files = []
-        for split_files in self.parquet_files[config].values():
+        for split_files in self.parquet_files.values():
             all_files.extend(split_files)
 
         if not all_files:
@@ -705,40 +674,29 @@ class DatasetInfo:
         self,
         namespace: str,
         table_name: str,
-        config: str,
         token: Optional[str] = None,
     ) -> TableInfo:
-        """Convert DatasetInfo to a single TableInfo for a specific config.
+        """Convert DatasetInfo to TableInfo.
 
-        This method creates table metadata for a single HuggingFace dataset config
+        This method creates table metadata for the HuggingFace dataset config
         with an explicit table name, supporting the namespace-based configuration.
 
         Args:
             namespace: Iceberg namespace for the table
             table_name: Explicit table name (no auto-generation)
-            config: Specific config to create table for
             token: HuggingFace API token (optional)
 
         Returns:
             TableInfo object
-
-        Raises:
-            ValueError: If config not found in dataset
         """
-        if config not in self.configs:
-            raise ValueError(
-                f"Config '{config}' not found in dataset {self.repo_id}. "
-                f"Available configs: {', '.join(self.configs)}"
-            )
-
         # Get features from dataset builder
-        builder = load_dataset_builder_safe(self.repo_id, config_name=config, token=token)
+        builder = load_dataset_builder_safe(self.repo_id, config_name=self.config, token=token)
         features = builder.info.features
 
         # Features must be available from builder
         if not features:
             raise ValueError(
-                f"Dataset {self.repo_id} config {config} has no features available. "
+                f"Dataset {self.repo_id} config {self.config} has no features available. "
                 "Features must be provided by the dataset builder."
             )
 
@@ -750,7 +708,7 @@ class DatasetInfo:
 
         # Collect file information
         files = []
-        for split_name, file_paths in self.parquet_files[config].items():
+        for split_name, file_paths in self.parquet_files.items():
             for file_path in file_paths:
                 hf_uri = f"hf://datasets/{self.repo_id}/{file_path}"
                 files.append(
@@ -769,9 +727,9 @@ class DatasetInfo:
             schema=schema,
             partition_spec=partition_spec,
             files=files,
-            data_dir=self.data_dirs[config],
+            data_dir=self.data_dir,
             source_repo=self.repo_id,
-            source_config=config,
+            source_config=self.config,
             source_revision=self.revision,
         )
 
@@ -779,7 +737,6 @@ class DatasetInfo:
         self,
         namespace: str,
         table_name: str,
-        config: str,
         old_revision: str,
         token: Optional[str] = None,
     ) -> TableInfo:
@@ -791,27 +748,17 @@ class DatasetInfo:
         Args:
             namespace: Iceberg namespace for the table
             table_name: Explicit table name
-            config: Specific config to create table for
             old_revision: Previous revision SHA to diff against (required)
             token: HuggingFace API token
 
         Returns:
             TableInfo object with only new files
-
-        Raises:
-            ValueError: If config not found in dataset
         """
-        if config not in self.configs:
-            raise ValueError(
-                f"Config '{config}' not found in dataset {self.repo_id}. "
-                f"Available configs: {', '.join(self.configs)}"
-            )
-
         # Get features and schema (same as before)
-        builder = load_dataset_builder_safe(self.repo_id, config_name=config, token=token)
+        builder = load_dataset_builder_safe(self.repo_id, config_name=self.config, token=token)
         features = builder.info.features
         if not features:
-            raise ValueError(f"Dataset {self.repo_id} config {config} has no features available.")
+            raise ValueError(f"Dataset {self.repo_id} config {self.config} has no features available.")
 
         schema = build_iceberg_schema_from_features(features, include_split_column=True)
         partition_spec = build_split_partition_spec(schema)
@@ -819,7 +766,7 @@ class DatasetInfo:
         # Get only new files added since old_revision
         new_file_paths = get_new_parquet_files(
             repo_id=self.repo_id,
-            config=config,
+            config=self.config,
             old_revision=old_revision,
             new_revision=self.revision,
             token=token,
@@ -858,8 +805,8 @@ class DatasetInfo:
             schema=schema,
             partition_spec=partition_spec,
             files=files,
-            data_dir=self.data_dirs[config],
+            data_dir=self.data_dir,
             source_repo=self.repo_id,
-            source_config=config,
+            source_config=self.config,
             source_revision=self.revision,
         )
