@@ -531,8 +531,8 @@ def test_dataset_new_files_no_new_files():
             new_revision="def456",
         )
 
-    # Should return empty dict when files are the same
-    assert result == {}
+    # Should return empty list when files are the same
+    assert result == []
 
     # Verify API was called with both revisions
     assert mock_api.list_repo_files.call_count == 2
@@ -578,11 +578,11 @@ def test_dataset_new_files_with_new_files():
             new_revision="def456",
         )
 
-    # Should return dict with new files organized by split with fully qualified URIs
-    assert result == {
-        "train": ["hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"],
-        "validation": ["hf://datasets/test/dataset@def456/plain_text/validation-00000.parquet"],
-    }
+    # Should return list of new file paths
+    assert result == [
+        "plain_text/train-00001.parquet",
+        "plain_text/validation-00000.parquet",
+    ]
 
 
 def test_dataset_new_files_filters_by_config():
@@ -615,10 +615,8 @@ def test_dataset_new_files_filters_by_config():
             new_revision="def456",
         )
 
-    # Should return only plain_text config files with fully qualified URIs
-    assert result == {
-        "train": ["hf://datasets/test/dataset@def456/plain_text/train-00000.parquet"]
-    }
+    # Should return only plain_text config file paths
+    assert result == ["plain_text/train-00000.parquet"]
 
 
 def test_dataset_new_files_ignores_non_parquet():
@@ -652,10 +650,8 @@ def test_dataset_new_files_ignores_non_parquet():
             new_revision="def456",
         )
 
-    # Should return only parquet files with fully qualified URIs
-    assert result == {
-        "train": ["hf://datasets/test/dataset@def456/plain_text/train-00000.parquet"]
-    }
+    # Should return only parquet file paths
+    assert result == ["plain_text/train-00000.parquet"]
 
 
 def test_discover_with_since_revision():
@@ -673,19 +669,39 @@ def test_discover_with_since_revision():
             "label": Value("int64"),
         }
     )
-    mock_builder.config.data_dir = "plain_text"
+    mock_builder.config.data_dir = None
+    mock_builder.config.data_files = {
+        "train": [
+            "hf://datasets/test/dataset@def456/plain_text/train-00000.parquet",
+            "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet",
+        ],
+        "test": ["hf://datasets/test/dataset@def456/plain_text/test-00000.parquet"],
+    }
 
-    # Mock dataset_new_files to return dict with new files organized by split
+    # Mock dataset_new_files to return list of new file paths
     mock_get_new_files = Mock(
-        return_value={
-            "train": ["hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"],
-            "test": ["hf://datasets/test/dataset@def456/plain_text/test-00000.parquet"],
-        }
+        return_value=[
+            "plain_text/train-00001.parquet",
+            "plain_text/test-00000.parquet",
+        ]
     )
 
-    with patch("faceberg.bridge.dataset_builder_safe", return_value=mock_builder), patch(
-        "faceberg.bridge.dataset_new_files", mock_get_new_files
-    ):
+    # Mock HfFileSystem to resolve file URIs
+    mock_fs = Mock()
+    def mock_resolve_path(uri):
+        # Extract path from URI: "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"
+        # Split: ['hf:', '', 'datasets', 'test', 'dataset@def456', 'plain_text', 'train-00001.parquet']
+        parts = uri.split("/")
+        # Join everything after repo@revision (starting from index 5)
+        path = "/".join(parts[5:])
+        mock_result = Mock()
+        mock_result.path_in_repo = path
+        return mock_result
+    mock_fs.resolve_path.side_effect = mock_resolve_path
+
+    with patch("faceberg.bridge.dataset_builder_safe", return_value=mock_builder), \
+         patch("faceberg.bridge.dataset_new_files", mock_get_new_files), \
+         patch("faceberg.bridge.HfFileSystem", return_value=mock_fs):
         # Discover with since_revision (should return only new files)
         dataset_info = DatasetInfo.discover(
             repo_id="test/dataset",

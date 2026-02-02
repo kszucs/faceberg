@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from datasets import (
     Features,
@@ -297,7 +297,7 @@ def dataset_new_files(
     old_revision: str,
     new_revision: str,
     token: Optional[str] = None,
-) -> Dict[str, List[str]]:
+) -> List[str]:
     """Find new parquet files added between two revisions.
 
     Uses HuggingFace Hub API to diff two git revisions and identify
@@ -311,8 +311,7 @@ def dataset_new_files(
         token: HuggingFace API token
 
     Returns:
-        Dictionary mapping split names to lists of fully qualified URIs with revision,
-        matching the format of builder.config.data_files
+        List of path_in_repo strings for new parquet files
 
     Example:
         >>> dataset_new_files(
@@ -321,10 +320,7 @@ def dataset_new_files(
         ...     "abc123",
         ...     "def456"
         ... )
-        {
-            'train': ['hf://datasets/squad@def456/plain_text/train-00000-of-00001.parquet'],
-            'validation': ['hf://datasets/squad@def456/plain_text/validation-00000-of-00001.parquet']
-        }
+        ['plain_text/train-00000-of-00001.parquet', 'plain_text/validation-00000-of-00001.parquet']
     """
     api = HfApi(token=token)
 
@@ -355,23 +351,7 @@ def dataset_new_files(
         f for f in added_files if f.endswith(".parquet") and f.startswith(config_prefix)
     )
 
-    # Organize by split and create fully qualified URIs
-    data_files = {}
-    for file_path in relative_paths:
-        # Extract split from path: "config/split-00000.parquet" -> "split"
-        parts = file_path.split("/")
-        if len(parts) >= 2:
-            split_part = parts[1]  # e.g., "train-00000-of-00001.parquet"
-            split_name = split_part.split("-")[0]  # e.g., "train"
-
-            if split_name not in data_files:
-                data_files[split_name] = []
-
-            # Build fully qualified hf:// URI with revision
-            hf_uri = f"hf://datasets/{repo_id}@{new_revision}/{file_path}"
-            data_files[split_name].append(hf_uri)
-
-    return data_files
+    return relative_paths
 
 
 def dataset_builder_safe(
@@ -407,40 +387,62 @@ def dataset_builder_safe(
         os.chdir(original_cwd)
 
 
-def dataset_data_dir(data_files: Dict[str, List[str]]) -> str:
-    """Extract data directory by resolving file URIs.
+def dataset_data_files(
+    data_files: Dict[str, List[str]],
+    filter_paths: Optional[List[str]] = None
+) -> Tuple[Dict[str, List[str]], str]:
+    """Filter data files and extract data directory.
 
-    Resolves the file URIs to extract the common directory path.
+    Optionally filters data files by path_in_repo and extracts the common directory path.
 
     Args:
         data_files: Dictionary mapping splits to lists of file URIs (with revision)
+        filter_paths: Optional list of path_in_repo strings to filter by
 
     Returns:
-        Data directory path relative to repo root
+        Tuple of (filtered_data_files, data_dir)
 
     Example:
-        >>> dataset_data_dir({
-        ...     "train": ["repo@rev/plain_text/train-00000.parquet"],
-        ...     "test": ["repo@rev/plain_text/test-00000.parquet"]
-        ... })
-        'plain_text'
+        >>> dataset_data_files(
+        ...     {"train": ["hf://datasets/repo@rev/plain_text/train-00000.parquet"]},
+        ...     filter_paths=["plain_text/train-00000.parquet"]
+        ... )
+        ({'train': ['hf://datasets/repo@rev/plain_text/train-00000.parquet']}, 'plain_text')
     """
     fs = HfFileSystem()
+
+    # Convert filter_paths to set for fast lookup
+    filter_set = set(filter_paths) if filter_paths else None
+
+    # Filter data files if filter_paths provided
+    filtered_data_files = {}
     all_files = []
-    for file_list in data_files.values():
-        for file_path in file_list:
-            resolved = fs.resolve_path(file_path)
-            all_files.append(resolved.path_in_repo)
+
+    for split, file_list in data_files.items():
+        filtered_files = []
+        for file_uri in file_list:
+            resolved = fs.resolve_path(file_uri)
+            path_in_repo = resolved.path_in_repo
+
+            # Include file if no filter or if in filter set
+            if filter_set is None or path_in_repo in filter_set:
+                filtered_files.append(file_uri)
+                all_files.append(path_in_repo)
+
+        if filtered_files:
+            filtered_data_files[split] = filtered_files
 
     if not all_files:
         raise ValueError("No data files found to determine data directory")
 
     try:
-        return os.path.commonpath(all_files)
+        data_dir = os.path.commonpath(all_files)
     except ValueError as e:
         raise ValueError(
             f"Unable to determine common data directory from files: {all_files}"
         ) from e
+
+    return filtered_data_files, data_dir
 
 
 # =============================================================================
@@ -509,30 +511,27 @@ class DatasetInfo:
         revision = builder.hash
         features = builder.info.features
 
-        # Get data files - either all files or only new files since since_revision
+        # Get filter paths if since_revision is provided
+        filter_paths = None
         if since_revision:
-            # Get only files added since since_revision
-            data_files = dataset_new_files(
+            filter_paths = dataset_new_files(
                 repo_id=repo_id,
                 config=config,
                 old_revision=since_revision,
                 new_revision=revision,
                 token=token,
             )
-        else:
-            # Get all files from builder
-            data_files = builder.config.data_files
+
+        # Filter data files and extract data directory
+        data_files, data_dir = dataset_data_files(
+            builder.config.data_files,
+            filter_paths=filter_paths
+        )
 
         splits = list(data_files.keys())
 
         if not data_files:
             raise ValueError("No Parquet files found in dataset configuration")
-
-        # Extract data directory from config or infer from URIs
-        if builder.config.data_dir:
-            data_dir = builder.config.data_dir
-        else:
-            data_dir = dataset_data_dir(data_files=data_files)
 
         return cls(
             repo_id=repo_id,
