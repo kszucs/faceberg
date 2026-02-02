@@ -306,8 +306,8 @@ def test_node_to_dict():
     view = View(query="SELECT * FROM table")
     assert view.to_dict() == {"query": "SELECT * FROM table", "type": "view"}
 
-    table = Table()
-    assert table.to_dict() == {"type": "table"}
+    table = Table(uri="file://data/location")
+    assert table.to_dict() == {"uri": "file://data/location", "type": "table"}
 
 
 def test_namespace_repr():

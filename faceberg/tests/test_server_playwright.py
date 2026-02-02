@@ -378,7 +378,7 @@ def test_namespaces_endpoint_accessible(rest_server: str, page: Page):
 
     assert namespaces_response["status"] == 200
     assert "namespaces" in namespaces_response["data"]
-    # Catalog should have at least one namespace (default)
+    # Catalog should have at least one namespace (stanfordnlp)
     assert len(namespaces_response["data"]["namespaces"]) > 0
 
 
@@ -389,7 +389,7 @@ def test_tables_endpoint_accessible(rest_server: str, page: Page):
     # Use page.evaluate to fetch tables endpoint
     tables_response = page.evaluate("""
         async () => {
-            const response = await fetch('/v1/namespaces/default/tables');
+            const response = await fetch('/v1/namespaces/stanfordnlp/tables');
             return {
                 status: response.status,
                 data: await response.json()
@@ -399,7 +399,7 @@ def test_tables_endpoint_accessible(rest_server: str, page: Page):
 
     assert tables_response["status"] == 200
     assert "identifiers" in tables_response["data"]
-    # Should have at least one table (imdb_plain_text)
+    # Should have at least one table (imdb)
     assert len(tables_response["data"]["identifiers"]) > 0
 
 

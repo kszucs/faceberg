@@ -75,7 +75,7 @@ class Table(Node):
              written to the default catalog location.
     """
 
-    uri: str = None
+    uri: str
 
 
 @dataclass

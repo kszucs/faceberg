@@ -11,7 +11,7 @@ class TestConfigEndpoint:
 
     def test_get_config(self, synced_catalog):
         """Test getting catalog configuration."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/config")
@@ -24,7 +24,7 @@ class TestConfigEndpoint:
 
     def test_get_config_with_warehouse_param(self, synced_catalog):
         """Test config endpoint with warehouse parameter."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/config?warehouse=/my/warehouse")
@@ -39,7 +39,7 @@ class TestNamespaceEndpoints:
 
     def test_list_namespaces(self, synced_catalog):
         """Test listing all namespaces."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/namespaces")
@@ -49,30 +49,30 @@ class TestNamespaceEndpoints:
             assert "namespaces" in data
             namespaces = data["namespaces"]
             assert len(namespaces) > 0
-            # Check that 'default' namespace exists
-            assert ["default"] in namespaces or ("default",) in namespaces
+            # Check that 'stanfordnlp' namespace exists (from synced_catalog)
+            assert ["stanfordnlp"] in namespaces or ("stanfordnlp",) in namespaces
 
     def test_load_namespace(self, synced_catalog):
         """Test loading namespace properties."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/default")
+            response = client.get("/v1/namespaces/stanfordnlp")
             assert response.status_code == 200
 
             data = response.json()
             assert "namespace" in data
             assert "properties" in data
             # Namespace should be a list/tuple
-            assert data["namespace"] == ["default"] or data["namespace"] == ("default",)
+            assert data["namespace"] == ["stanfordnlp"] or data["namespace"] == ("stanfordnlp",)
 
     def test_namespace_exists_head(self, synced_catalog):
         """Test checking namespace existence with HEAD request."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             # Existing namespace should return 204
-            response = client.head("/v1/namespaces/default")
+            response = client.head("/v1/namespaces/stanfordnlp")
             assert response.status_code == 204
 
     def test_namespace_not_exists(self, synced_catalog):
@@ -81,7 +81,7 @@ class TestNamespaceEndpoints:
         Note: The catalog behavior is to return empty properties rather than
         raising an error for non-existent namespaces.
         """
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/namespaces/nonexistent")
@@ -99,10 +99,10 @@ class TestTableEndpoints:
 
     def test_list_tables(self, synced_catalog):
         """Test listing tables in a namespace."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/default/tables")
+            response = client.get("/v1/namespaces/stanfordnlp/tables")
             assert response.status_code == 200
 
             data = response.json()
@@ -114,10 +114,10 @@ class TestTableEndpoints:
 
     def test_load_table(self, synced_catalog):
         """Test loading a table."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/default/tables/imdb_plain_text")
+            response = client.get("/v1/namespaces/stanfordnlp/tables/imdb")
             assert response.status_code == 200
 
             data = response.json()
@@ -130,19 +130,19 @@ class TestTableEndpoints:
 
     def test_table_exists_head(self, synced_catalog):
         """Test checking table existence with HEAD request."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             # Existing table should return 204
-            response = client.head("/v1/namespaces/default/tables/imdb_plain_text")
+            response = client.head("/v1/namespaces/stanfordnlp/tables/imdb")
             assert response.status_code == 204
 
     def test_table_not_exists(self, synced_catalog):
         """Test loading non-existent table returns 404."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/default/tables/nonexistent")
+            response = client.get("/v1/namespaces/stanfordnlp/tables/nonexistent")
             assert response.status_code == 404
 
             data = response.json()
@@ -151,10 +151,10 @@ class TestTableEndpoints:
 
     def test_table_exists_wrong_namespace(self, synced_catalog):
         """Test checking table in wrong namespace returns 404."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
-            response = client.head("/v1/namespaces/nonexistent/tables/imdb_plain_text")
+            response = client.head("/v1/namespaces/nonexistent/tables/imdb")
             assert response.status_code == 404
 
 
@@ -163,11 +163,11 @@ class TestErrorHandling:
 
     def test_error_response_format(self, synced_catalog):
         """Test that errors follow Iceberg REST spec format."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             # Use table not found as the test case for error format
-            response = client.get("/v1/namespaces/default/tables/nonexistent")
+            response = client.get("/v1/namespaces/stanfordnlp/tables/nonexistent")
             assert response.status_code == 404
 
             data = response.json()
@@ -181,7 +181,7 @@ class TestErrorHandling:
 
     def test_internal_error_handling(self, synced_catalog):
         """Test that unexpected errors are caught and formatted properly."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             # Try to cause an error by requesting invalid paths
@@ -268,8 +268,8 @@ class TestSyncedCatalogDataIntegrity:
     """
 
     def test_synced_catalog_has_default_namespace(self, synced_catalog):
-        """Verify synced catalog exposes the default namespace."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        """Verify synced catalog exposes the stanfordnlp namespace."""
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
             response = client.get("/v1/namespaces")
@@ -281,36 +281,36 @@ class TestSyncedCatalogDataIntegrity:
             # Must have at least one namespace
             assert len(namespaces) > 0, "Synced catalog should have namespaces"
 
-            # Should include default namespace
+            # Should include stanfordnlp namespace
             namespace_list = [list(ns) if isinstance(ns, tuple) else ns for ns in namespaces]
-            assert ["default"] in namespace_list or ("default",) in namespaces, (
-                f"Expected 'default' namespace in {namespace_list}"
+            assert ["stanfordnlp"] in namespace_list or ("stanfordnlp",) in namespaces, (
+                f"Expected 'stanfordnlp' namespace in {namespace_list}"
             )
 
     def test_synced_catalog_has_imdb_table(self, synced_catalog):
-        """Verify synced catalog exposes the imdb_plain_text table."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        """Verify synced catalog exposes the imdb table."""
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/default/tables")
+            response = client.get("/v1/namespaces/stanfordnlp/tables")
             assert response.status_code == 200
 
             data = response.json()
             tables = data["identifiers"]
 
             # Must have at least one table
-            assert len(tables) > 0, "Synced catalog should have tables in default namespace"
+            assert len(tables) > 0, "Synced catalog should have tables in stanfordnlp namespace"
 
-            # Should include imdb_plain_text table
+            # Should include imdb table
             table_names = [t["name"] if isinstance(t, dict) else str(t) for t in tables]
-            assert "imdb_plain_text" in table_names, f"Expected 'imdb_plain_text' in {table_names}"
+            assert "imdb" in table_names, f"Expected 'imdb' in {table_names}"
 
     def test_synced_catalog_table_has_valid_metadata(self, synced_catalog):
         """Verify synced table returns valid Iceberg metadata."""
-        app = create_app(str(synced_catalog.catalog_dir))
+        app = create_app(synced_catalog.uri)
 
         with TestClient(app=app) as client:
-            response = client.get("/v1/namespaces/default/tables/imdb_plain_text")
+            response = client.get("/v1/namespaces/stanfordnlp/tables/imdb")
             assert response.status_code == 200
 
             data = response.json()

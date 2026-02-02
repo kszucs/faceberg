@@ -13,7 +13,13 @@ import pytest
 @pytest.fixture
 def catalog_properties(synced_catalog):
     """Return catalog properties for pandas.read_iceberg()."""
-    return {"py-catalog-impl": "faceberg.catalog.LocalCatalog", "uri": synced_catalog.uri}
+    # Use appropriate catalog implementation based on URI scheme
+    if synced_catalog.uri.startswith("hf://"):
+        catalog_impl = "faceberg.catalog.RemoteCatalog"
+    else:
+        catalog_impl = "faceberg.catalog.LocalCatalog"
+
+    return {"py-catalog-impl": catalog_impl, "uri": synced_catalog.uri}
 
 
 # =============================================================================

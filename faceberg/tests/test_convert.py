@@ -65,6 +65,7 @@ class TestGetHfFileSize:
                 repo_id="deepmind/narrativeqa",
                 filename="data/train-00000-of-00024.parquet",
                 repo_type="dataset",
+                revision=None,
             )
             mock_get_metadata.assert_called_once()
 
@@ -88,6 +89,7 @@ class TestGetHfFileSize:
                 repo_id="org/repo",
                 filename="path/to/deep/file.parquet",
                 repo_type="dataset",
+                revision=None,
             )
 
     def test_get_hf_file_size_invalid_url_format(self, metadata_writer):
@@ -128,7 +130,7 @@ class TestReadFileMetadata:
         """Test that _read_file_metadata gets file size from HuggingFace when size_bytes is 0."""
         file_infos = [
             FileInfo(
-                path="hf://datasets/org/repo/file1.parquet",
+                uri="hf://datasets/org/repo/file1.parquet",
                 size_bytes=0,  # No size provided
                 row_count=0,
                 split="train",
@@ -152,7 +154,7 @@ class TestReadFileMetadata:
 
             # Verify
             assert len(enriched) == 1
-            assert enriched[0].path == "hf://datasets/org/repo/file1.parquet"
+            assert enriched[0].uri == "hf://datasets/org/repo/file1.parquet"
             assert enriched[0].size_bytes == 9876543
             assert enriched[0].row_count == 1000
             mock_get_size.assert_called_once_with("hf://datasets/org/repo/file1.parquet")
@@ -161,7 +163,7 @@ class TestReadFileMetadata:
         """Test that _read_file_metadata preserves size_bytes when already provided."""
         file_infos = [
             FileInfo(
-                path="hf://datasets/org/repo/file1.parquet",
+                uri="hf://datasets/org/repo/file1.parquet",
                 size_bytes=5555555,  # Size already provided
                 row_count=0,
                 split="train",
@@ -186,19 +188,19 @@ class TestReadFileMetadata:
         """Test enriching metadata for multiple files."""
         file_infos = [
             FileInfo(
-                path="hf://datasets/org/repo/file1.parquet",
+                uri="hf://datasets/org/repo/file1.parquet",
                 size_bytes=0,
                 row_count=0,
                 split="train",
             ),
             FileInfo(
-                path="hf://datasets/org/repo/file2.parquet",
+                uri="hf://datasets/org/repo/file2.parquet",
                 size_bytes=0,
                 row_count=0,
                 split="train",
             ),
             FileInfo(
-                path="hf://datasets/org/repo/file3.parquet",
+                uri="hf://datasets/org/repo/file3.parquet",
                 size_bytes=123456,  # Already has size
                 row_count=500,  # This will be overwritten by reading parquet metadata
                 split="test",
@@ -246,7 +248,7 @@ class TestReadFileMetadata:
 
         file_infos = [
             FileInfo(
-                path="hf://datasets/org/repo/file1.parquet",
+                uri="hf://datasets/org/repo/file1.parquet",
                 size_bytes=0,
                 row_count=0,
                 split="train",
@@ -270,7 +272,7 @@ class TestFileSizeRegression:
         # This is the key regression test for the bug fix
         file_infos = [
             FileInfo(
-                path="hf://datasets/deepmind/narrativeqa/data/train-00000-of-00024.parquet",
+                uri="hf://datasets/deepmind/narrativeqa/data/train-00000-of-00024.parquet",
                 size_bytes=0,
                 row_count=0,
                 split="train",
@@ -304,7 +306,7 @@ class TestFileSizeRegression:
         # From the bug report, we saw ratios of 500-19000x between actual and serialized_size
         file_infos = [
             FileInfo(
-                path=f"hf://datasets/deepmind/narrativeqa/data/train-{i:05d}-of-00024.parquet",
+                uri=f"hf://datasets/deepmind/narrativeqa/data/train-{i:05d}-of-00024.parquet",
                 size_bytes=0,
                 row_count=0,
                 split="train",
