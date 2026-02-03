@@ -18,3 +18,15 @@ test:
 # Run tests with coverage
 cov:
 	pytest faceberg/tests/ --cov=faceberg --cov-report=xml --cov-report=term-missing -v
+
+# Build distribution packages
+build:
+	python -m build
+
+# Upload to TestPyPI
+publish-test: build
+	python -m twine upload --repository testpypi dist/*
+
+# Upload to PyPI
+publish: build
+	python -m twine upload dist/*
