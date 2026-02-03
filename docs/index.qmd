@@ -155,6 +155,26 @@ HuggingFace Hub
 
 **No data is copied** — only metadata is created. Query with DuckDB, PyIceberg, Spark, or any Iceberg-compatible tool.
 
+## Serve Your Catalog Locally
+
+Run a local REST server for development or testing:
+
+```bash
+faceberg user/mycatalog serve --port 8181
+```
+
+This starts an Iceberg REST catalog server at `http://localhost:8181` that any compatible tool can connect to:
+
+```python
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+conn.execute("ATTACH 'http://localhost:8181' AS cat (TYPE ICEBERG)")
+
+result = conn.execute("SELECT * FROM cat.stanfordnlp.imdb LIMIT 5").fetchdf()
+```
+
 ## Sharing Your Catalog
 
 Your catalog is accessible to anyone via the REST API:
