@@ -1,8 +1,10 @@
-![Faceberg](faceberg.png)
+![Faceberg](https://github.com/kszucs/faceberg/blob/main/faceberg.png?raw=true)
 
 # Faceberg
 
-Bridge HuggingFace datasets with Apache Iceberg tables.
+**Bridge HuggingFace datasets with Apache Iceberg tables — no data copying, just metadata.**
+
+Faceberg maps HuggingFace datasets to Apache Iceberg tables. Your catalog metadata lives on HuggingFace Spaces with an auto-deployed REST API, and any Iceberg-compatible query engine can access the data.
 
 ## Installation
 
@@ -13,111 +15,81 @@ pip install faceberg
 ## Quick Start
 
 ```bash
-# Create a catalog and add a dataset
-faceberg mycatalog init
-faceberg mycatalog add stanfordnlp/imdb --config plain_text
-faceberg mycatalog sync
+export HF_TOKEN=your_huggingface_token
 
-# Query the data
-faceberg mycatalog scan default.imdb --limit 5
+# Create a catalog on HuggingFace Hub
+faceberg user/mycatalog init
+
+# Add datasets
+faceberg user/mycatalog add stanfordnlp/imdb --config plain_text
+faceberg user/mycatalog add openai/gsm8k --config main
+
+# Query with interactive DuckDB shell
+faceberg user/mycatalog quack
 ```
 
-**Python API:**
-
-```python
-from faceberg import catalog
-
-cat = catalog("mycatalog")
-table = cat.load_table("default.imdb")
-df = table.scan().to_pandas()
-print(df.head())
+```sql
+SELECT label, substr(text, 1, 100) as preview
+FROM iceberg_catalog.stanfordnlp.imdb
+LIMIT 10;
 ```
-
-**Documentation:**
-- [Getting Started](docs/index.qmd) - Quickstart guide
-- [Local Catalogs](docs/local.qmd) - Use local catalogs for testing
-- [DuckDB Integration](docs/integrations/duckdb.qmd) - Query with SQL
-- [Pandas Integration](docs/integrations/pandas.qmd) - Load into DataFrames
 
 ## How It Works
 
-Faceberg creates lightweight Iceberg metadata that points to original HuggingFace dataset files:
-
 ```
-HuggingFace Dataset          Your Catalog
-┌─────────────────┐         ┌──────────────────┐
-│ org/dataset     │         │ mycatalog/       │
-│ ├── train.pq ◄──┼─────────┼─ default/        │
-│ └── test.pq  ◄──┼─────────┼─   └── imdb/     │
-└─────────────────┘         │       └── metadata/
-                            └──────────────────┘
-```
-
-No data is copied—only metadata is created. Query with DuckDB, PyIceberg, Spark, or any Iceberg-compatible tool.
-
-## Usage
-
-### CLI Commands
-
-```bash
-# Initialize catalog
-faceberg mycatalog init
-
-# Add datasets
-faceberg mycatalog add openai/gsm8k --config main
-
-# Sync datasets (creates Iceberg metadata)
-faceberg mycatalog sync
-
-# List tables
-faceberg mycatalog list
-
-# Show table info
-faceberg mycatalog info default.gsm8k
-
-# Scan data
-faceberg mycatalog scan default.gsm8k --limit 10
-
-# Start REST server
-faceberg mycatalog serve --port 8181
+HuggingFace Hub
+┌─────────────────────────────────────────────────────────┐
+│                                                          │
+│  ┌─────────────────────┐    ┌─────────────────────────┐ │
+│  │  HF Datasets        │    │  HF Spaces (Catalog)    │ │
+│  │  (Original Parquet) │◄───│  • Iceberg metadata     │ │
+│  │                     │    │  • REST API endpoint    │ │
+│  │  stanfordnlp/imdb/  │    │  • faceberg.yml         │ │
+│  │   └── *.parquet     │    │                         │ │
+│  └─────────────────────┘    └───────────┬─────────────┘ │
+│                                         │               │
+└─────────────────────────────────────────┼───────────────┘
+                                          │ Iceberg REST API
+                                          ▼
+                              ┌─────────────────────────┐
+                              │     Query Engines       │
+                              │  DuckDB, Pandas, Spark  │
+                              └─────────────────────────┘
 ```
 
-### Remote Catalogs on HuggingFace Hub
+**No data is copied** — only metadata is created. Query with DuckDB, PyIceberg, Spark, or any Iceberg-compatible tool.
 
-```bash
-# Initialize remote catalog
-export HF_TOKEN=your_token
-faceberg org/catalog-repo init
+## Python API
 
-# Add and sync datasets
-faceberg org/catalog-repo add deepmind/code_contests --config default
-faceberg org/catalog-repo sync
+```python
+import os
+from faceberg import catalog
 
-# Serve remote catalog
-faceberg org/catalog-repo serve
+cat = catalog("user/mycatalog", hf_token=os.environ.get("HF_TOKEN"))
+table = cat.load_table("stanfordnlp.imdb")
+df = table.scan(limit=100).to_pandas()
 ```
 
-### Query with DuckDB
+## Share Your Catalog
+
+Your catalog is accessible to anyone via the REST API:
 
 ```python
 import duckdb
 
 conn = duckdb.connect()
-conn.execute("INSTALL httpfs; LOAD httpfs")
 conn.execute("INSTALL iceberg; LOAD iceberg")
+conn.execute("ATTACH 'https://user-mycatalog.hf.space' AS cat (TYPE ICEBERG)")
 
-# Query local catalog
-result = conn.execute("""
-    SELECT * FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
-    LIMIT 10
-""").fetchall()
-
-# Query remote catalog
-result = conn.execute("""
-    SELECT * FROM iceberg_scan('hf://datasets/org/catalog/default/table/metadata/v1.metadata.json')
-    LIMIT 10
-""").fetchall()
+result = conn.execute("SELECT * FROM cat.stanfordnlp.imdb LIMIT 5").fetchdf()
 ```
+
+## Documentation
+
+- [Getting Started](docs/index.qmd) — Full quickstart guide
+- [Local Catalogs](docs/local.qmd) — Use local catalogs for development
+- [DuckDB Integration](docs/integrations/duckdb.qmd) — Advanced SQL queries
+- [Pandas Integration](docs/integrations/pandas.qmd) — Load into DataFrames
 
 ## Development
 
