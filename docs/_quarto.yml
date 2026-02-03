@@ -4,6 +4,8 @@ project:
   render:
     - "*.qmd"
     - "integrations/*.qmd"
+  resources:
+    - CNAME
 
 website:
   title: "Faceberg"

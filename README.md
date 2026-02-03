@@ -86,12 +86,12 @@ result = conn.execute("SELECT * FROM cat.stanfordnlp.imdb LIMIT 5").fetchdf()
 
 ## Documentation
 
-**[Read the docs →](https://kszucs.github.io/faceberg/)**
+**[Read the docs →](https://faceberg.kszucs.dev/)**
 
-- [Getting Started](https://kszucs.github.io/faceberg/) — Full quickstart guide
-- [Local Catalogs](https://kszucs.github.io/faceberg/local.html) — Use local catalogs for development
-- [DuckDB Integration](https://kszucs.github.io/faceberg/integrations/duckdb.html) — Advanced SQL queries
-- [Pandas Integration](https://kszucs.github.io/faceberg/integrations/pandas.html) — Load into DataFrames
+- [Getting Started](https://faceberg.kszucs.dev/) — Full quickstart guide
+- [Local Catalogs](https://faceberg.kszucs.dev/local.html) — Use local catalogs for development
+- [DuckDB Integration](https://faceberg.kszucs.dev/integrations/duckdb.html) — Advanced SQL queries
+- [Pandas Integration](https://faceberg.kszucs.dev/integrations/pandas.html) — Load into DataFrames
 
 ## Development
 
