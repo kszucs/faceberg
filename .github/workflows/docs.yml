@@ -30,7 +30,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install --system -e ".[dev]" jupyter
 
       - name: Set up Quarto
         uses: quarto-dev/quarto-actions/setup@v2
