@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "faceberg"
-version = "0.1.0"
+version = "0.1.1"
 description = "Bridge HuggingFace datasets with Apache Iceberg"
 readme = "README.md"
 requires-python = ">=3.9"
