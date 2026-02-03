@@ -1,0 +1,218 @@
+---
+title: "Local Catalogs"
+description: "Use local catalogs for testing and development"
+---
+
+Local catalogs store metadata on your filesystem instead of HuggingFace Hub. They're useful for:
+
+- Testing before deploying to HuggingFace
+- Offline development
+- CI/CD pipelines
+- Quick experiments
+
+## Create a Local Catalog
+
+```{python}
+#| label: setup
+#| include: false
+#| eval: true
+import tempfile
+import os
+os.chdir(tempfile.mkdtemp())
+os.makedirs("mycatalog", exist_ok=True)
+```
+
+```{python}
+#| label: create-local
+#| eval: true
+from faceberg import catalog
+
+# Create catalog in current directory
+cat = catalog("mycatalog")
+cat.init()
+
+# Add datasets
+cat.add_dataset("default.imdb", "stanfordnlp/imdb", config="plain_text")
+cat.add_dataset("default.gsm8k", "openai/gsm8k", config="main")
+
+# List tables
+tables = cat.list_tables("default")
+print(f"Tables: {[str(t) for t in tables]}")
+```
+
+## CLI Usage
+
+The same CLI commands work for local catalogs:
+
+```bash
+# Initialize
+faceberg ./mycatalog init
+
+# Add datasets
+faceberg ./mycatalog add default.imdb stanfordnlp/imdb --config plain_text
+
+# List tables
+faceberg ./mycatalog list
+
+# Scan data
+faceberg ./mycatalog scan default.imdb --limit 5
+```
+
+## Catalog Directory Structure
+
+After adding datasets, your catalog looks like this:
+
+```
+mycatalog/
+├── faceberg.yml           # Catalog configuration
+└── default/               # Namespace
+    ├── imdb/
+    │   └── metadata/
+    │       ├── v1.metadata.json    # Iceberg table metadata
+    │       ├── snap-*.avro         # Manifest list (snapshot)
+    │       ├── *.avro              # Manifest files
+    │       └── version-hint.text   # Current version pointer
+    └── gsm8k/
+        └── metadata/
+            └── ...
+```
+
+### faceberg.yml
+
+The configuration file tracks dataset mappings:
+
+```{python}
+#| label: show-config
+#| eval: true
+from pathlib import Path
+
+config_path = Path("mycatalog/faceberg.yml")
+print(config_path.read_text())
+```
+
+### Metadata Files
+
+Each table's `metadata/` directory contains:
+
+| File | Purpose |
+|------|---------|
+| `v1.metadata.json` | Main Iceberg table metadata (schema, partitions, snapshots) |
+| `snap-*.avro` | Manifest list pointing to manifest files |
+| `*.avro` | Manifest files with data file references |
+| `version-hint.text` | Current metadata version for quick lookups |
+
+## Serve via REST API
+
+Expose your local catalog via REST for testing:
+
+```bash
+# Start server on default port (8181)
+faceberg ./mycatalog serve
+
+# Custom port
+faceberg ./mycatalog serve --port 9000
+
+# Development mode with auto-reload
+faceberg ./mycatalog serve --reload
+```
+
+The server provides:
+
+- REST catalog at `http://localhost:8181`
+- API docs at `http://localhost:8181/schema/swagger`
+
+### Connect from Another Process
+
+```python
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Attach local REST catalog
+conn.execute("""
+    ATTACH 'http://localhost:8181' AS cat (
+        TYPE ICEBERG,
+        AUTHORIZATION_TYPE 'none'
+    )
+""")
+
+result = conn.execute("SELECT * FROM cat.default.imdb LIMIT 5").fetchdf()
+```
+
+## Interactive DuckDB Shell
+
+The `quack` command opens DuckDB with the catalog pre-attached:
+
+```bash
+# Start REST server first (in another terminal)
+faceberg ./mycatalog serve
+
+# Open interactive shell
+faceberg ./mycatalog quack
+```
+
+Then run SQL:
+
+```sql
+SHOW ALL TABLES;
+SELECT * FROM iceberg_catalog.default.imdb LIMIT 5;
+```
+
+## Query Without REST Server
+
+You can also query directly using the metadata file path:
+
+```{python}
+#| label: direct-query
+#| eval: true
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Query using direct metadata path
+result = conn.execute("""
+    SELECT label, substr(text, 1, 80) as preview
+    FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
+    LIMIT 3
+""").fetchdf()
+
+print(result)
+```
+
+## Testing Pattern
+
+For tests, create isolated catalogs in temporary directories:
+
+```{python}
+#| label: testing-pattern
+#| eval: true
+import tempfile
+from pathlib import Path
+from faceberg import LocalCatalog
+
+# Create temp directory for test
+with tempfile.TemporaryDirectory() as tmpdir:
+    catalog_path = Path(tmpdir) / "test_catalog"
+    catalog_path.mkdir()
+
+    cat = LocalCatalog(
+        name="test",
+        uri=f"file://{catalog_path}"
+    )
+    cat.init()
+    cat.add_dataset("default.imdb", "stanfordnlp/imdb", config="plain_text")
+
+    # Run tests...
+    table = cat.load_table("default.imdb")
+    df = table.scan(limit=1).to_pandas()
+    assert len(df) == 1
+    print("Test passed!")
+```
+
+## Next Steps
+
+- [Home](index.qmd) — Deploy to HuggingFace Hub
+- [DuckDB Integration](integrations/duckdb.qmd) — Query with SQL
+- [Pandas Integration](integrations/pandas.qmd) — Work with DataFrames

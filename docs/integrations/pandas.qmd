@@ -1,0 +1,202 @@
+---
+title: "Pandas"
+description: "Load Faceberg tables into Pandas DataFrames"
+---
+
+PyIceberg provides native Pandas integration for loading Iceberg tables into DataFrames.
+
+## Setup
+
+```{python}
+#| label: setup
+#| include: false
+#| eval: true
+import tempfile
+import os
+os.chdir(tempfile.mkdtemp())
+os.makedirs("mycatalog", exist_ok=True)
+
+from faceberg import catalog
+cat = catalog("mycatalog")
+cat.init()
+cat.add_dataset("default.imdb", "stanfordnlp/imdb", config="plain_text")
+```
+
+## Load Table to DataFrame
+
+```{python}
+#| label: basic-load
+#| eval: true
+from faceberg import catalog
+
+cat = catalog("./mycatalog")
+table = cat.load_table("default.imdb")
+
+# Load entire table (be careful with large datasets!)
+# df = table.scan().to_pandas()
+
+# Load with limit
+df = table.scan(limit=100).to_pandas()
+print(f"Shape: {df.shape}")
+print(f"Columns: {list(df.columns)}")
+```
+
+## Select Columns
+
+Only load the columns you need:
+
+```{python}
+#| label: select-columns
+#| eval: true
+from faceberg import catalog
+
+cat = catalog("./mycatalog")
+table = cat.load_table("default.imdb")
+
+# Select specific columns
+df = table.scan(limit=10).select("label", "text").to_pandas()
+print(df.head())
+```
+
+## Filter Rows
+
+Filter data before loading into memory:
+
+```{python}
+#| label: filter-rows
+#| eval: true
+from faceberg import catalog
+from pyiceberg.expressions import EqualTo
+
+cat = catalog("./mycatalog")
+table = cat.load_table("default.imdb")
+
+# Filter by split (partition pruning)
+df = table.scan(
+    row_filter=EqualTo("split", "test"),
+    limit=10
+).to_pandas()
+
+print(f"Split values: {df['split'].unique()}")
+print(f"Rows: {len(df)}")
+```
+
+## Table Schema
+
+Inspect the table schema:
+
+```{python}
+#| label: schema
+#| eval: true
+from faceberg import catalog
+
+cat = catalog("./mycatalog")
+table = cat.load_table("default.imdb")
+
+# View schema
+print("Schema:")
+for field in table.schema().fields:
+    print(f"  {field.name}: {field.field_type}")
+```
+
+## Table Statistics
+
+Get table metadata without loading data:
+
+```{python}
+#| label: stats
+#| eval: true
+from faceberg import catalog
+
+cat = catalog("./mycatalog")
+table = cat.load_table("default.imdb")
+
+# Current snapshot
+snapshot = table.current_snapshot()
+if snapshot:
+    print(f"Snapshot ID: {snapshot.snapshot_id}")
+
+    # Summary statistics
+    summary = snapshot.summary
+    if summary:
+        print(f"Total records: {summary.get('total-records', 'N/A')}")
+        print(f"Total files: {summary.get('total-data-files', 'N/A')}")
+```
+
+## Working with Large Datasets
+
+For large datasets, process in batches:
+
+```{python}
+#| label: batches
+#| eval: true
+from faceberg import catalog
+
+cat = catalog("./mycatalog")
+table = cat.load_table("default.imdb")
+
+# Process in batches using Arrow
+scan = table.scan(limit=100)
+
+# Get as Arrow table (more memory efficient)
+arrow_table = scan.to_arrow()
+print(f"Arrow table: {arrow_table.num_rows} rows, {arrow_table.num_columns} columns")
+
+# Convert to Pandas when needed
+df = arrow_table.to_pandas()
+```
+
+## Data Analysis Example
+
+```{python}
+#| label: analysis
+#| eval: true
+from faceberg import catalog
+
+cat = catalog("./mycatalog")
+table = cat.load_table("default.imdb")
+
+df = table.scan(limit=1000).to_pandas()
+
+# Basic analysis
+print("Label distribution:")
+print(df['label'].value_counts())
+
+print("\nText length statistics:")
+df['text_length'] = df['text'].str.len()
+print(df.groupby('label')['text_length'].describe())
+```
+
+## Memory Considerations
+
+| Method | Use Case |
+|--------|----------|
+| `scan(limit=N).to_pandas()` | Exploration, sampling |
+| `scan().select("col1", "col2").to_pandas()` | Need subset of columns |
+| `scan(row_filter=...).to_pandas()` | Need subset of rows |
+| `scan().to_arrow()` | Memory-efficient processing |
+
+For large datasets:
+
+1. **Filter first** — Use `row_filter` to reduce data before loading
+2. **Select columns** — Only load needed columns with `select()`
+3. **Use Arrow** — Process with `to_arrow()` for better memory efficiency
+4. **Stream batches** — Process in chunks for very large data
+
+## Remote Catalogs
+
+For catalogs on HuggingFace:
+
+```python
+import os
+from faceberg import catalog
+
+cat = catalog("user/mycatalog", hf_token=os.environ.get("HF_TOKEN"))
+table = cat.load_table("default.imdb")
+df = table.scan(limit=100).to_pandas()
+```
+
+## Next Steps
+
+- [DuckDB Integration](duckdb.qmd) — SQL queries
+- [Architecture](../design.qmd) — How Faceberg works

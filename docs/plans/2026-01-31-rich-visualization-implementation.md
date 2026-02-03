@@ -988,10 +988,10 @@ def sync_dataset(
         progress_callback(40)
 
     # Get old revision from table properties (required)
-    old_revision = table.metadata.properties.get("huggingface.dataset.revision")
+    old_revision = table.metadata.properties.get("hf.dataset.revision")
     if not old_revision:
         raise ValueError(
-            f"Table {'.'.join(identifier)} missing 'huggingface.dataset.revision' property. "
+            f"Table {'.'.join(identifier)} missing 'hf.dataset.revision' property. "
             "This table was created before revision tracking was implemented. "
             "Please recreate the table to enable incremental sync."
         )

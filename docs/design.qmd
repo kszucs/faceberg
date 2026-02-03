@@ -1,0 +1,179 @@
+---
+title: "Architecture"
+description: "How Faceberg maps HuggingFace datasets to Iceberg tables"
+---
+
+Faceberg creates Iceberg metadata that references existing HuggingFace dataset files. No data is copied — only lightweight metadata is generated.
+
+## Core Concept
+
+```{mermaid}
+flowchart TB
+    subgraph HF["HuggingFace Hub"]
+        subgraph DS["HF Datasets"]
+            D1["stanfordnlp/imdb<br/>*.parquet"]
+            D2["openai/gsm8k<br/>*.parquet"]
+        end
+        subgraph SP["HF Spaces (Your Catalog)"]
+            M1["Iceberg Metadata"]
+            REST["REST API Server"]
+            CFG["faceberg.yml"]
+        end
+        M1 -->|"references via hf://"| D1
+        M1 -->|"references via hf://"| D2
+    end
+
+    REST -->|"Iceberg REST Protocol"| QE
+
+    subgraph QE["Query Engines"]
+        DDB["DuckDB"]
+        PD["Pandas"]
+        SPK["Spark"]
+    end
+```
+
+## Key Design Principles
+
+### Zero Data Copying
+
+Original Parquet files stay on HuggingFace. Iceberg manifest files reference them using `hf://` URIs:
+
+```
+hf://datasets/stanfordnlp/imdb/plain_text/train-00000-of-00001.parquet
+```
+
+### Everything on HuggingFace
+
+Both your data sources (HF Datasets) and your catalog (HF Spaces) live on HuggingFace:
+
+| Component | Location |
+|-----------|----------|
+| Original data | HuggingFace Datasets |
+| Iceberg metadata | HuggingFace Spaces |
+| REST API | Auto-deployed Space |
+
+### Standard Iceberg Protocol
+
+The Space deploys an Iceberg REST catalog server. Any compatible tool can connect:
+
+- DuckDB with `ATTACH ... (TYPE ICEBERG)`
+- PyIceberg `RestCatalog`
+- Spark with Iceberg REST catalog
+- Trino, Flink, etc.
+
+## Data Flow
+
+```{mermaid}
+sequenceDiagram
+    participant User
+    participant CLI as Faceberg CLI
+    participant HFD as HuggingFace Dataset
+    participant HFS as HuggingFace Space
+    participant QE as Query Engine
+
+    User->>CLI: faceberg add default.imdb stanfordnlp/imdb
+    CLI->>HFD: Discover dataset metadata
+    HFD-->>CLI: Schema, file locations, row counts
+    CLI->>CLI: Generate Iceberg metadata
+    CLI->>HFS: Upload metadata files
+
+    User->>QE: Query catalog
+    QE->>HFS: GET /v1/namespaces/default/tables/imdb
+    HFS-->>QE: Table metadata with hf:// file URIs
+    QE->>HFD: Read Parquet files
+    HFD-->>QE: Data
+```
+
+## Metadata Structure
+
+### Table Metadata (`v1.metadata.json`)
+
+Contains:
+
+- Table schema with field IDs
+- Partition specification (by split: train/test/validation)
+- Snapshot history
+- Reference to manifest list
+
+### Manifest List (`snap-*.avro`)
+
+Points to manifest files for each snapshot.
+
+### Manifest Files (`*.avro`)
+
+List data files with:
+
+- File path (`hf://datasets/...`)
+- File size
+- Row count
+- Partition values (split name)
+- Column statistics (optional)
+
+## Partitioning
+
+Tables are partitioned by the `split` field:
+
+```python
+# Example partition spec
+PartitionSpec(
+    PartitionField(
+        source_id=1,       # split field ID
+        field_id=1000,
+        transform=IdentityTransform(),
+        name="split",
+    )
+)
+```
+
+This enables efficient queries:
+
+```sql
+-- Only reads train partition
+SELECT * FROM imdb WHERE split = 'train'
+```
+
+## File References
+
+Manifest files contain `hf://` URIs that query engines resolve:
+
+```json
+{
+  "data_file": {
+    "file_path": "hf://datasets/stanfordnlp/imdb@abc123/plain_text/train-00000.parquet",
+    "file_size_in_bytes": 12345678,
+    "record_count": 25000
+  }
+}
+```
+
+The revision (`@abc123`) ensures reproducibility.
+
+## Catalog Configuration
+
+The `faceberg.yml` file tracks dataset mappings:
+
+```yaml
+default:
+  imdb:
+    repo: stanfordnlp/imdb
+    config: plain_text
+  gsm8k:
+    repo: openai/gsm8k
+    config: main
+```
+
+## REST API Endpoints
+
+The Space exposes standard Iceberg REST endpoints:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /v1/config` | Catalog configuration |
+| `GET /v1/namespaces` | List namespaces |
+| `GET /v1/namespaces/{ns}/tables` | List tables |
+| `GET /v1/namespaces/{ns}/tables/{table}` | Load table metadata |
+| `POST /v1/namespaces/{ns}/tables/{table}` | Create table |
+
+## Technical Details
+
+For implementation details, see [ARCHITECTURE.md](https://github.com/kszucs/faceberg/blob/main/ARCHITECTURE.md) in the repository.

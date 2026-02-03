@@ -19,9 +19,6 @@ from rich.console import Console
 console = Console()
 
 
-# TODO(kszucs): rename it to shell.py, maybe other shells could be supported like clickhouse
-
-
 def quack(endpoint, catalog_name="iceberg_catalog"):
     """Open interactive DuckDB shell with REST catalog attached.
 

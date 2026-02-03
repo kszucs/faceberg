@@ -1,0 +1,52 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - "*.qmd"
+    - "integrations/*.qmd"
+
+website:
+  title: "Faceberg"
+  description: "Bridge HuggingFace datasets with Apache Iceberg tables"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: local.qmd
+        text: Local Catalogs
+      - href: design.qmd
+        text: Architecture
+      - text: Integrations
+        menu:
+          - href: integrations/duckdb.qmd
+            text: DuckDB
+          - href: integrations/pandas.qmd
+            text: Pandas
+    right:
+      - icon: github
+        href: https://github.com/kszucs/faceberg
+
+  sidebar:
+    - title: "Getting Started"
+      contents:
+        - index.qmd
+        - local.qmd
+    - title: "Reference"
+      contents:
+        - design.qmd
+    - title: "Integrations"
+      contents:
+        - integrations/duckdb.qmd
+        - integrations/pandas.qmd
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-copy: true
+    code-overflow: wrap
+
+execute:
+  enabled: true
+  cache: true
+  freeze: auto

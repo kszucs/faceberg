@@ -219,3 +219,13 @@ testing/
 
 # Git worktrees
 .worktrees/
+
+# Quarto generated files
+docs/_freeze/
+docs/_site/
+
+# Jupyter Cache
+.jupyter_cache
+
+# MacOS files
+.DS_Store

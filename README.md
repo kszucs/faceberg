@@ -25,7 +25,7 @@ faceberg mycatalog scan default.imdb --limit 5
 **Python API:**
 
 ```python
-from faceberg.catalog import catalog
+from faceberg import catalog
 
 cat = catalog("mycatalog")
 table = cat.load_table("default.imdb")
@@ -33,9 +33,11 @@ df = table.scan().to_pandas()
 print(df.head())
 ```
 
-**Detailed guides:**
-- [Local Catalog Quickstart](QUICKSTART_LOCAL.md) - Step-by-step guide for local catalogs
-- [Remote Catalog Quickstart](QUICKSTART_REMOTE.md) - Step-by-step guide for HuggingFace Hub catalogs
+**Documentation:**
+- [Getting Started](docs/index.qmd) - Quickstart guide
+- [Local Catalogs](docs/local.qmd) - Use local catalogs for testing
+- [DuckDB Integration](docs/integrations/duckdb.qmd) - Query with SQL
+- [Pandas Integration](docs/integrations/pandas.qmd) - Load into DataFrames
 
 ## How It Works
 

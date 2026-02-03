@@ -389,7 +389,7 @@ def quack(ctx, endpoint):
         faceberg /tmp/catalog quack --endpoint http://localhost:9000
     """
     try:
-        from faceberg.interactive import quack as quack_fn
+        from faceberg.shell import quack as quack_fn
 
         # Auto-detect endpoint if not specified
         if endpoint is None:

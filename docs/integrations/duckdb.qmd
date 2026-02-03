@@ -1,0 +1,233 @@
+---
+title: "DuckDB"
+description: "Query Faceberg catalogs with DuckDB"
+---
+
+DuckDB's native Iceberg support makes it easy to query Faceberg catalogs using SQL.
+
+## Setup
+
+```{python}
+#| label: setup
+#| include: false
+#| eval: true
+import tempfile
+import os
+os.chdir(tempfile.mkdtemp())
+os.makedirs("mycatalog", exist_ok=True)
+
+from faceberg import catalog
+cat = catalog("mycatalog")
+cat.init()
+cat.add_dataset("default.imdb", "stanfordnlp/imdb", config="plain_text")
+```
+
+Install DuckDB with Iceberg support:
+
+```bash
+pip install duckdb
+```
+
+## Method 1: Interactive Shell with `quack`
+
+The easiest way to query is using the `quack` command:
+
+```bash
+# Start REST server (in one terminal)
+faceberg mycatalog serve
+
+# Open DuckDB shell with catalog attached (in another terminal)
+faceberg mycatalog quack
+```
+
+Then run SQL directly:
+
+```sql
+-- List all tables
+SHOW ALL TABLES;
+
+-- Query data
+SELECT label, substr(text, 1, 100) as preview
+FROM iceberg_catalog.default.imdb
+LIMIT 10;
+
+-- Aggregate queries
+SELECT label, COUNT(*) as count
+FROM iceberg_catalog.default.imdb
+GROUP BY label;
+
+-- Exit
+.quit
+```
+
+## Method 2: Direct Metadata Query
+
+Query Iceberg tables directly using `iceberg_scan()`:
+
+```{python}
+#| label: direct-scan
+#| eval: true
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Query using metadata file path
+result = conn.execute("""
+    SELECT label, substr(text, 1, 80) as preview
+    FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
+    LIMIT 5
+""").fetchdf()
+
+print(result)
+```
+
+## Method 3: REST Catalog Attachment
+
+Attach a REST catalog for a more integrated experience:
+
+```python
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Attach REST catalog (server must be running)
+conn.execute("""
+    ATTACH 'http://localhost:8181' AS cat (
+        TYPE ICEBERG,
+        AUTHORIZATION_TYPE 'none'
+    )
+""")
+
+# Query with standard SQL
+result = conn.execute("""
+    SELECT * FROM cat.default.imdb LIMIT 10
+""").fetchdf()
+```
+
+For remote catalogs on HuggingFace:
+
+```python
+conn.execute("""
+    ATTACH 'https://user-mycatalog.hf.space' AS cat (TYPE ICEBERG)
+""")
+```
+
+## Filtering by Split
+
+Tables are partitioned by split (train/test/validation). Filter efficiently:
+
+```{python}
+#| label: filter-split
+#| eval: true
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Only reads the test partition
+result = conn.execute("""
+    SELECT split, COUNT(*) as count
+    FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
+    GROUP BY split
+""").fetchdf()
+
+print(result)
+```
+
+## Analytics Queries
+
+```{python}
+#| label: analytics
+#| eval: true
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Label distribution
+result = conn.execute("""
+    SELECT
+        label,
+        COUNT(*) as count,
+        ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) as percentage
+    FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
+    GROUP BY label
+    ORDER BY count DESC
+""").fetchdf()
+
+print(result)
+```
+
+## Working with Text Data
+
+```{python}
+#| label: text-analysis
+#| eval: true
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Text length analysis
+result = conn.execute("""
+    SELECT
+        label,
+        AVG(LENGTH(text)) as avg_length,
+        MIN(LENGTH(text)) as min_length,
+        MAX(LENGTH(text)) as max_length
+    FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
+    GROUP BY label
+""").fetchdf()
+
+print(result)
+```
+
+## Export Results
+
+Export query results to various formats:
+
+```python
+import duckdb
+
+conn = duckdb.connect()
+conn.execute("INSTALL iceberg; LOAD iceberg")
+
+# Export to Parquet
+conn.execute("""
+    COPY (
+        SELECT * FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
+        WHERE split = 'test'
+    ) TO 'test_data.parquet' (FORMAT PARQUET)
+""")
+
+# Export to CSV
+conn.execute("""
+    COPY (
+        SELECT label, substr(text, 1, 200) as text
+        FROM iceberg_scan('mycatalog/default/imdb/metadata/v1.metadata.json')
+        LIMIT 1000
+    ) TO 'sample.csv' (FORMAT CSV, HEADER)
+""")
+```
+
+## Performance Tips
+
+1. **Filter by split** — Partition pruning skips unnecessary files
+2. **Project columns** — Select only needed columns
+3. **Use LIMIT** — For exploration, limit results
+4. **Aggregate pushdown** — DuckDB pushes aggregations to Parquet
+
+```sql
+-- Efficient: only reads needed partitions and columns
+SELECT label, COUNT(*)
+FROM iceberg_scan('...')
+WHERE split = 'train'
+GROUP BY label;
+```
+
+## Next Steps
+
+- [Pandas Integration](pandas.qmd) — Load into DataFrames
+- [Local Catalogs](../local.qmd) — Test locally
