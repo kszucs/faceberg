@@ -39,7 +39,7 @@ LIMIT 10;
 ```
 HuggingFace Hub
 ┌─────────────────────────────────────────────────────────┐
-│                                                          │
+│                                                         │
 │  ┌─────────────────────┐    ┌─────────────────────────┐ │
 │  │  HF Datasets        │    │  HF Spaces (Catalog)    │ │
 │  │  (Original Parquet) │◄───│  • Iceberg metadata     │ │
@@ -86,10 +86,12 @@ result = conn.execute("SELECT * FROM cat.stanfordnlp.imdb LIMIT 5").fetchdf()
 
 ## Documentation
 
-- [Getting Started](docs/index.qmd) — Full quickstart guide
-- [Local Catalogs](docs/local.qmd) — Use local catalogs for development
-- [DuckDB Integration](docs/integrations/duckdb.qmd) — Advanced SQL queries
-- [Pandas Integration](docs/integrations/pandas.qmd) — Load into DataFrames
+**[Read the docs →](https://kszucs.github.io/faceberg/)**
+
+- [Getting Started](https://kszucs.github.io/faceberg/) — Full quickstart guide
+- [Local Catalogs](https://kszucs.github.io/faceberg/local.html) — Use local catalogs for development
+- [DuckDB Integration](https://kszucs.github.io/faceberg/integrations/duckdb.html) — Advanced SQL queries
+- [Pandas Integration](https://kszucs.github.io/faceberg/integrations/pandas.html) — Load into DataFrames
 
 ## Development
 
