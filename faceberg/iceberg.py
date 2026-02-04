@@ -365,6 +365,7 @@ def write_snapshot(
     base_uri: str,
     properties: Optional[Dict[str, str]] = None,
     partition_spec: Optional[PartitionSpec] = None,
+    io: Optional[FileIO] = None,
 ) -> TableMetadataV2:
     """Write new snapshot metadata.
 
@@ -382,13 +383,14 @@ def write_snapshot(
         base_uri: Base URI for paths in metadata
         properties: Table properties
         partition_spec: Optional partition spec (default: unpartitioned)
+        io: Optional FileIO instance (default: PyArrowFileIO)
 
     Returns:
         Updated TableMetadataV2
     """
     properties = properties or {}
     partition_spec = partition_spec or UNPARTITIONED_PARTITION_SPEC
-    io = PyArrowFileIO()
+    io = io or PyArrowFileIO()
 
     # Ensure metadata directory exists
     metadata_dir = output_dir / "metadata"

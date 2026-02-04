@@ -54,7 +54,7 @@ def parquet_files(tmp_path, arrow_schema):
         files.append(ParquetFile(
             uri=str(path),
             size=path.stat().st_size,
-            hash=compute_file_hash(path),
+            blob_id=compute_file_hash(path),
         ))
 
     return files
@@ -83,7 +83,7 @@ def make_extra_files(tmp_path, arrow_schema, count=2, start_index=5):
         files.append(ParquetFile(
             uri=str(path),
             size=path.stat().st_size,
-            hash=compute_file_hash(path),
+            blob_id=compute_file_hash(path),
         ))
 
     return files
@@ -275,7 +275,7 @@ class TestOverwriteSnapshot:
         replacement_file = ParquetFile(
             uri=str(replacement_path),
             size=replacement_path.stat().st_size,
-            hash=compute_file_hash(replacement_path),
+            blob_id=compute_file_hash(replacement_path),
         )
 
         # Overwrite: replace first file with replacement
@@ -332,7 +332,7 @@ class TestRenameFile:
         new_file = ParquetFile(
             uri=str(new_path),
             size=new_path.stat().st_size,
-            hash=compute_file_hash(new_path),
+            blob_id=compute_file_hash(new_path),
         )
 
         # Create overwrite snapshot with renamed file
@@ -532,7 +532,7 @@ class TestDiffSnapshotFiles:
         modified_file = ParquetFile(
             uri=str(first_file_path),
             size=first_file_path.stat().st_size,
-            hash=compute_file_hash(first_file_path),
+            blob_id=compute_file_hash(first_file_path),
         )
 
         current_files = [modified_file] + parquet_files[1:]

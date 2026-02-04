@@ -115,7 +115,7 @@ def test_discover_dataset_basic():
     mock_sibling = MagicMock()
     mock_sibling.rfilename = "data/train-00000.parquet"
     mock_sibling.size = 1024
-    mock_sibling.oid = "blob123"
+    mock_sibling.blob_id = "blob123"
 
     mock_dataset_info = MagicMock()
     mock_dataset_info.siblings = [mock_sibling]

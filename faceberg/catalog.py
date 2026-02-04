@@ -4,7 +4,6 @@ import logging
 import os
 import shutil
 import tempfile
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Set, Union
@@ -34,8 +33,8 @@ from pyiceberg.typedef import EMPTY_DICT, Properties
 from uuid_utils import uuid7
 
 from . import config as cfg
-from .bridge import DatasetInfo
-from .convert import IcebergMetadataWriter
+from .discover import discover_dataset
+from .iceberg import write_snapshot
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -956,72 +955,85 @@ class BaseCatalog(Catalog):
                 identifier, state="in_progress", percent=0, stage="Discovering dataset"
             )
 
-        dataset_info = DatasetInfo.discover(
+        dataset_info = discover_dataset(
             repo_id=repo,
             config=config,
             token=self._hf_token,
         )
 
-        # Convert to TableInfo
+        # Prepare schema with split column
         if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=0, stage="Converting schema")
+            progress_callback(identifier, state="in_progress", percent=10, stage="Converting schema")
 
-        # TODO(kszucs): support nested namespace, pass identifier to to_table_info
-        namespace, table_name = identifier
-        table_info = dataset_info.to_table_info(
-            namespace=namespace,
-            table_name=table_name,
+        # Use the dataset's actual schema without adding virtual columns
+        # The split information is already captured in ParquetFile.split metadata
+        import pyarrow as pa
+        from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC
+
+        arrow_schema = dataset_info.features.arrow_schema
+
+        # Don't partition by split since it's not in the actual Parquet files
+        # Split information is preserved in file metadata
+        partition_spec = UNPARTITIONED_PARTITION_SPEC
+
+        # Build table properties
+        data_path = (
+            f"hf://datasets/{repo}/{dataset_info.data_dir}"
+            if dataset_info.data_dir
+            else f"hf://datasets/{repo}"
         )
 
-        # Create the table with full metadata in staging context
+        properties = {
+            "format-version": "2",
+            "write.parquet.compression-codec": "snappy",
+            "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
+            "write.data.path": data_path,
+            "hf.dataset.repo": repo,
+            "hf.dataset.config": config,
+            "hf.dataset.revision": dataset_info.revision,
+            "hf.write.pattern": "{split}-{uuid}-iceberg.parquet",
+            "hf.write.split": "train",
+        }
+
+        # Write Iceberg metadata
         if progress_callback:
             progress_callback(
-                identifier, state="in_progress", percent=0, stage="Writing Iceberg metadata"
+                identifier, state="in_progress", percent=20, stage="Writing Iceberg metadata"
             )
 
         with self._staging() as staging:
-            # Define table directory in the staging area
-            # Note: IcebergMetadataWriter will create the metadata subdirectory
-            table_dir = staging / identifier.path
-            table_dir.mkdir(parents=True, exist_ok=True)
-
             # Create table URI for metadata
             table_uri = self.uri / identifier.path
 
-            # Create metadata writer
-            metadata_writer = IcebergMetadataWriter(
-                table_path=table_dir,
-                schema=table_info.schema,
-                partition_spec=table_info.partition_spec,
-                base_uri=table_uri,
+            # Load FileIO with HuggingFace support
+            io = self._load_file_io(location=str(table_uri))
+
+            # Write snapshot metadata
+            write_snapshot(
+                files=dataset_info.files,
+                schema=arrow_schema,
+                current_metadata=None,
+                output_dir=staging / identifier.path,
+                base_uri=str(table_uri),
+                properties=properties,
+                partition_spec=partition_spec,
+                io=io,
             )
 
-            # Generate table UUID
-            table_uuid = str(uuid.uuid4())
-
-            # Write Iceberg metadata files (manifest, manifest list, table metadata)
-            metadata_writer.create_metadata_from_files(
-                file_infos=table_info.data_files,
-                table_uuid=table_uuid,
-                properties=table_info.get_table_properties(),
-                progress_callback=progress_callback,
-                identifier=identifier,
-            )
-
-            # TODO(kszucs): metadata writer should return with the affected file paths
-            # Record all created files in the table directory
+            # Record all created files in the table metadata directory
             if progress_callback:
                 progress_callback(identifier, state="in_progress", percent=90, stage="Finalizing")
 
-            for path in table_dir.rglob("*"):
+            metadata_dir = staging / identifier.path / "metadata"
+            for path in metadata_dir.rglob("*"):
                 if path.is_file():
                     staging.add(path.relative_to(staging.path))
 
             # Register table in config if not already there
             if identifier not in catalog_config:
                 catalog_config[identifier] = cfg.Dataset(
-                    repo=table_info.dataset_repo,
-                    config=table_info.dataset_config,
+                    repo=repo,
+                    config=config,
                 )
                 # Save config since we added a dataset table
                 catalog_config.to_yaml(staging / "faceberg.yml")
@@ -1109,16 +1121,17 @@ class BaseCatalog(Catalog):
                 "Please recreate the table to enable incremental sync."
             )
 
-        # Discover dataset at current revision with only new files since old_revision
-        dataset_info = DatasetInfo.discover(
+        # Discover dataset at current revision
+        # Note: The new discover_dataset() doesn't support since_revision filtering yet
+        # So we discover all files and write_snapshot() will handle the diff
+        dataset_info = discover_dataset(
             repo_id=table_entry.repo,
             config=table_entry.config,
             token=self._hf_token,
-            since_revision=old_revision,
         )
 
-        # Check if already up to date (no new files)
-        if not dataset_info.data_files:
+        # Check if already up to date (same revision)
+        if dataset_info.revision == old_revision:
             logger.info(f"Table {identifier} already at revision {old_revision}")
             if progress_callback:
                 progress_callback(
@@ -1126,43 +1139,51 @@ class BaseCatalog(Catalog):
                 )
             return table
 
-        # Convert to TableInfo with only new files
-        # TODO(kszucs): support nested namespace, pass identifier to to_table_info
-        table_info = dataset_info.to_table_info(
-            namespace=identifier[0],
-            table_name=identifier[1],
+        # Use existing table schema - don't modify it
+        # The schema was already set correctly when the table was created
+
+        # Build updated properties
+        data_path = (
+            f"hf://datasets/{table_entry.repo}/{dataset_info.data_dir}"
+            if dataset_info.data_dir
+            else f"hf://datasets/{table_entry.repo}"
         )
 
-        # If no new files, table is already up to date
-        if not table_info.data_files:
-            logger.info(f"No new files for {identifier}")
-            return table
+        properties = {
+            "format-version": "2",
+            "write.parquet.compression-codec": "snappy",
+            "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
+            "write.data.path": data_path,
+            "hf.dataset.repo": table_entry.repo,
+            "hf.dataset.config": table_entry.config,
+            "hf.dataset.revision": dataset_info.revision,
+            "hf.write.pattern": "{split}-{uuid}-iceberg.parquet",
+            "hf.write.split": "train",
+        }
 
-        # Append new snapshot with only new files
+        # Append new snapshot with all files (write_snapshot will handle diffing)
         with self._staging() as staging:
-            # Create local metadata directory
-            metadata_dir = staging / identifier.path / "metadata"
-            metadata_dir.mkdir(parents=True, exist_ok=True)
-
             # Create table URI for metadata
-            table_uri = self.uri / identifier.path.path
+            table_uri = self.uri / identifier.path
 
-            # Create metadata writer
-            metadata_writer = IcebergMetadataWriter(
-                table_path=metadata_dir,
-                schema=table_info.schema,
-                partition_spec=table_info.partition_spec,
-                base_uri=table_uri,
-            )
+            # Load FileIO with HuggingFace support
+            io = self._load_file_io(location=str(table_uri))
 
-            # Append new snapshot with updated files
-            metadata_writer.append_snapshot_from_files(
-                file_infos=table_info.data_files,
+            # Write new snapshot (will diff against current_metadata)
+            # Schema parameter is ignored when current_metadata exists - it uses current_metadata.schema()
+            write_snapshot(
+                files=dataset_info.files,
+                schema=dataset_info.features.arrow_schema,  # Only used if creating new table
                 current_metadata=table.metadata,
-                properties=table_info.get_table_properties(),
+                output_dir=staging / identifier.path,
+                base_uri=str(table_uri),
+                properties=properties,
+                partition_spec=table.metadata.spec(),
+                io=io,
             )
 
-            # Record all files in the table directory (including new manifest/metadata files)
+            # Record all files in the metadata directory (including new manifest/metadata files)
+            metadata_dir = staging / identifier.path / "metadata"
             for path in metadata_dir.rglob("*"):
                 if path.is_file():
                     staging.add(path.relative_to(staging.path))

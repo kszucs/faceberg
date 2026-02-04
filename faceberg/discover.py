@@ -152,7 +152,7 @@ def discover_dataset(
                     uri=uri,
                     path=metadata.rfilename,
                     size=metadata.size,
-                    blob_id=metadata.oid,
+                    blob_id=metadata.blob_id,
                     split=split,
                 )
             )
