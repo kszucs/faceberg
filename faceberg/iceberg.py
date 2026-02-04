@@ -89,12 +89,12 @@ ParquetFile: Dataclass representing a parquet file to include in snapshot
 """
 
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pyarrow as pa
 
+from faceberg.discover import ParquetFile
 from pyiceberg.io import FileIO
 from pyiceberg.io.pyarrow import PyArrowFileIO, parquet_file_to_data_file, _pyarrow_to_schema_without_ids
 from pyiceberg.manifest import (
@@ -120,15 +120,6 @@ from pyiceberg.table.snapshots import (
     update_snapshot_summaries,
 )
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
-
-
-@dataclass
-class ParquetFile:
-    """A parquet file to be added or removed from a snapshot."""
-
-    uri: str
-    size: int
-    hash: str
 
 
 def diff_snapshot(
@@ -187,15 +178,17 @@ def diff_snapshot(
             else:
                 # File changed: REMOVED (old) + ADDED (new)
                 # Create ParquetFile for old version
-                old_pf = ParquetFile(uri=pf.uri, size=prev_size, hash="")
+                old_pf = ParquetFile(uri=pf.uri, path=pf.path, size=prev_size, blob_id="", split=None)
                 result.append((ManifestEntryStatus.DELETED, old_pf))
                 result.append((ManifestEntryStatus.ADDED, pf))
 
     # Process removed files (in previous but not in current)
     for uri, size in previous_files_map.items():
         if uri not in current_files_map:
-            # File was removed
-            removed_pf = ParquetFile(uri=uri, size=size, hash="")
+            # File was removed - extract path from URI
+            # URI format: hf://datasets/repo@revision/path
+            path = uri.split("@", 1)[1].split("/", 1)[1] if "@" in uri else ""
+            removed_pf = ParquetFile(uri=uri, path=path, size=size, blob_id="", split=None)
             result.append((ManifestEntryStatus.DELETED, removed_pf))
 
     return result
