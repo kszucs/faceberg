@@ -11,12 +11,9 @@ import uuid
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-import pyarrow.parquet as pq
-from pyiceberg.io.pyarrow import PyArrowFileIO
+from pyiceberg.io.pyarrow import PyArrowFileIO, parquet_file_to_data_file
 from pyiceberg.manifest import (
     DataFile,
-    DataFileContent,
-    FileFormat,
     ManifestEntry,
     ManifestEntryStatus,
     ManifestFile,
@@ -45,6 +42,58 @@ class IcebergMetadataWriter:
 
     This writer creates Iceberg metadata (manifest, manifest list, table metadata)
     that references existing HuggingFace dataset files without copying or modifying them.
+
+    File Structure and Type Hierarchy:
+
+    Physical Files Created:
+        table/
+        └── metadata/
+            ├── v1.metadata.json          (TableMetadataV2)
+            ├── v2.metadata.json          (TableMetadataV2) - for subsequent snapshots
+            ├── version-hint.text         (current version number)
+            ├── snap-1-0-<uuid>.avro      (ManifestList)
+            ├── snap-2-1-<uuid>.avro      (ManifestList) - for subsequent snapshots
+            ├── <uuid>.avro               (Manifest file)
+            └── <uuid>.avro               (Manifest file) - one per snapshot
+
+    Type Hierarchy:
+        TableMetadataV2                   # Root metadata object
+        ├── schemas: List[Schema]         # Iceberg schema definitions
+        ├── partition_specs: List[PartitionSpec]
+        ├── snapshots: List[Snapshot]     # All table snapshots
+        │   └── Snapshot
+        │       ├── snapshot_id: int
+        │       ├── manifest_list: str    # → snap-X-Y-<uuid>.avro
+        │       └── summary: Summary      # Operation stats + HF metadata
+        └── refs: Dict[str, SnapshotRef]  # Branch references (e.g., "main")
+
+    ManifestList (snap-X-Y-<uuid>.avro)   # Written to manifest_list path
+    └── manifests: List[ManifestFile]     # References to manifest files
+        └── ManifestFile
+            ├── manifest_path: str        # → <uuid>.avro
+            ├── added_files_count: int
+            ├── added_rows_count: int
+            └── partition_spec_id: int
+
+    Manifest (<uuid>.avro)                # Written to manifest_path
+    └── entries: List[ManifestEntry]
+        └── ManifestEntry
+            ├── status: ManifestEntryStatus  # ADDED/EXISTING/DELETED
+            ├── snapshot_id: int
+            ├── sequence_number: int
+            └── data_file: DataFile       # ↓
+
+    DataFile                              # References actual data
+    ├── file_path: str                    # → hf://datasets/org/repo@rev/file.parquet
+    ├── file_format: FileFormat           # PARQUET
+    ├── partition: Dict[int, str]         # {0: "train"} for split partitioning
+    ├── record_count: int                 # Number of rows
+    ├── file_size_in_bytes: int
+    └── file_sequence_number: int         # Tracks when file was added
+
+    Note: DataFile objects reference external HuggingFace parquet files without
+    copying them. All metadata files use Iceberg's Avro format for manifests and
+    JSON for table metadata.
     """
 
     def __init__(
@@ -101,106 +150,125 @@ class IcebergMetadataWriter:
         """
         logger.info(f"Creating Iceberg metadata for {len(file_infos)} files")
 
-        # Step 1: Read file metadata from HuggingFace Hub
-        enriched_files = self._read_file_metadata(
-            file_infos, progress_callback=progress_callback, identifier=identifier
+        # Create preliminary TableMetadata (without snapshots) for parquet_file_to_data_file
+        preliminary_metadata = self._create_preliminary_metadata(table_uuid, properties or {})
+
+        # Create DataFile entries directly from FileInfo (reads parquet metadata)
+        data_files = self._create_data_files_from_info(
+            file_infos,
+            preliminary_metadata,
+            sequence_number=INITIAL_SEQUENCE_NUMBER,
+            progress_callback=progress_callback,
+            identifier=identifier,
         )
 
-        # Step 2: Create DataFile entries
-        data_files = self._create_data_files(enriched_files)
-
-        # Step 3: Write metadata files
+        # Write metadata files
         return self._write_metadata_files(data_files, table_uuid, properties or {})
 
-    def _read_file_metadata(
-        self,
-        file_infos: List[FileInfo],
-        progress_callback: Optional[Callable] = None,
-        identifier: Optional[str] = None,
-    ) -> List[FileInfo]:
-        """Read metadata from HuggingFace Hub files without downloading.
+    def _create_preliminary_metadata(
+        self, table_uuid: str, properties: Dict[str, str]
+    ) -> TableMetadataV2:
+        """Create preliminary TableMetadata without snapshots.
+
+        This is used by parquet_file_to_data_file to get schema and partition spec.
 
         Args:
-            file_infos: List of FileInfo objects (may have size/row_count = 0)
+            table_uuid: UUID for the table
+            properties: Table properties
+
+        Returns:
+            TableMetadataV2 object without snapshots
+        """
+        metadata = new_table_metadata(
+            schema=self.schema,
+            partition_spec=self.partition_spec,
+            sort_order=UNSORTED_SORT_ORDER,
+            location=self.base_uri,
+            properties=properties,
+            table_uuid=uuid.UUID(table_uuid),
+        )
+
+        # Update partition spec with correct field IDs if partitioned
+        if self.partition_spec != UNPARTITIONED_PARTITION_SPEC:
+            reassigned_schema = metadata.schema()
+            split_field = reassigned_schema.find_field("split")
+            if split_field:
+                partition_spec_with_correct_ids = PartitionSpec(
+                    PartitionField(
+                        source_id=split_field.field_id,
+                        field_id=1000,
+                        transform=IdentityTransform(),
+                        name="split",
+                    ),
+                    spec_id=0,
+                )
+                metadata = TableMetadataV2(  # type: ignore[call-arg]
+                    location=metadata.location,
+                    table_uuid=metadata.table_uuid,
+                    last_updated_ms=metadata.last_updated_ms,
+                    last_column_id=metadata.last_column_id,
+                    schemas=metadata.schemas,
+                    current_schema_id=metadata.current_schema_id,
+                    partition_specs=[partition_spec_with_correct_ids],
+                    default_spec_id=0,
+                    last_partition_id=1000,
+                    properties=metadata.properties,
+                    current_snapshot_id=None,
+                    snapshots=[],
+                    snapshot_log=[],
+                    metadata_log=[],
+                    sort_orders=metadata.sort_orders,
+                    default_sort_order_id=metadata.default_sort_order_id,
+                    refs={},
+                    format_version=2,
+                    last_sequence_number=INITIAL_SEQUENCE_NUMBER,
+                )
+
+        return metadata
+
+    def _create_data_files_from_info(
+        self,
+        file_infos: List[FileInfo],
+        table_metadata: TableMetadataV2,
+        sequence_number: int = INITIAL_SEQUENCE_NUMBER,
+        progress_callback: Optional[Callable] = None,
+        identifier: Optional[str] = None,
+    ) -> List[DataFile]:
+        """Create Iceberg DataFile entries directly from FileInfo objects.
+
+        This method uses pyiceberg's parquet_file_to_data_file to extract parquet
+        metadata and populate DataFile fields with proper statistics.
+
+        Args:
+            file_infos: List of FileInfo objects describing data files
+            table_metadata: TableMetadata for schema and partition spec
+            sequence_number: Current sequence number (default: 0 for initial snapshot)
             progress_callback: Optional callback for progress updates
             identifier: Optional table identifier for progress reporting
 
         Returns:
-            List of FileInfo objects with enriched metadata
+            List of Iceberg DataFile objects with metadata populated from parquet files
 
         Raises:
             Exception: If metadata cannot be read from any file
         """
-        enriched = []
+        data_files = []
         total_files = len(file_infos)
 
         for i, file_info in enumerate(file_infos):
-            # Read metadata directly from HF Hub without downloading the file
-            metadata = pq.read_metadata(file_info.uri)
-            row_count = metadata.num_rows
-
-            enriched.append(
-                FileInfo(
-                    uri=file_info.uri,
-                    split=file_info.split,
-                    size_bytes=file_info.size_bytes,
-                    row_count=row_count,
-                )
+            # Use pyiceberg's helper to create DataFile with extracted metadata
+            data_file = parquet_file_to_data_file(
+                io=self.file_io,
+                table_metadata=table_metadata,
+                file_path=file_info.uri,
             )
+
+            data_files.append(data_file)
 
             # Report progress after processing each file
             if progress_callback and identifier:
                 percent = 10 + int((i + 1) / total_files * 80)
                 progress_callback(identifier, state="in_progress", percent=percent)
-
-        return enriched
-
-    def _create_data_files(
-        self,
-        file_infos: List[FileInfo],
-        sequence_number: int = INITIAL_SEQUENCE_NUMBER,
-    ) -> List[DataFile]:
-        """Create Iceberg DataFile entries from file information.
-
-        Args:
-            file_infos: List of FileInfo objects with metadata
-            sequence_number: Current sequence number (default: 0 for initial snapshot)
-
-        Returns:
-            List of Iceberg DataFile objects
-        """
-        data_files = []
-
-        for file_info in file_infos:
-            # Build partition values based on the partition spec
-            # Partition dict maps from partition field position to the partition value
-            if self.partition_spec != UNPARTITIONED_PARTITION_SPEC and file_info.split:
-                # Use position 0 for the first (and only) partition field
-                # Convert split to string (it may be a NamedSplit object from HuggingFace)
-                partition = {0: str(file_info.split)}
-            else:
-                partition = {}
-
-            data_file = DataFile.from_args(
-                content=DataFileContent.DATA,
-                file_path=file_info.uri,
-                file_format=FileFormat.PARQUET,
-                partition=partition,
-                record_count=file_info.row_count,
-                file_size_in_bytes=file_info.size_bytes,
-                file_sequence_number=sequence_number,
-                column_sizes={},
-                value_counts={},
-                null_value_counts={},
-                nan_value_counts={},
-                lower_bounds={},
-                upper_bounds={},
-                key_metadata=None,
-                split_offsets=None,
-                equality_ids=None,
-                sort_order_id=None,
-            )
-            data_files.append(data_file)
 
         return data_files
 
@@ -523,15 +591,14 @@ class IcebergMetadataWriter:
         """
         logger.info(f"Appending snapshot with {len(file_infos)} files")
 
-        # Enrich file metadata
-        enriched_files = self._read_file_metadata(file_infos)
-
         # Calculate next IDs
         next_snapshot_id = max(snap.snapshot_id for snap in current_metadata.snapshots) + 1
         next_sequence_number = current_metadata.last_sequence_number + 1
 
-        # Create DataFile entries (all get new sequence number)
-        data_files = self._create_data_files(enriched_files, next_sequence_number)
+        # Create DataFile entries directly from FileInfo (reads parquet metadata)
+        data_files = self._create_data_files_from_info(
+            file_infos, current_metadata, next_sequence_number
+        )
 
         # Merge properties first (needed for snapshot summary)
         merged_properties = {**current_metadata.properties}

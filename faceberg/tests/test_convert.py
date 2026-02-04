@@ -420,3 +420,66 @@ class TestGetPreviousManifests:
 
         # Verify we called manifests() with file_io
         mock_snapshot.manifests.assert_called_once_with(metadata_writer.file_io)
+
+
+class TestCreateDataFilesFromInfo:
+    """Tests for the _create_data_files_from_info consolidated method."""
+
+    def test_consolidated_method_creates_data_files(self, metadata_writer, tmp_path):
+        """Test that _create_data_files_from_info consolidates metadata reading and DataFile creation."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from faceberg.bridge import FileInfo
+
+        # Create test parquet files matching the schema (id: string, value: int32)
+        file1 = tmp_path / "file1.parquet"
+        table1 = pa.table({
+            "id": pa.array(["a", "b", "c"], type=pa.string()),
+            "value": pa.array([1, 2, 3], type=pa.int32())
+        })
+        pq.write_table(table1, file1)
+
+        file2 = tmp_path / "file2.parquet"
+        table2 = pa.table({
+            "id": pa.array(["d", "e"], type=pa.string()),
+            "value": pa.array([4, 5], type=pa.int32())
+        })
+        pq.write_table(table2, file2)
+
+        # Create FileInfo objects
+        file_infos = [
+            FileInfo(uri=str(file1), size_bytes=file1.stat().st_size, row_count=0, split=None),
+            FileInfo(uri=str(file2), size_bytes=file2.stat().st_size, row_count=0, split=None),
+        ]
+
+        # Create preliminary metadata
+        import uuid
+        table_metadata = metadata_writer._create_preliminary_metadata(
+            table_uuid=str(uuid.uuid4()), properties={}
+        )
+
+        # Test
+        data_files = metadata_writer._create_data_files_from_info(file_infos, table_metadata)
+
+        # Verify
+        assert len(data_files) == 2
+
+        # Check first file
+        assert data_files[0].file_path == str(file1)
+        assert data_files[0].record_count == 3
+        assert data_files[0].file_size_in_bytes == file1.stat().st_size
+        # pyiceberg uses field IDs as keys (1=id, 2=value)
+        assert 1 in data_files[0].column_sizes  # id field
+        assert 2 in data_files[0].column_sizes  # value field
+        assert data_files[0].value_counts[1] == 3  # id has 3 values
+        assert data_files[0].value_counts[2] == 3  # value has 3 values
+
+        # Check second file
+        assert data_files[1].file_path == str(file2)
+        assert data_files[1].record_count == 2
+        assert data_files[1].file_size_in_bytes == file2.stat().st_size
+        # pyiceberg uses field IDs as keys (1=id, 2=value)
+        assert 1 in data_files[1].column_sizes  # id field
+        assert 2 in data_files[1].column_sizes  # value field
+        assert data_files[1].value_counts[1] == 2  # id has 2 values
+        assert data_files[1].value_counts[2] == 2  # value has 2 values
