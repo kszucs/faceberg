@@ -37,7 +37,7 @@ This creates a HuggingFace Space that:
 
 ## Add Datasets
 
-Add HuggingFace datasets to your catalog. The table name is inferred from the dataset:
+Add existing HuggingFace datasets to your catalog. The table name is inferred from the dataset:
 
 ```bash
 # Add datasets (table name inferred: org.repo)

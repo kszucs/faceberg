@@ -3,7 +3,6 @@ project:
   output-dir: _site
   render:
     - "*.qmd"
-    - "integrations/*.qmd"
   resources:
     - CNAME
 
@@ -18,12 +17,10 @@ website:
         text: Local Catalogs
       - href: design.qmd
         text: Architecture
-      - text: Integrations
-        menu:
-          - href: integrations/duckdb.qmd
-            text: DuckDB
-          - href: integrations/pandas.qmd
-            text: Pandas
+      - href: duckdb.qmd
+        text: DuckDB
+      - href: pandas.qmd
+        text: Pandas
     right:
       - icon: github
         href: https://github.com/kszucs/faceberg
@@ -38,8 +35,8 @@ website:
         - design.qmd
     - title: "Integrations"
       contents:
-        - integrations/duckdb.qmd
-        - integrations/pandas.qmd
+        - duckdb.qmd
+        - pandas.qmd
 
 format:
   html:
