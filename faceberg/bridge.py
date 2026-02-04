@@ -31,8 +31,8 @@ class FileInfo:
     """Information about a data file in Iceberg table."""
 
     uri: str  # Full hf:// URI to the file
-    split: Optional[str] = None  # Split name (train, test, validation, etc.)
-    size_bytes: Optional[int] = None  # File size in bytes (enriched later)
+    split: Optional[str]  # Split name (train, test, validation, etc.)
+    size_bytes: int  # File size in bytes (enriched later)
     row_count: Optional[int] = None  # Number of rows in the file (enriched later)
 
 
@@ -388,6 +388,7 @@ class DatasetInfo:
         revision = builder.hash
         features = builder.info.features
 
+        # TODO(kszucs): should compare blob_ids instead of paths for more robust change detection
         # Fetch dataset info with file metadata once for current revision
         api = HfApi(token=token)
         # get the current revision's dataset info

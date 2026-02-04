@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 import pyarrow.parquet as pq
-from huggingface_hub import get_hf_file_metadata, hf_hub_url
 from pyiceberg.io.pyarrow import PyArrowFileIO
 from pyiceberg.manifest import (
     DataFile,
@@ -113,46 +112,6 @@ class IcebergMetadataWriter:
         # Step 3: Write metadata files
         return self._write_metadata_files(data_files, table_uuid, properties or {})
 
-    def _get_hf_file_size(self, file_path: str) -> int:
-        """Get the actual file size from HuggingFace Hub.
-
-        This queries the HuggingFace API to get the exact file size. While we could
-        calculate an approximate size from Parquet metadata, the calculation is not
-        exact enough for DuckDB's iceberg_scan which needs precise file sizes.
-
-        Args:
-            file_path: HuggingFace file path in format hf://datasets/repo_id/path/to/file
-
-        Returns:
-            File size in bytes
-
-        Raises:
-            ValueError: If file path cannot be parsed or file size cannot be determined
-        """
-        # Parse hf:// URL - format is hf://datasets/org/repo@revision/path/to/file
-        # or hf://datasets/org/repo/path/to/file (without revision)
-        if not file_path.startswith("hf://datasets/"):
-            raise ValueError(f"Invalid HuggingFace file path: {file_path}")
-
-        # Split into repo_id@revision (org/repo@revision) and filename (path/to/file)
-        remaining = file_path[len("hf://datasets/") :]
-        parts = remaining.split("/")
-        if len(parts) < 3:
-            raise ValueError(f"Invalid HuggingFace file path format: {file_path}")
-
-        # Handle repo_id with optional @revision
-        repo_part = f"{parts[0]}/{parts[1]}"  # org/repo@revision or org/repo
-        if "@" in repo_part:
-            repo_id, revision = repo_part.split("@", 1)
-        else:
-            repo_id = repo_part
-            revision = None
-
-        filename = "/".join(parts[2:])  # path/to/file
-        url = hf_hub_url(repo_id=repo_id, filename=filename, repo_type="dataset", revision=revision)
-        metadata = get_hf_file_metadata(url)
-        return metadata.size
-
     def _read_file_metadata(
         self,
         file_infos: List[FileInfo],
@@ -180,17 +139,11 @@ class IcebergMetadataWriter:
             metadata = pq.read_metadata(file_info.uri)
             row_count = metadata.num_rows
 
-            # Use provided size if available, otherwise get from HuggingFace API
-            file_size = file_info.size_bytes
-            if not file_size:
-                # Get exact file size from HuggingFace Hub API
-                file_size = self._get_hf_file_size(file_info.uri)
-
             enriched.append(
                 FileInfo(
                     uri=file_info.uri,
                     split=file_info.split,
-                    size_bytes=file_size,
+                    size_bytes=file_info.size_bytes,
                     row_count=row_count,
                 )
             )
@@ -206,25 +159,16 @@ class IcebergMetadataWriter:
         self,
         file_infos: List[FileInfo],
         sequence_number: int = INITIAL_SEQUENCE_NUMBER,
-        previous_data_files: Optional[List[DataFile]] = None,
     ) -> List[DataFile]:
         """Create Iceberg DataFile entries from file information.
 
         Args:
             file_infos: List of FileInfo objects with metadata
             sequence_number: Current sequence number (default: 0 for initial snapshot)
-            previous_data_files: Optional list of data files from previous snapshot for
-                                 inheritance tracking
 
         Returns:
             List of Iceberg DataFile objects
         """
-        # Build lookup of previous files by path for inheritance checking
-        previous_files_map = {}
-        if previous_data_files:
-            for prev_file in previous_data_files:
-                previous_files_map[prev_file.file_path] = prev_file
-
         data_files = []
 
         for file_info in file_infos:
@@ -237,15 +181,6 @@ class IcebergMetadataWriter:
             else:
                 partition = {}
 
-            # Determine file_sequence_number: inherit from previous snapshot if file unchanged
-            prev_file = previous_files_map.get(file_info.uri)
-            if prev_file and self._files_identical(prev_file, file_info):
-                # File unchanged - inherit sequence number
-                file_seq_num = prev_file.file_sequence_number
-            else:
-                # File is new or modified - use current sequence number
-                file_seq_num = sequence_number
-
             data_file = DataFile.from_args(
                 content=DataFileContent.DATA,
                 file_path=file_info.uri,
@@ -253,7 +188,7 @@ class IcebergMetadataWriter:
                 partition=partition,
                 record_count=file_info.row_count,
                 file_size_in_bytes=file_info.size_bytes,
-                file_sequence_number=file_seq_num,  # Track inheritance
+                file_sequence_number=sequence_number,
                 column_sizes={},
                 value_counts={},
                 null_value_counts={},
@@ -268,21 +203,6 @@ class IcebergMetadataWriter:
             data_files.append(data_file)
 
         return data_files
-
-    def _files_identical(self, prev_file: DataFile, current_file: FileInfo) -> bool:
-        """Check if file is unchanged between snapshots.
-
-        Args:
-            prev_file: DataFile from previous snapshot
-            current_file: FileInfo for current file
-
-        Returns:
-            True if file is unchanged
-        """
-        return (
-            prev_file.file_size_in_bytes == current_file.size_bytes
-            and prev_file.record_count == current_file.row_count
-        )
 
     def _get_previous_manifests(self, metadata: TableMetadataV2) -> Optional[List[ManifestFile]]:
         """Extract manifest file references from the current snapshot without reading
@@ -606,20 +526,12 @@ class IcebergMetadataWriter:
         # Enrich file metadata
         enriched_files = self._read_file_metadata(file_infos)
 
-        # Skip inheritance tracking for pure appends (new files only)
-        # The bridge layer already filtered to new files via revision diff,
-        # so no need to compare with previous data files.
-        # This saves 5-25 MB of manifest downloads for remote catalogs.
-        previous_data_files = None
-
         # Calculate next IDs
         next_snapshot_id = max(snap.snapshot_id for snap in current_metadata.snapshots) + 1
         next_sequence_number = current_metadata.last_sequence_number + 1
 
         # Create DataFile entries (all get new sequence number)
-        data_files = self._create_data_files(
-            enriched_files, next_sequence_number, previous_data_files
-        )
+        data_files = self._create_data_files(enriched_files, next_sequence_number)
 
         # Merge properties first (needed for snapshot summary)
         merged_properties = {**current_metadata.properties}
