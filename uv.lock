@@ -812,7 +812,6 @@ wheels = [
 
 [[package]]
 name = "faceberg"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -859,7 +858,7 @@ requires-dist = [
     { name = "litestar", specifier = ">=2.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
-    { name = "pyiceberg", specifier = ">=0.6.0" },
+    { name = "pyiceberg", specifier = ">=0.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pytest-playwright", marker = "extra == 'dev'", specifier = ">=0.7.0" },
