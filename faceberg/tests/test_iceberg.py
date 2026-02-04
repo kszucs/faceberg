@@ -14,11 +14,13 @@ from faceberg.iceberg import ParquetFile, write_snapshot
 @pytest.fixture
 def arrow_schema():
     """Create a simple PyArrow schema for testing."""
-    return pa.schema([
-        pa.field("id", pa.int64()),
-        pa.field("name", pa.string()),
-        pa.field("value", pa.float64()),
-    ])
+    return pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("name", pa.string()),
+            pa.field("value", pa.float64()),
+        ]
+    )
 
 
 def compute_file_hash(path: Path) -> str:
@@ -51,11 +53,14 @@ def parquet_files(tmp_path, arrow_schema):
             schema=arrow_schema,
         )
         pq.write_table(table, path)
-        files.append(ParquetFile(
-            uri=str(path),
-            size=path.stat().st_size,
-            blob_id=compute_file_hash(path),
-        ))
+        files.append(
+            ParquetFile(
+                uri=str(path),
+                path=str(path),
+                size=path.stat().st_size,
+                blob_id=compute_file_hash(path),
+            )
+        )
 
     return files
 
@@ -80,11 +85,14 @@ def make_extra_files(tmp_path, arrow_schema, count=2, start_index=5):
             schema=arrow_schema,
         )
         pq.write_table(table, path)
-        files.append(ParquetFile(
-            uri=str(path),
-            size=path.stat().st_size,
-            blob_id=compute_file_hash(path),
-        ))
+        files.append(
+            ParquetFile(
+                uri=str(path),
+                path=str(path),
+                size=path.stat().st_size,
+                blob_id=compute_file_hash(path),
+            )
+        )
 
     return files
 
@@ -274,6 +282,7 @@ class TestOverwriteSnapshot:
         pq.write_table(replacement_table, replacement_path)
         replacement_file = ParquetFile(
             uri=str(replacement_path),
+            path=str(replacement_path),
             size=replacement_path.stat().st_size,
             blob_id=compute_file_hash(replacement_path),
         )
@@ -331,6 +340,7 @@ class TestRenameFile:
         shutil.copy(old_file.uri, new_path)
         new_file = ParquetFile(
             uri=str(new_path),
+            path=str(new_path),
             size=new_path.stat().st_size,
             blob_id=compute_file_hash(new_path),
         )
@@ -430,6 +440,7 @@ class TestDiffSnapshotFiles:
         """Test that with no previous metadata, all files are ADDED."""
         from pyiceberg.io.pyarrow import PyArrowFileIO
         from pyiceberg.manifest import ManifestEntryStatus
+
         from faceberg.iceberg import diff_snapshot
 
         io = PyArrowFileIO()
@@ -445,6 +456,7 @@ class TestDiffSnapshotFiles:
         """Test that files unchanged from previous snapshot are EXISTING."""
         from pyiceberg.io.pyarrow import PyArrowFileIO
         from pyiceberg.manifest import ManifestEntryStatus
+
         from faceberg.iceberg import diff_snapshot
 
         # Create initial snapshot
@@ -470,6 +482,7 @@ class TestDiffSnapshotFiles:
         """Test that files in previous snapshot but not in current are REMOVED."""
         from pyiceberg.io.pyarrow import PyArrowFileIO
         from pyiceberg.manifest import ManifestEntryStatus
+
         from faceberg.iceberg import diff_snapshot
 
         # Create initial snapshot
@@ -505,6 +518,7 @@ class TestDiffSnapshotFiles:
         """Test that files with same URI but different hash/size are REMOVED + ADDED."""
         from pyiceberg.io.pyarrow import PyArrowFileIO
         from pyiceberg.manifest import ManifestEntryStatus
+
         from faceberg.iceberg import diff_snapshot
 
         # Create initial snapshot
@@ -531,6 +545,7 @@ class TestDiffSnapshotFiles:
         # Create new ParquetFile with same URI but new hash
         modified_file = ParquetFile(
             uri=str(first_file_path),
+            path=str(first_file_path),
             size=first_file_path.stat().st_size,
             blob_id=compute_file_hash(first_file_path),
         )

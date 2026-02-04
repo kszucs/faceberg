@@ -6,8 +6,8 @@ import pytest
 from pyiceberg.schema import Schema
 from pyiceberg.types import IntegerType, NestedField, StringType
 
-from faceberg.bridge import FileInfo
-from faceberg.convert import IcebergMetadataWriter
+from faceberg._bridge import FileInfo
+from faceberg._convert import IcebergMetadataWriter
 
 
 @pytest.fixture
@@ -429,21 +429,26 @@ class TestCreateDataFilesFromInfo:
         """Test that _create_data_files_from_info consolidates metadata reading and DataFile creation."""
         import pyarrow as pa
         import pyarrow.parquet as pq
-        from faceberg.bridge import FileInfo
+
+        from faceberg._bridge import FileInfo
 
         # Create test parquet files matching the schema (id: string, value: int32)
         file1 = tmp_path / "file1.parquet"
-        table1 = pa.table({
-            "id": pa.array(["a", "b", "c"], type=pa.string()),
-            "value": pa.array([1, 2, 3], type=pa.int32())
-        })
+        table1 = pa.table(
+            {
+                "id": pa.array(["a", "b", "c"], type=pa.string()),
+                "value": pa.array([1, 2, 3], type=pa.int32()),
+            }
+        )
         pq.write_table(table1, file1)
 
         file2 = tmp_path / "file2.parquet"
-        table2 = pa.table({
-            "id": pa.array(["d", "e"], type=pa.string()),
-            "value": pa.array([4, 5], type=pa.int32())
-        })
+        table2 = pa.table(
+            {
+                "id": pa.array(["d", "e"], type=pa.string()),
+                "value": pa.array([4, 5], type=pa.int32()),
+            }
+        )
         pq.write_table(table2, file2)
 
         # Create FileInfo objects
@@ -454,6 +459,7 @@ class TestCreateDataFilesFromInfo:
 
         # Create preliminary metadata
         import uuid
+
         table_metadata = metadata_writer._create_preliminary_metadata(
             table_uuid=str(uuid.uuid4()), properties={}
         )

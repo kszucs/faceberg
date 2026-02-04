@@ -5,67 +5,6 @@ Parquet files. The main entry point is write_snapshot(), which takes a complete
 list of files and generates all required Iceberg metadata (manifests, snapshots,
 table metadata).
 
-Architecture
-------------
-
-    ┌─────────────────────────────────────────────────────────────────┐
-    │                      write_snapshot()                            │
-    │  Main entry point - receives complete file list for snapshot    │
-    └───────────────────────────┬─────────────────────────────────────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │   diff_snapshot()     │
-                    │                       │
-                    │ Compare current files │
-                    │ against previous      │
-                    │ snapshot based on     │
-                    │ uri/size/hash         │
-                    │                       │
-                    │ Returns: List of      │
-                    │ (status, ParquetFile) │
-                    └───────────┬───────────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │  write_manifest()     │
-                    │                       │
-                    │ Convert ParquetFile   │
-                    │ → DataFile via        │
-                    │ parquet_file_to_      │
-                    │ data_file()           │
-                    │                       │
-                    │ Write entries with    │
-                    │ ADDED/EXISTING/       │
-                    │ DELETED status        │
-                    │                       │
-                    │ Returns: ManifestFile │
-                    └───────────┬───────────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │  create_snapshot()    │
-                    │                       │
-                    │ Read manifest entries │
-                    │ Build summary stats   │
-                    │ via Snapshot          │
-                    │ SummaryCollector      │
-                    │                       │
-                    │ Determine operation:  │
-                    │ APPEND/DELETE/        │
-                    │ OVERWRITE             │
-                    │                       │
-                    │ Returns: Snapshot     │
-                    └───────────┬───────────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │  Write metadata files │
-                    │                       │
-                    │ - vN.metadata.json    │
-                    │ - version-hint.text   │
-                    └───────────────────────┘
-
 Data Flow
 ---------
 1. User provides List[ParquetFile] representing desired snapshot state
@@ -84,8 +23,62 @@ Operation: Type of snapshot (APPEND/DELETE/OVERWRITE) determined by entry status
 Public API
 ----------
 write_snapshot(): Main entry point for creating Iceberg metadata
-create_schema(): Convert PyArrow schema to Iceberg schema with field IDs
+create_schema(): Convert PyArrow schema to Iceberg schema with field IDs (optionally with split column)
+create_partition_spec(): Create a partition spec with optional split partitioning
 ParquetFile: Dataclass representing a parquet file to include in snapshot
+
+File Structure and Type Hierarchy
+----------------------------------
+
+Physical Files Created:
+    table/
+    └── metadata/
+        ├── v1.metadata.json          (TableMetadataV2)
+        ├── v2.metadata.json          (TableMetadataV2) - for subsequent snapshots
+        ├── version-hint.text         (current version number)
+        ├── snap-1-0-<uuid>.avro      (ManifestList)
+        ├── snap-2-1-<uuid>.avro      (ManifestList) - for subsequent snapshots
+        ├── <uuid>.avro               (Manifest file)
+        └── <uuid>.avro               (Manifest file) - one per snapshot
+
+Type Hierarchy:
+    TableMetadataV2                   # Root metadata object
+    ├── schemas: List[Schema]         # Iceberg schema definitions
+    ├── partition_specs: List[PartitionSpec]
+    ├── snapshots: List[Snapshot]     # All table snapshots
+    │   └── Snapshot
+    │       ├── snapshot_id: int
+    │       ├── manifest_list: str    # → snap-X-Y-<uuid>.avro
+    │       └── summary: Summary      # Operation stats + HF metadata
+    └── refs: Dict[str, SnapshotRef]  # Branch references (e.g., "main")
+
+ManifestList (snap-X-Y-<uuid>.avro)   # Written to manifest_list path
+└── manifests: List[ManifestFile]     # References to manifest files
+    └── ManifestFile
+        ├── manifest_path: str        # → <uuid>.avro
+        ├── added_files_count: int
+        ├── added_rows_count: int
+        └── partition_spec_id: int
+
+Manifest (<uuid>.avro)                # Written to manifest_path
+└── entries: List[ManifestEntry]
+    └── ManifestEntry
+        ├── status: ManifestEntryStatus  # ADDED/EXISTING/DELETED
+        ├── snapshot_id: int
+        ├── sequence_number: int
+        └── data_file: DataFile       # ↓
+
+DataFile                              # References actual data
+├── file_path: str                    # → hf://datasets/org/repo@rev/file.parquet
+├── file_format: FileFormat           # PARQUET
+├── partition: Dict[int, str]         # {0: "train"} for split partitioning
+├── record_count: int                 # Number of rows
+├── file_size_in_bytes: int
+└── file_sequence_number: int         # Tracks when file was added
+
+Note: DataFile objects reference external HuggingFace parquet files without
+copying them. All metadata files use Iceberg's Avro format for manifests and
+JSON for table metadata.
 """
 
 import uuid
@@ -93,24 +86,28 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pyarrow as pa
-
-from faceberg.discover import ParquetFile
+import pyarrow.parquet as pq
 from pyiceberg.io import FileIO
-from pyiceberg.io.pyarrow import PyArrowFileIO, parquet_file_to_data_file, _pyarrow_to_schema_without_ids
+from pyiceberg.io.pyarrow import (
+    PyArrowFileIO,
+    _pyarrow_to_schema_without_ids,
+    compute_statistics_plan,
+    data_file_statistics_from_parquet_metadata,
+)
+from pyiceberg.io.pyarrow import parquet_path_to_id_mapping as _parquet_path_to_id_mapping
 from pyiceberg.manifest import (
+    DataFile,
+    DataFileContent,
     ManifestEntry,
     ManifestEntryStatus,
     ManifestFile,
-    write_manifest as _write_manifest_avro,
     write_manifest_list,
 )
-from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionSpec
+from pyiceberg.manifest import write_manifest as _write_manifest
+from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionField, PartitionSpec
 from pyiceberg.schema import Schema, assign_fresh_schema_ids
+from pyiceberg.table import TableProperties
 from pyiceberg.table.metadata import INITIAL_SEQUENCE_NUMBER, TableMetadataV2, new_table_metadata
-from pyiceberg.table.name_mapping import create_mapping_from_schema
-
-# Property key for schema name mapping
-SCHEMA_NAME_MAPPING_DEFAULT = "schema.name-mapping.default"
 from pyiceberg.table.refs import SnapshotRef, SnapshotRefType
 from pyiceberg.table.snapshots import (
     Operation,
@@ -120,6 +117,10 @@ from pyiceberg.table.snapshots import (
     update_snapshot_summaries,
 )
 from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
+from pyiceberg.transforms import IdentityTransform
+from pyiceberg.types import NestedField, StringType
+
+from faceberg.discover import ParquetFile
 
 
 def diff_snapshot(
@@ -178,7 +179,9 @@ def diff_snapshot(
             else:
                 # File changed: REMOVED (old) + ADDED (new)
                 # Create ParquetFile for old version
-                old_pf = ParquetFile(uri=pf.uri, path=pf.path, size=prev_size, blob_id="", split=None)
+                old_pf = ParquetFile(
+                    uri=pf.uri, path=pf.path, size=prev_size, blob_id="", split=None
+                )
                 result.append((ManifestEntryStatus.DELETED, old_pf))
                 result.append((ManifestEntryStatus.ADDED, pf))
 
@@ -194,7 +197,7 @@ def diff_snapshot(
     return result
 
 
-def create_schema(arrow_schema: pa.Schema) -> Schema:
+def create_schema(arrow_schema: pa.Schema, include_split_column: bool = False) -> Schema:
     """Convert PyArrow schema to Iceberg Schema.
 
     Converts PyArrow schema to Iceberg Schema with globally unique field IDs
@@ -202,13 +205,135 @@ def create_schema(arrow_schema: pa.Schema) -> Schema:
 
     Args:
         arrow_schema: PyArrow schema to convert
+        include_split_column: If True, adds a 'split' column as the first field (default: False)
 
     Returns:
         Iceberg Schema with field IDs assigned
     """
     # Convert to schema without IDs, then assign fresh IDs
     schema_without_ids = _pyarrow_to_schema_without_ids(arrow_schema)
-    return assign_fresh_schema_ids(schema_without_ids)
+    schema = assign_fresh_schema_ids(schema_without_ids)
+
+    # Add split column as the first field if requested
+    if include_split_column:
+        # Create split field (will get ID 1 after reassignment)
+        # Note: Although the schema uses StringType, the actual Parquet data
+        # will use dictionary encoding (int8 indices) for compression efficiency
+        # The split column is optional since it doesn't exist in the source Parquet files,
+        # it's derived from partition metadata
+        split_field = NestedField(
+            field_id=-1,  # Temporary ID, will be reassigned
+            name="split",
+            field_type=StringType(),
+            required=False,
+        )
+        # Prepend split field to existing fields
+        new_fields = [split_field] + list(schema.fields)
+
+        # Create new schema and reassign all field IDs globally
+        # This ensures field IDs are globally unique across nested structures
+        schema_with_split = Schema(*new_fields)
+        schema = assign_fresh_schema_ids(schema_with_split)
+
+    return schema
+
+
+def create_partition_spec(schema: Schema, include_split_column: bool = False) -> PartitionSpec:
+    """Build a partition spec with optional split partitioning.
+
+    Creates an identity partition on the split field when requested.
+    When False, returns an unpartitioned spec.
+
+    Args:
+        schema: Iceberg schema
+        include_split_column: Whether to partition by split field (default: False)
+
+    Returns:
+        PartitionSpec with split partition key if include_split_column is True,
+        or UNPARTITIONED_PARTITION_SPEC otherwise
+
+    Raises:
+        ValueError: If include_split_column is True but schema doesn't contain a 'split' field
+    """
+    if not include_split_column:
+        return UNPARTITIONED_PARTITION_SPEC
+
+    split_field = schema.find_field("split")
+    if split_field is None:
+        raise ValueError("Schema must contain a 'split' field to create split partition spec")
+
+    return PartitionSpec(
+        PartitionField(
+            source_id=split_field.field_id,
+            field_id=1000,  # Partition field IDs start at 1000
+            transform=IdentityTransform(),
+            name="split",
+        ),
+        spec_id=0,
+    )
+
+
+# TODO(kszucs): copied from pyiceberg.io.pyarrow with modifications to resolve list
+# field mapping issues, remove once fixed in pyiceberg
+def parquet_path_to_id_mapping(schema: Schema) -> dict[str, int]:
+    """Build a field mapping that handles both 'element' and 'item' list conventions.
+
+    Creates mappings for both PyArrow-compliant ('element') and actual Parquet
+    schema paths. This handles cases where Parquet files use 'item' (Arrow convention)
+    instead of 'element' (Parquet spec).
+    """
+    # Start with standard iceberg mapping (uses 'element')
+    base_mapping = _parquet_path_to_id_mapping(schema)
+
+    # Create alternative mappings by replacing 'element' with 'item'
+    flexible_mapping = dict(base_mapping)
+    for path, field_id in base_mapping.items():
+        if ".list.element" in path:
+            # Add mapping with 'item' convention
+            alt_path = path.replace(".list.element", ".list.item")
+            flexible_mapping[alt_path] = field_id
+
+    return flexible_mapping
+
+
+# TODO(kszucs): copied from pyiceberg.io.pyarrow with modifications to resolve list
+# field mapping issues, remove once fixed in pyiceberg
+def parquet_file_to_data_file(
+    io: FileIO,
+    table_metadata: "TableMetadataV2",
+    parquet_file: ParquetFile,
+) -> DataFile:
+    """Convert ParquetFile to DataFile using flexible field mapping.
+
+    This implementation builds a flexible field mapping that supports both
+    'element' (Parquet spec) and 'item' (Arrow convention) for list fields,
+    handling Parquet files written by both spec-compliant and non-compliant writers.
+    """
+    input_file = io.new_input(parquet_file.uri)
+    with input_file.open() as f:
+        parquet_metadata = pq.read_metadata(f)
+
+    schema = table_metadata.schema()
+
+    # Use flexible mapping that handles both 'element' and 'item'
+    statistics = data_file_statistics_from_parquet_metadata(
+        parquet_metadata=parquet_metadata,
+        stats_columns=compute_statistics_plan(schema, table_metadata.properties),
+        parquet_column_mapping=parquet_path_to_id_mapping(schema),
+    )
+
+    return DataFile.from_args(
+        content=DataFileContent.DATA,
+        file_path=parquet_file.uri,
+        file_format="PARQUET",
+        partition=statistics.partition(table_metadata.spec(), schema),
+        file_size_in_bytes=parquet_file.size,
+        sort_order_id=None,
+        spec_id=table_metadata.default_spec_id,
+        equality_ids=None,
+        key_metadata=None,
+        **statistics.to_serialized_dict(),
+    )
 
 
 # TODO(kszucs): allow parallel calls to parquet_file_to_data_file
@@ -222,7 +347,7 @@ def write_manifest(
     io: FileIO,
     output_file,
     uri: str,
-) -> ManifestFile:
+) -> Tuple[ManifestFile, List]:
     """Create and write a manifest file.
 
     Converts ParquetFile objects to DataFile objects and writes them
@@ -240,9 +365,10 @@ def write_manifest(
         uri: URI path to use in the returned ManifestFile
 
     Returns:
-        ManifestFile object
+        Tuple of (ManifestFile object, List of ManifestEntry objects)
     """
-    with _write_manifest_avro(
+    entries = []
+    with _write_manifest(
         format_version=2,
         spec=spec,
         schema=schema,
@@ -255,7 +381,7 @@ def write_manifest(
             data_file = parquet_file_to_data_file(
                 io=io,
                 table_metadata=metadata,
-                file_path=parquet_file.uri,
+                parquet_file=parquet_file,
             )
 
             # Create manifest entry with the appropriate status
@@ -267,6 +393,7 @@ def write_manifest(
                 data_file=data_file,
             )
             writer.add_entry(entry)
+            entries.append(entry)
         manifest = writer.to_manifest_file()
 
     manifest_file = ManifestFile.from_args(
@@ -287,11 +414,11 @@ def write_manifest(
         key_metadata=manifest.key_metadata,
     )
 
-    return manifest_file
+    return manifest_file, entries
 
 
 def create_snapshot(
-    manifest: ManifestFile,
+    manifest_entries: List,
     manifest_list_path: str,
     snapshot_id: int,
     parent_snapshot_id: Optional[int],
@@ -299,16 +426,17 @@ def create_snapshot(
     schema_id: int,
     spec: PartitionSpec,
     schema: Schema,
-    io: FileIO,
     previous_summary: Optional[Summary] = None,
 ) -> Snapshot:
     """Create Snapshot object with proper summary.
 
     Uses SnapshotSummaryCollector and update_snapshot_summaries() to
-    compute accurate statistics by reading entries from the manifest.
+    compute accurate statistics from the provided manifest entries.
 
     Args:
-        manifest: ManifestFile object
+        manifest_entries: List of ManifestEntry objects. Must be provided to avoid
+            file I/O issues with staging directories. The entries should be collected
+            during manifest creation.
         manifest_list_path: Path to the manifest list
         snapshot_id: Snapshot ID
         parent_snapshot_id: Parent snapshot ID
@@ -316,7 +444,6 @@ def create_snapshot(
         schema_id: Schema ID
         spec: Partition specification
         schema: Iceberg schema
-        io: FileIO for reading manifest entries
         previous_summary: Summary from previous snapshot (for totals)
 
     Returns:
@@ -327,7 +454,7 @@ def create_snapshot(
     has_added = False
     has_removed = False
 
-    for entry in manifest.fetch_manifest_entry(io=io, discard_deleted=False):
+    for entry in manifest_entries:
         if entry.status == ManifestEntryStatus.ADDED:
             ssc.add_file(entry.data_file, schema=schema, partition_spec=spec)
             has_added = True
@@ -364,7 +491,7 @@ def write_snapshot(
     output_dir: Path,
     base_uri: str,
     properties: Optional[Dict[str, str]] = None,
-    partition_spec: Optional[PartitionSpec] = None,
+    include_split_column: bool = True,
     io: Optional[FileIO] = None,
 ) -> TableMetadataV2:
     """Write new snapshot metadata.
@@ -382,14 +509,15 @@ def write_snapshot(
         output_dir: Directory to write metadata files
         base_uri: Base URI for paths in metadata
         properties: Table properties
-        partition_spec: Optional partition spec (default: unpartitioned)
+        include_split_column: Whether to include a 'split' column in the schema and partition
+            by it. When True, adds a split column to the schema and partitions by split.
+            When False, uses unpartitioned spec (default: True)
         io: Optional FileIO instance (default: PyArrowFileIO)
 
     Returns:
         Updated TableMetadataV2
     """
     properties = properties or {}
-    partition_spec = partition_spec or UNPARTITIONED_PARTITION_SPEC
     io = io or PyArrowFileIO()
 
     # Ensure metadata directory exists
@@ -404,24 +532,25 @@ def write_snapshot(
         parent_snapshot_id = None
         previous_summary = None
 
-        # Convert schema and create name mapping
-        iceberg_schema_obj = create_schema(schema)
-        name_mapping = create_mapping_from_schema(iceberg_schema_obj)
+        # Convert schema with optional split column
+        iceberg_schema = create_schema(schema, include_split_column=include_split_column)
         merged_properties = {
             **properties,
-            SCHEMA_NAME_MAPPING_DEFAULT: name_mapping.model_dump_json(),
+            TableProperties.DEFAULT_NAME_MAPPING: iceberg_schema.name_mapping.model_dump_json(),
         }
+
+        # Create partition spec (partition by split if split column is included)
+        spec = create_partition_spec(iceberg_schema, include_split_column=include_split_column)
 
         # Create preliminary metadata for reading parquet files
         file_metadata = new_table_metadata(
-            schema=iceberg_schema_obj,
-            partition_spec=partition_spec,
+            schema=iceberg_schema,
+            partition_spec=spec,
             sort_order=UNSORTED_SORT_ORDER,
             location=base_uri,
             properties=merged_properties,
             table_uuid=table_uuid,
         )
-        spec = partition_spec
     else:
         table_uuid = current_metadata.table_uuid
         snapshot_id = max(s.snapshot_id for s in current_metadata.snapshots) + 1
@@ -431,7 +560,7 @@ def write_snapshot(
         previous_snapshot = current_metadata.snapshot_by_id(parent_snapshot_id)
         previous_summary = previous_snapshot.summary if previous_snapshot else None
 
-        iceberg_schema_obj = current_metadata.schema()
+        iceberg_schema = current_metadata.schema()
         file_metadata = current_metadata
         spec = current_metadata.spec()
 
@@ -448,10 +577,11 @@ def write_snapshot(
     manifest_uri = f"{base_uri}/metadata/{manifest_filename}"
 
     output_file = io.new_output(str(manifest_path))
-    manifest = write_manifest(
+    # Write manifest with final URI and get entries
+    manifest, manifest_entries = write_manifest(
         diff_results,
         file_metadata,
-        iceberg_schema_obj,
+        iceberg_schema,
         spec,
         snapshot_id,
         sequence_number,
@@ -459,7 +589,6 @@ def write_snapshot(
         output_file,
         manifest_uri,
     )
-    all_manifests = [manifest]
 
     # Create manifest list
     manifest_list_filename = f"snap-{snapshot_id}-{sequence_number}-{uuid.uuid4()}.avro"
@@ -475,19 +604,18 @@ def write_snapshot(
         sequence_number=sequence_number,
         avro_compression="deflate",
     ) as writer:
-        writer.add_manifests(all_manifests)
+        writer.add_manifests([manifest])
 
-    # Create snapshot
+    # Create snapshot using the collected manifest entries (avoids reading from file)
     snapshot = create_snapshot(
-        manifest,
+        manifest_entries,
         manifest_list_uri,
         snapshot_id,
         parent_snapshot_id,
         sequence_number,
-        iceberg_schema_obj.schema_id,
+        iceberg_schema.schema_id,
         spec,
-        iceberg_schema_obj,
-        io,
+        iceberg_schema,
         previous_summary=previous_summary,
     )
 
@@ -497,12 +625,12 @@ def write_snapshot(
             location=base_uri,
             table_uuid=table_uuid,
             last_updated_ms=snapshot.timestamp_ms,
-            last_column_id=iceberg_schema_obj.highest_field_id,
-            schemas=[iceberg_schema_obj],
-            current_schema_id=iceberg_schema_obj.schema_id,
-            partition_specs=[partition_spec],
-            default_spec_id=partition_spec.spec_id,
-            last_partition_id=partition_spec.last_assigned_field_id,
+            last_column_id=iceberg_schema.highest_field_id,
+            schemas=[iceberg_schema],
+            current_schema_id=iceberg_schema.schema_id,
+            partition_specs=[spec],
+            default_spec_id=spec.spec_id,
+            last_partition_id=spec.last_assigned_field_id,
             properties=merged_properties,
             current_snapshot_id=snapshot.snapshot_id,
             snapshots=[snapshot],
@@ -510,7 +638,9 @@ def write_snapshot(
             metadata_log=[],
             sort_orders=[UNSORTED_SORT_ORDER],
             default_sort_order_id=UNSORTED_SORT_ORDER.order_id,
-            refs={"main": SnapshotRef(snapshot_id=snapshot.snapshot_id, type=SnapshotRefType.BRANCH)},
+            refs={
+                "main": SnapshotRef(snapshot_id=snapshot.snapshot_id, type=SnapshotRefType.BRANCH)
+            },
             format_version=2,
             last_sequence_number=sequence_number,
         )
@@ -532,7 +662,9 @@ def write_snapshot(
             metadata_log=current_metadata.metadata_log,
             sort_orders=current_metadata.sort_orders,
             default_sort_order_id=current_metadata.default_sort_order_id,
-            refs={"main": SnapshotRef(snapshot_id=snapshot.snapshot_id, type=SnapshotRefType.BRANCH)},
+            refs={
+                "main": SnapshotRef(snapshot_id=snapshot.snapshot_id, type=SnapshotRefType.BRANCH)
+            },
             format_version=2,
             last_sequence_number=sequence_number,
         )

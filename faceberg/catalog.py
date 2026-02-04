@@ -963,18 +963,15 @@ class BaseCatalog(Catalog):
 
         # Prepare schema with split column
         if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=10, stage="Converting schema")
+            progress_callback(
+                identifier, state="in_progress", percent=10, stage="Converting schema"
+            )
 
-        # Use the dataset's actual schema without adding virtual columns
-        # The split information is already captured in ParquetFile.split metadata
-        import pyarrow as pa
-        from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC
+        if not dataset_info.files:
+            raise ValueError(f"No Parquet files found in dataset {repo}")
 
+        # Convert HuggingFace features to Arrow schema
         arrow_schema = dataset_info.features.arrow_schema
-
-        # Don't partition by split since it's not in the actual Parquet files
-        # Split information is preserved in file metadata
-        partition_spec = UNPARTITIONED_PARTITION_SPEC
 
         # Build table properties
         data_path = (
@@ -1008,7 +1005,7 @@ class BaseCatalog(Catalog):
             # Load FileIO with HuggingFace support
             io = self._load_file_io(location=str(table_uri))
 
-            # Write snapshot metadata
+            # Write snapshot metadata with split column
             write_snapshot(
                 files=dataset_info.files,
                 schema=arrow_schema,
@@ -1016,7 +1013,7 @@ class BaseCatalog(Catalog):
                 output_dir=staging / identifier.path,
                 base_uri=str(table_uri),
                 properties=properties,
-                partition_spec=partition_spec,
+                include_split_column=True,
                 io=io,
             )
 
@@ -1170,7 +1167,8 @@ class BaseCatalog(Catalog):
             io = self._load_file_io(location=str(table_uri))
 
             # Write new snapshot (will diff against current_metadata)
-            # Schema parameter is ignored when current_metadata exists - it uses current_metadata.schema()
+            # Schema and include_split_column parameters are ignored when current_metadata exists
+            # - it uses current_metadata.schema() and current_metadata.spec()
             write_snapshot(
                 files=dataset_info.files,
                 schema=dataset_info.features.arrow_schema,  # Only used if creating new table
@@ -1178,7 +1176,6 @@ class BaseCatalog(Catalog):
                 output_dir=staging / identifier.path,
                 base_uri=str(table_uri),
                 properties=properties,
-                partition_spec=table.metadata.spec(),
                 io=io,
             )
 

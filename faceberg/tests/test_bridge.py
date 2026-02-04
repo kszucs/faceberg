@@ -12,7 +12,7 @@ from pyiceberg.types import (
     StructType,
 )
 
-from faceberg.bridge import (
+from faceberg._bridge import (
     DatasetInfo,
     FileInfo,
     dataset_builder_safe,
@@ -303,7 +303,7 @@ def test_table_info_name_mapping_with_nested_structs():
 
     from pyiceberg.types import IntegerType, NestedField, StringType, StructType
 
-    from faceberg.bridge import TableInfo
+    from faceberg._bridge import TableInfo
 
     # Create a schema with nested structs
     schema = Schema(
@@ -361,7 +361,7 @@ def test_table_info_name_mapping_with_lists():
 
     from pyiceberg.types import ListType, NestedField, StringType, StructType
 
-    from faceberg.bridge import TableInfo
+    from faceberg._bridge import TableInfo
 
     # Create a schema with list of strings and list of structs
     schema = Schema(
@@ -442,7 +442,7 @@ def test_table_info_name_mapping_with_maps():
 
     from pyiceberg.types import IntegerType, MapType, NestedField, StringType, StructType
 
-    from faceberg.bridge import TableInfo
+    from faceberg._bridge import TableInfo
 
     # Create a schema with a map
     schema = Schema(
@@ -578,9 +578,9 @@ def test_discover_with_since_revision():
     mock_fs.resolve_path.side_effect = mock_resolve_path
 
     with (
-        patch("faceberg.bridge.dataset_builder_safe", return_value=mock_builder),
-        patch("faceberg.bridge.HfApi", return_value=mock_api),
-        patch("faceberg.bridge.HfFileSystem", return_value=mock_fs),
+        patch("faceberg._bridge.dataset_builder_safe", return_value=mock_builder),
+        patch("faceberg._bridge.HfApi", return_value=mock_api),
+        patch("faceberg._bridge.HfFileSystem", return_value=mock_fs),
     ):
         # Discover with since_revision (should return only new files)
         dataset_info = DatasetInfo.discover(
@@ -647,7 +647,7 @@ def test_to_table_info_uses_stored_features():
     dataset_info = DatasetInfo.discover("stanfordnlp/imdb", config="plain_text")
 
     # Mock dataset_builder_safe to ensure it's NOT called
-    with patch("faceberg.bridge.dataset_builder_safe") as mock_builder:
+    with patch("faceberg._bridge.dataset_builder_safe") as mock_builder:
         table_info = dataset_info.to_table_info(
             namespace="default",
             table_name="imdb_plain_text",

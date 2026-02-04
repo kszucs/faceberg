@@ -129,8 +129,7 @@ def discover_dataset(
     dataset_info = api.dataset_info(repo_id, revision=revision, files_metadata=True)
     # Build mapping from URI to sibling metadata
     file_metadata = {
-        f"hf://datasets/{repo_id}@{revision}/{s.rfilename}": s
-        for s in dataset_info.siblings
+        f"hf://datasets/{repo_id}@{revision}/{s.rfilename}": s for s in dataset_info.siblings
     }
 
     # Step 3: Process data files
