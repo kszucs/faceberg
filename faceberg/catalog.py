@@ -19,7 +19,7 @@ from pyiceberg.exceptions import (
     NoSuchTableError,
     TableAlreadyExistsError,
 )
-from pyiceberg.io import FileIO
+from pyiceberg.io import FileIO, load_file_io
 from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionKey, PartitionSpec
 from pyiceberg.schema import Schema
@@ -360,8 +360,6 @@ class BaseCatalog(Catalog):
         Returns:
             FileIO instance with authentication configured
         """
-        from pyiceberg.io import load_file_io
-
         # Start with catalog's persisted properties
         props = dict(self.properties)
         # Add runtime-only token if available

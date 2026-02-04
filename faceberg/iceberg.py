@@ -23,7 +23,8 @@ Operation: Type of snapshot (APPEND/DELETE/OVERWRITE) determined by entry status
 Public API
 ----------
 write_snapshot(): Main entry point for creating Iceberg metadata
-create_schema(): Convert PyArrow schema to Iceberg schema with field IDs (optionally with split column)
+create_schema(): Convert PyArrow schema to Iceberg schema with field IDs (optionally
+                 with split column)
 create_partition_spec(): Create a partition spec with optional split partitioning
 ParquetFile: Dataclass representing a parquet file to include in snapshot
 
@@ -120,7 +121,7 @@ from pyiceberg.table.sorting import UNSORTED_SORT_ORDER
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import NestedField, StringType
 
-from faceberg.discover import ParquetFile
+from .discover import ParquetFile
 
 
 def diff_snapshot(

@@ -14,6 +14,7 @@ from pyiceberg.exceptions import (
 from pyiceberg.io.fsspec import FsspecFileIO
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
+from pyiceberg.table.snapshots import Operation
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import LongType, NestedField, StringType
 
@@ -460,8 +461,6 @@ class TestTableAppend:
         latest_snapshot = snapshots_after[-1]
         assert latest_snapshot.summary is not None
         # Summary.operation is an enum, not a string
-        from pyiceberg.table.snapshots import Operation
-
         assert latest_snapshot.summary.operation == Operation.APPEND
 
     def test_append_data_partition_integrity(self, writable_catalog):

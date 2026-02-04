@@ -1,14 +1,19 @@
 """Tests for the iceberg module (Iceberg metadata generation)."""
 
 import hashlib
+import json
 import shutil
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from pyiceberg.io.pyarrow import PyArrowFileIO
+from pyiceberg.manifest import ManifestEntryStatus
+from pyiceberg.table import StaticTable
+from pyiceberg.types import ListType, StructType
 
-from faceberg.iceberg import ParquetFile, write_snapshot
+from faceberg.iceberg import ParquetFile, create_schema, diff_snapshot, write_snapshot
 
 
 @pytest.fixture
@@ -102,9 +107,7 @@ class TestInitialSnapshot:
 
     def test_initial_snapshot_creates_valid_metadata(self, tmp_path, parquet_files, arrow_schema):
         """Test that initial snapshot creates valid Iceberg metadata."""
-        from pyiceberg.table import StaticTable
-
-        metadata = write_snapshot(
+        _metadata = write_snapshot(
             files=parquet_files,
             schema=arrow_schema,
             current_metadata=None,
@@ -134,7 +137,6 @@ class TestInitialSnapshot:
 
     def test_initial_snapshot_scan_returns_data(self, tmp_path, parquet_files, arrow_schema):
         """Test that initial snapshot can be scanned correctly."""
-        from pyiceberg.table import StaticTable
 
         write_snapshot(
             files=parquet_files,
@@ -161,7 +163,6 @@ class TestAppendSnapshot:
 
     def test_append_files_creates_new_snapshot(self, tmp_path, parquet_files, arrow_schema):
         """Test that appending files creates a new snapshot with all files."""
-        from pyiceberg.table import StaticTable
 
         # Create initial snapshot
         metadata = write_snapshot(
@@ -210,7 +211,6 @@ class TestDeleteSnapshot:
 
     def test_delete_files_removes_from_snapshot(self, tmp_path, parquet_files, arrow_schema):
         """Test that deleting files removes them from the current snapshot."""
-        from pyiceberg.table import StaticTable
 
         # Create initial snapshot
         metadata = write_snapshot(
@@ -258,7 +258,6 @@ class TestOverwriteSnapshot:
 
     def test_overwrite_replaces_files(self, tmp_path, parquet_files, arrow_schema):
         """Test that overwrite removes old files and adds new ones."""
-        from pyiceberg.table import StaticTable
 
         # Create initial snapshot
         metadata = write_snapshot(
@@ -323,7 +322,6 @@ class TestRenameFile:
 
     def test_rename_file_updates_uri(self, tmp_path, parquet_files, arrow_schema):
         """Test renaming a file (delete old URI + add new URI with same content)."""
-        from pyiceberg.table import StaticTable
 
         # Create initial snapshot
         metadata = write_snapshot(
@@ -380,7 +378,6 @@ class TestManifestEntries:
 
     def test_initial_entries_are_added(self, tmp_path, parquet_files, arrow_schema):
         """Test that initial snapshot entries have ADDED status."""
-        from pyiceberg.table import StaticTable
 
         write_snapshot(
             files=parquet_files,
@@ -401,7 +398,6 @@ class TestManifestEntries:
 
     def test_append_entries_are_added(self, tmp_path, parquet_files, arrow_schema):
         """Test that appended files have ADDED status in new manifest."""
-        from pyiceberg.table import StaticTable
 
         metadata = write_snapshot(
             files=parquet_files,
@@ -438,10 +434,6 @@ class TestDiffSnapshotFiles:
 
     def test_initial_snapshot_all_added(self, tmp_path, parquet_files, arrow_schema):
         """Test that with no previous metadata, all files are ADDED."""
-        from pyiceberg.io.pyarrow import PyArrowFileIO
-        from pyiceberg.manifest import ManifestEntryStatus
-
-        from faceberg.iceberg import diff_snapshot
 
         io = PyArrowFileIO()
         result = diff_snapshot(parquet_files, None, io)
@@ -454,10 +446,6 @@ class TestDiffSnapshotFiles:
 
     def test_existing_files_unchanged(self, tmp_path, parquet_files, arrow_schema):
         """Test that files unchanged from previous snapshot are EXISTING."""
-        from pyiceberg.io.pyarrow import PyArrowFileIO
-        from pyiceberg.manifest import ManifestEntryStatus
-
-        from faceberg.iceberg import diff_snapshot
 
         # Create initial snapshot
         metadata = write_snapshot(
@@ -480,10 +468,6 @@ class TestDiffSnapshotFiles:
 
     def test_removed_files(self, tmp_path, parquet_files, arrow_schema):
         """Test that files in previous snapshot but not in current are REMOVED."""
-        from pyiceberg.io.pyarrow import PyArrowFileIO
-        from pyiceberg.manifest import ManifestEntryStatus
-
-        from faceberg.iceberg import diff_snapshot
 
         # Create initial snapshot
         metadata = write_snapshot(
@@ -516,10 +500,6 @@ class TestDiffSnapshotFiles:
 
     def test_changed_files_removed_and_added(self, tmp_path, parquet_files, arrow_schema):
         """Test that files with same URI but different hash/size are REMOVED + ADDED."""
-        from pyiceberg.io.pyarrow import PyArrowFileIO
-        from pyiceberg.manifest import ManifestEntryStatus
-
-        from faceberg.iceberg import diff_snapshot
 
         # Create initial snapshot
         metadata = write_snapshot(
@@ -566,3 +546,366 @@ class TestDiffSnapshotFiles:
         assert added_count == 1
         assert removed_count == 1
         assert existing_count == 4
+
+
+class TestSchemaConversion:
+    """Tests for create_schema with complex nested structures."""
+
+    def test_schema_with_nested_struct(self):
+        """Test schema conversion with nested struct fields."""
+        # Create PyArrow schema with nested struct
+        arrow_schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "metadata",
+                    pa.struct(
+                        [
+                            pa.field("title", pa.string()),
+                            pa.field("author", pa.string()),
+                            pa.field("year", pa.int32()),
+                        ]
+                    ),
+                ),
+            ]
+        )
+
+        schema = create_schema(arrow_schema, include_split_column=False)
+
+        # Verify structure
+        field_names = [f.name for f in schema.fields]
+        assert "id" in field_names
+        assert "metadata" in field_names
+
+        # Find metadata field
+        metadata_field = next(f for f in schema.fields if f.name == "metadata")
+        assert isinstance(metadata_field.field_type, StructType)
+
+        # Verify nested fields
+        nested_field_names = [f.name for f in metadata_field.field_type.fields]
+        assert "title" in nested_field_names
+        assert "author" in nested_field_names
+        assert "year" in nested_field_names
+
+    def test_schema_with_list_field(self):
+        """Test schema conversion with list fields."""
+        arrow_schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("tags", pa.list_(pa.string())),
+            ]
+        )
+
+        schema = create_schema(arrow_schema, include_split_column=False)
+
+        # Find tags field
+        tags_field = next(f for f in schema.fields if f.name == "tags")
+        assert isinstance(tags_field.field_type, ListType)
+
+    def test_schema_with_deeply_nested_structures(self):
+        """Test schema conversion with deeply nested structures."""
+        arrow_schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "nested",
+                    pa.struct(
+                        [
+                            pa.field("field1", pa.string()),
+                            pa.field("field2", pa.int32()),
+                            pa.field(
+                                "deeper",
+                                pa.struct([pa.field("field3", pa.string())]),
+                            ),
+                        ]
+                    ),
+                ),
+                pa.field("list_field", pa.list_(pa.string())),
+            ]
+        )
+
+        schema = create_schema(arrow_schema, include_split_column=True)
+
+        # Should include split column
+        field_names = [f.name for f in schema.fields]
+        assert "split" in field_names
+        assert schema.fields[0].name == "split"
+
+        # Verify nested field exists
+        nested_field = next(f for f in schema.fields if f.name == "nested")
+        assert isinstance(nested_field.field_type, StructType)
+
+    def test_unique_field_ids_across_nested_structures(self):
+        """Test that all field IDs are unique across nested structures."""
+        arrow_schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "nested",
+                    pa.struct(
+                        [
+                            pa.field("field1", pa.string()),
+                            pa.field("field2", pa.int32()),
+                            pa.field(
+                                "deeper",
+                                pa.struct([pa.field("field3", pa.string())]),
+                            ),
+                        ]
+                    ),
+                ),
+                pa.field("list_field", pa.list_(pa.string())),
+            ]
+        )
+
+        schema = create_schema(arrow_schema, include_split_column=True)
+
+        # Collect all field IDs recursively
+        def collect_field_ids(field_type, ids=None):
+            if ids is None:
+                ids = []
+
+            if isinstance(field_type, StructType):
+                for field in field_type.fields:
+                    ids.append(field.field_id)
+                    collect_field_ids(field.field_type, ids)
+            elif isinstance(field_type, ListType):
+                ids.append(field_type.element_id)
+                collect_field_ids(field_type.element_type, ids)
+
+            return ids
+
+        # Get all field IDs
+        all_ids = [f.field_id for f in schema.fields]
+        for field in schema.fields:
+            all_ids.extend(collect_field_ids(field.field_type))
+
+        # Check all IDs are unique
+        assert len(all_ids) == len(set(all_ids)), f"Duplicate field IDs found: {all_ids}"
+
+
+class TestNameMapping:
+    """Tests for name mapping with nested structures."""
+
+    def test_name_mapping_with_nested_structs(self, tmp_path):
+        """Test that name mapping includes nested struct fields."""
+        # Create schema with nested structs
+        iceberg_schema = pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field(
+                    "metadata",
+                    pa.struct(
+                        [
+                            pa.field("author", pa.string()),
+                            pa.field("year", pa.int32()),
+                        ]
+                    ),
+                ),
+            ]
+        )
+
+        # Create a test parquet file
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        file_path = data_dir / "test.parquet"
+        table = pa.table(
+            {
+                "id": ["1", "2"],
+                "metadata": [
+                    {"author": "Alice", "year": 2020},
+                    {"author": "Bob", "year": 2021},
+                ],
+            },
+            schema=iceberg_schema,
+        )
+        pq.write_table(table, file_path)
+
+        files = [
+            ParquetFile(
+                uri=str(file_path),
+                path=str(file_path),
+                size=file_path.stat().st_size,
+                blob_id="test",
+            )
+        ]
+
+        # Write snapshot with schema
+        metadata = write_snapshot(
+            files=files,
+            schema=iceberg_schema,
+            current_metadata=None,
+            output_dir=tmp_path,
+            base_uri=f"file://{tmp_path}",
+            include_split_column=False,
+        )
+
+        # Get name mapping from properties
+        name_mapping = json.loads(metadata.properties["schema.name-mapping.default"])
+
+        # Check top-level fields
+        assert len(name_mapping) == 2
+        assert name_mapping[0]["names"] == ["id"]
+        assert name_mapping[1]["names"] == ["metadata"]
+
+        # Check nested struct field
+        metadata_mapping = name_mapping[1]
+        assert "fields" in metadata_mapping
+        assert len(metadata_mapping["fields"]) == 2
+
+        # Check nested struct's child fields
+        assert metadata_mapping["fields"][0]["names"] == ["author"]
+        assert metadata_mapping["fields"][1]["names"] == ["year"]
+
+    def test_name_mapping_with_lists(self, tmp_path):
+        """Test that name mapping includes list element mappings."""
+        # Create schema with list of strings and list of structs
+        iceberg_schema = pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("tags", pa.list_(pa.string())),
+                pa.field(
+                    "items",
+                    pa.list_(
+                        pa.struct(
+                            [
+                                pa.field("name", pa.string()),
+                                pa.field("value", pa.string()),
+                            ]
+                        )
+                    ),
+                ),
+            ]
+        )
+
+        # Create test parquet file
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        file_path = data_dir / "test.parquet"
+        table = pa.table(
+            {
+                "id": ["1"],
+                "tags": [["tag1", "tag2"]],
+                "items": [[{"name": "item1", "value": "val1"}]],
+            },
+            schema=iceberg_schema,
+        )
+        pq.write_table(table, file_path)
+
+        files = [
+            ParquetFile(
+                uri=str(file_path),
+                path=str(file_path),
+                size=file_path.stat().st_size,
+                blob_id="test",
+            )
+        ]
+
+        metadata = write_snapshot(
+            files=files,
+            schema=iceberg_schema,
+            current_metadata=None,
+            output_dir=tmp_path,
+            base_uri=f"file://{tmp_path}",
+            include_split_column=False,
+        )
+
+        name_mapping = json.loads(metadata.properties["schema.name-mapping.default"])
+
+        # Check list of strings (tags)
+        tags_mapping = name_mapping[1]
+        assert tags_mapping["names"] == ["tags"]
+        assert "fields" in tags_mapping
+        assert len(tags_mapping["fields"]) == 1
+
+        # Check element mapping for simple list
+        element_mapping = tags_mapping["fields"][0]
+        assert element_mapping["names"] == ["element"]
+
+        # Check list of structs (items)
+        items_mapping = name_mapping[2]
+        assert items_mapping["names"] == ["items"]
+        assert "fields" in items_mapping
+
+        # Check element mapping for list of structs
+        items_element = items_mapping["fields"][0]
+        assert items_element["names"] == ["element"]
+        assert "fields" in items_element
+
+        # Check struct fields within list element
+        assert len(items_element["fields"]) == 2
+        assert items_element["fields"][0]["names"] == ["name"]
+        assert items_element["fields"][1]["names"] == ["value"]
+
+    def test_name_mapping_with_maps(self, tmp_path):
+        """Test that name mapping includes map key and value mappings."""
+        # Create schema with a map
+        iceberg_schema = pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field(
+                    "metadata",
+                    pa.map_(
+                        pa.string(),
+                        pa.struct(
+                            [
+                                pa.field("count", pa.int32()),
+                                pa.field("name", pa.string()),
+                            ]
+                        ),
+                    ),
+                ),
+            ]
+        )
+
+        # Create test parquet file
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        file_path = data_dir / "test.parquet"
+        table = pa.table(
+            {
+                "id": ["1"],
+                "metadata": [[("key1", {"count": 1, "name": "name1"})]],
+            },
+            schema=iceberg_schema,
+        )
+        pq.write_table(table, file_path)
+
+        files = [
+            ParquetFile(
+                uri=str(file_path),
+                path=str(file_path),
+                size=file_path.stat().st_size,
+                blob_id="test",
+            )
+        ]
+
+        metadata = write_snapshot(
+            files=files,
+            schema=iceberg_schema,
+            current_metadata=None,
+            output_dir=tmp_path,
+            base_uri=f"file://{tmp_path}",
+            include_split_column=False,
+        )
+
+        name_mapping = json.loads(metadata.properties["schema.name-mapping.default"])
+
+        # Check map field
+        metadata_mapping = name_mapping[1]
+        assert metadata_mapping["names"] == ["metadata"]
+        assert "fields" in metadata_mapping
+        assert len(metadata_mapping["fields"]) == 2
+
+        # Check key mapping
+        key_mapping = metadata_mapping["fields"][0]
+        assert key_mapping["names"] == ["key"]
+
+        # Check value mapping
+        value_mapping = metadata_mapping["fields"][1]
+        assert value_mapping["names"] == ["value"]
+        assert "fields" in value_mapping
+
+        # Check struct fields within map value
+        assert len(value_mapping["fields"]) == 2
+        assert value_mapping["fields"][0]["names"] == ["count"]
+        assert value_mapping["fields"][1]["names"] == ["name"]
