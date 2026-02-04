@@ -303,18 +303,29 @@ def parquet_file_to_data_file(
     io: FileIO,
     table_metadata: "TableMetadataV2",
     parquet_file: ParquetFile,
+    include_split_column: bool = True,
 ) -> DataFile:
     """Convert ParquetFile to DataFile using flexible field mapping.
 
     This implementation builds a flexible field mapping that supports both
     'element' (Parquet spec) and 'item' (Arrow convention) for list fields,
     handling Parquet files written by both spec-compliant and non-compliant writers.
+
+    Args:
+        io: FileIO for reading parquet files
+        table_metadata: Table metadata containing schema and partition spec
+        parquet_file: ParquetFile with uri, size, and optional split metadata
+        include_split_column: If True, includes split from ParquetFile in partition
+
+    Returns:
+        DataFile with appropriate partition values
     """
     input_file = io.new_input(parquet_file.uri)
     with input_file.open() as f:
         parquet_metadata = pq.read_metadata(f)
 
     schema = table_metadata.schema()
+    spec = table_metadata.spec()
 
     # Use flexible mapping that handles both 'element' and 'item'
     statistics = data_file_statistics_from_parquet_metadata(
@@ -323,11 +334,20 @@ def parquet_file_to_data_file(
         parquet_column_mapping=parquet_path_to_id_mapping(schema),
     )
 
+    # Get partition from statistics (handles columns present in parquet file)
+    partition = statistics.partition(spec, schema)
+    # Add split to partition if requested and we have split metadata
+    # The split is not in the parquet file itself, it's metadata we know about the file
+    if include_split_column:
+        for i, field in enumerate(spec.fields):
+            if field.name == "split":
+                partition[i] = parquet_file.split
+
     return DataFile.from_args(
         content=DataFileContent.DATA,
         file_path=parquet_file.uri,
         file_format="PARQUET",
-        partition=statistics.partition(table_metadata.spec(), schema),
+        partition=partition,
         file_size_in_bytes=parquet_file.size,
         sort_order_id=None,
         spec_id=table_metadata.default_spec_id,
@@ -348,6 +368,7 @@ def write_manifest(
     io: FileIO,
     output_file,
     uri: str,
+    include_split_column: bool = False,
 ) -> Tuple[ManifestFile, List]:
     """Create and write a manifest file.
 
@@ -364,6 +385,7 @@ def write_manifest(
         io: FileIO instance for reading files
         output_file: OutputFile to write to
         uri: URI path to use in the returned ManifestFile
+        include_split_column: If True, includes split from ParquetFile in partition
 
     Returns:
         Tuple of (ManifestFile object, List of ManifestEntry objects)
@@ -383,6 +405,7 @@ def write_manifest(
                 io=io,
                 table_metadata=metadata,
                 parquet_file=parquet_file,
+                include_split_column=include_split_column,
             )
 
             # Create manifest entry with the appropriate status
@@ -589,6 +612,7 @@ def write_snapshot(
         io,
         output_file,
         manifest_uri,
+        include_split_column=include_split_column,
     )
 
     # Create manifest list
