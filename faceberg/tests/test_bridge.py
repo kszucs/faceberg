@@ -14,6 +14,7 @@ from pyiceberg.types import (
 
 from faceberg.bridge import (
     DatasetInfo,
+    FileInfo,
     dataset_builder_safe,
     iceberg_schema_from_features,
 )
@@ -37,7 +38,9 @@ def test_discover_public_dataset():
     assert "train" in dataset_info.data_files
     train_files = dataset_info.data_files["train"]
     assert len(train_files) > 0
-    assert all(isinstance(f, str) for f in train_files)
+    assert all(isinstance(f, FileInfo) for f in train_files)
+    # Check that file sizes are populated
+    assert all(f.size_bytes is not None and f.size_bytes > 0 for f in train_files)
 
 
 def test_discover_with_specific_config():
@@ -509,151 +512,6 @@ def test_table_info_name_mapping_with_maps():
 # =============================================================================
 
 
-def test_dataset_new_files_no_new_files():
-    """Test when no files were added between revisions."""
-    from unittest.mock import Mock, patch
-
-    from faceberg.bridge import dataset_new_files
-
-    # Mock HfApi
-    mock_api = Mock()
-    mock_api.list_repo_files.return_value = [
-        "plain_text/train-00000.parquet",
-        "plain_text/test-00000.parquet",
-        "README.md",
-    ]
-
-    with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = dataset_new_files(
-            repo_id="test/dataset",
-            config="plain_text",
-            old_revision="abc123",
-            new_revision="def456",
-        )
-
-    # Should return empty list when files are the same
-    assert result == []
-
-    # Verify API was called with both revisions
-    assert mock_api.list_repo_files.call_count == 2
-    calls = mock_api.list_repo_files.call_args_list
-    assert calls[0].kwargs["revision"] == "abc123"
-    assert calls[1].kwargs["revision"] == "def456"
-
-
-def test_dataset_new_files_with_new_files():
-    """Test when new parquet files were added."""
-    from unittest.mock import Mock, patch
-
-    from faceberg.bridge import dataset_new_files
-
-    # Mock HfApi
-    mock_api = Mock()
-
-    def list_files_side_effect(**kwargs):
-        if kwargs["revision"] == "abc123":
-            # Old revision has 2 files
-            return [
-                "plain_text/train-00000.parquet",
-                "plain_text/test-00000.parquet",
-                "README.md",
-            ]
-        else:
-            # New revision has 4 files (2 new)
-            return [
-                "plain_text/train-00000.parquet",
-                "plain_text/train-00001.parquet",  # NEW
-                "plain_text/test-00000.parquet",
-                "plain_text/validation-00000.parquet",  # NEW
-                "README.md",
-            ]
-
-    mock_api.list_repo_files.side_effect = list_files_side_effect
-
-    with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = dataset_new_files(
-            repo_id="test/dataset",
-            config="plain_text",
-            old_revision="abc123",
-            new_revision="def456",
-        )
-
-    # Should return list of new file paths
-    assert result == [
-        "plain_text/train-00001.parquet",
-        "plain_text/validation-00000.parquet",
-    ]
-
-
-def test_dataset_new_files_filters_by_config():
-    """Test that only files for specified config are returned."""
-    from unittest.mock import Mock, patch
-
-    from faceberg.bridge import dataset_new_files
-
-    # Mock HfApi
-    mock_api = Mock()
-
-    def list_files_side_effect(**kwargs):
-        if kwargs["revision"] == "abc123":
-            return ["README.md"]
-        else:
-            # New files in multiple configs
-            return [
-                "plain_text/train-00000.parquet",  # Should be included
-                "other_config/train-00000.parquet",  # Should be excluded
-                "README.md",
-            ]
-
-    mock_api.list_repo_files.side_effect = list_files_side_effect
-
-    with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = dataset_new_files(
-            repo_id="test/dataset",
-            config="plain_text",
-            old_revision="abc123",
-            new_revision="def456",
-        )
-
-    # Should return only plain_text config file paths
-    assert result == ["plain_text/train-00000.parquet"]
-
-
-def test_dataset_new_files_ignores_non_parquet():
-    """Test that non-parquet files are filtered out."""
-    from unittest.mock import Mock, patch
-
-    from faceberg.bridge import dataset_new_files
-
-    # Mock HfApi
-    mock_api = Mock()
-
-    def list_files_side_effect(**kwargs):
-        if kwargs["revision"] == "abc123":
-            return []
-        else:
-            # Mix of file types
-            return [
-                "plain_text/train-00000.parquet",  # Should be included
-                "plain_text/metadata.json",  # Should be excluded
-                "plain_text/dataset_info.txt",  # Should be excluded
-                "README.md",  # Should be excluded
-            ]
-
-    mock_api.list_repo_files.side_effect = list_files_side_effect
-
-    with patch("faceberg.bridge.HfApi", return_value=mock_api):
-        result = dataset_new_files(
-            repo_id="test/dataset",
-            config="plain_text",
-            old_revision="abc123",
-            new_revision="def456",
-        )
-
-    # Should return only parquet file paths
-    assert result == ["plain_text/train-00000.parquet"]
-
-
 def test_discover_with_since_revision():
     """Test that passing since_revision to discover filters to new files only."""
     from unittest.mock import Mock, patch
@@ -678,23 +536,40 @@ def test_discover_with_since_revision():
         "test": ["hf://datasets/test/dataset@def456/plain_text/test-00000.parquet"],
     }
 
-    # Mock dataset_new_files to return list of new file paths
-    mock_get_new_files = Mock(
-        return_value=[
-            "plain_text/train-00001.parquet",
-            "plain_text/test-00000.parquet",
-        ]
-    )
+    # Mock HfApi.dataset_info to return dataset_info with siblings
+    def create_sibling(rfilename, size):
+        sibling = Mock()
+        sibling.rfilename = rfilename
+        sibling.size = size
+        return sibling
+
+    mock_dataset_info_current = Mock()
+    mock_dataset_info_current.siblings = [
+        create_sibling("plain_text/train-00000.parquet", 1000),
+        create_sibling("plain_text/train-00001.parquet", 2000),
+        create_sibling("plain_text/test-00000.parquet", 3000),
+    ]
+
+    mock_dataset_info_old = Mock()
+    mock_dataset_info_old.siblings = [
+        create_sibling("plain_text/train-00000.parquet", 1000),
+    ]
+
+    mock_api = Mock()
+
+    def dataset_info_side_effect(repo_id, files_metadata=None, revision=None):
+        if revision == "abc123":
+            return mock_dataset_info_old
+        else:
+            return mock_dataset_info_current
+
+    mock_api.dataset_info.side_effect = dataset_info_side_effect
 
     # Mock HfFileSystem to resolve file URIs
     mock_fs = Mock()
 
     def mock_resolve_path(uri):
-        # Extract path from URI: "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"
-        # Split: ['hf:', '', 'datasets', 'test', 'dataset@def456', 'plain_text',
-        #         'train-00001.parquet']
         parts = uri.split("/")
-        # Join everything after repo@revision (starting from index 5)
         path = "/".join(parts[5:])
         mock_result = Mock()
         mock_result.path_in_repo = path
@@ -704,7 +579,7 @@ def test_discover_with_since_revision():
 
     with (
         patch("faceberg.bridge.dataset_builder_safe", return_value=mock_builder),
-        patch("faceberg.bridge.dataset_new_files", mock_get_new_files),
+        patch("faceberg.bridge.HfApi", return_value=mock_api),
         patch("faceberg.bridge.HfFileSystem", return_value=mock_fs),
     ):
         # Discover with since_revision (should return only new files)
@@ -719,24 +594,19 @@ def test_discover_with_since_revision():
     assert "train" in dataset_info.splits
     assert "test" in dataset_info.splits
 
-    # Verify data files are populated with new files
+    # Verify data files are populated with new files (now FileInfo objects)
     assert "train" in dataset_info.data_files
     assert "test" in dataset_info.data_files
-    assert dataset_info.data_files["train"] == [
-        "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"
-    ]
-    assert dataset_info.data_files["test"] == [
-        "hf://datasets/test/dataset@def456/plain_text/test-00000.parquet"
-    ]
-
-    # Verify dataset_new_files was called with correct args
-    mock_get_new_files.assert_called_once_with(
-        repo_id="test/dataset",
-        config="plain_text",
-        old_revision="abc123",
-        new_revision="def456",
-        token=None,
-    )
+    train_files = dataset_info.data_files["train"]
+    test_files = dataset_info.data_files["test"]
+    assert len(train_files) == 1
+    assert len(test_files) == 1
+    assert all(isinstance(f, FileInfo) for f in train_files + test_files)
+    assert train_files[0].uri == "hf://datasets/test/dataset@def456/plain_text/train-00001.parquet"
+    assert test_files[0].uri == "hf://datasets/test/dataset@def456/plain_text/test-00000.parquet"
+    # Check file sizes are populated
+    assert train_files[0].size_bytes == 2000
+    assert test_files[0].size_bytes == 3000
 
     # Now convert to TableInfo and verify
     table_info = dataset_info.to_table_info(
