@@ -1,4 +1,4 @@
-name: Tests
+name: Main
 
 on:
   push:
@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -85,7 +85,7 @@ jobs:
           path: dist/
 
   publish:
-    name: Publish to PyPI
+    name: publish
     if: github.ref_type == 'tag'
     needs:
       - lint
