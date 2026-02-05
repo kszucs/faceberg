@@ -61,7 +61,7 @@ jobs:
         run: just test
 
   build:
-    name: Build distribution
+    name: dist
     runs-on: ubuntu-latest
 
     steps:

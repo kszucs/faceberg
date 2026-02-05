@@ -88,6 +88,7 @@ target-version = ["py39"]
 [tool.ruff]
 line-length = 100
 fix = true
+extend-exclude = ["faceberg/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
