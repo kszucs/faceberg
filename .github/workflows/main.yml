@@ -51,6 +51,17 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v2
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
 
