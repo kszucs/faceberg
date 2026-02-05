@@ -4,6 +4,9 @@ import re
 import time
 
 import pytest
+
+# Skip all tests in this module if playwright is not installed
+playwright = pytest.importorskip("playwright", reason="Playwright not installed")
 from playwright.sync_api import Page, expect
 
 
