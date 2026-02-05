@@ -3,6 +3,8 @@ name: Docs
 on:
   push:
     branches: [main]
+    tags:
+      - "v*"
   pull_request:
     branches: [main]
 
@@ -39,13 +41,13 @@ jobs:
         run: quarto render docs
 
       - name: Upload artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref_type == 'tag'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/_site
 
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
     environment:
