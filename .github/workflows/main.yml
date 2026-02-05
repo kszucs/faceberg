@@ -51,6 +51,9 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v2
 
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         id: playwright-cache
@@ -61,9 +64,6 @@ jobs:
       - name: Install Playwright browsers
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: playwright install --with-deps chromium
-
-      - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
 
       - name: Run tests with coverage
         run: just test
