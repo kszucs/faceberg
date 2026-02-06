@@ -102,5 +102,7 @@ disallow_untyped_defs = false
 
 [dependency-groups]
 dev = [
+    "pytest>=8.4.2",
+    "pytest-playwright>=0.7.1",
     "ruff>=0.15.0",
 ]
