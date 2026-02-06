@@ -70,7 +70,7 @@ def add(ctx, dataset, table, config):
 
     # Determine table identifier
     if table is None:
-        identifier = tuple(dataset.split("/"))
+        identifier = tuple(dataset.replace(".", "_").split("/"))
     else:
         identifier = table
     name = ".".join(identifier)
