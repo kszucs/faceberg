@@ -160,6 +160,10 @@ def landing_page(state: State) -> Template:
                 dataset_repo = props.get("hf.dataset.repo", "")
                 dataset_config = props.get("hf.dataset.config", "")
 
+                # Get full table metadata as dict for JSON display
+                # Use mode="json" to serialize UUIDs and other non-JSON types
+                metadata_dict = table.metadata.model_dump(by_alias=True, mode="json")
+
                 # Build table data structure
                 table_data = {
                     "name": table_name,
@@ -171,6 +175,7 @@ def landing_page(state: State) -> Template:
                     "dataset_repo": dataset_repo,
                     "dataset_config": dataset_config,
                     "metadata_location": table.metadata_location,
+                    "metadata": metadata_dict,
                 }
 
                 tables_data.append(table_data)
@@ -194,7 +199,7 @@ def landing_page(state: State) -> Template:
     return Template(
         template_name="landing.html",
         context={
-            "catalog_uri": catalog.properties.get("uri", str(catalog)),
+            "catalog_uri": catalog.uri,
             "namespaces": namespaces_data,
             "total_tables": sum(ns["table_count"] for ns in namespaces_data),
         },
