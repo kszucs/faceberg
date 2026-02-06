@@ -83,14 +83,15 @@ JSON for table metadata.
 """
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from threading import Lock
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pyiceberg.io import FileIO
 from pyiceberg.io.pyarrow import (
-    PyArrowFileIO,
     _pyarrow_to_schema_without_ids,
     compute_statistics_plan,
     data_file_statistics_from_parquet_metadata,
@@ -198,7 +199,7 @@ def diff_snapshot(
     return result
 
 
-def create_schema(arrow_schema: pa.Schema, include_split_column: bool = False) -> Schema:
+def create_schema(arrow_schema: pa.Schema, include_split_column: bool) -> Schema:
     """Convert PyArrow schema to Iceberg Schema.
 
     Converts PyArrow schema to Iceberg Schema with globally unique field IDs
@@ -239,7 +240,7 @@ def create_schema(arrow_schema: pa.Schema, include_split_column: bool = False) -
     return schema
 
 
-def create_partition_spec(schema: Schema, include_split_column: bool = False) -> PartitionSpec:
+def create_partition_spec(schema: Schema, include_split_column: bool) -> PartitionSpec:
     """Build a partition spec with optional split partitioning.
 
     Creates an identity partition on the split field when requested.
@@ -299,11 +300,11 @@ def parquet_path_to_id_mapping(schema: Schema) -> dict[str, int]:
 
 # TODO(kszucs): copied from pyiceberg.io.pyarrow with modifications to resolve list
 # field mapping issues, remove once fixed in pyiceberg
-def parquet_file_to_data_file(
+def create_data_file(
     io: FileIO,
     table_metadata: "TableMetadataV2",
     parquet_file: ParquetFile,
-    include_split_column: bool = True,
+    include_split_column: bool,
 ) -> DataFile:
     """Convert ParquetFile to DataFile using flexible field mapping.
 
@@ -320,6 +321,9 @@ def parquet_file_to_data_file(
     Returns:
         DataFile with appropriate partition values
     """
+    # TODO(kszucs): this is a port of the upstream parquet_file_to_data_file function
+    # with modifications to handle list field mapping issues, nce the upstream issue
+    # is resolved should use the original from pyiceberg.io.pyarrow directly
     input_file = io.new_input(parquet_file.uri)
     with input_file.open() as f:
         parquet_metadata = pq.read_metadata(f)
@@ -357,7 +361,6 @@ def parquet_file_to_data_file(
     )
 
 
-# TODO(kszucs): allow parallel calls to parquet_file_to_data_file
 def write_manifest(
     files: List[Tuple[ManifestEntryStatus, ParquetFile]],
     metadata: TableMetadataV2,
@@ -367,8 +370,10 @@ def write_manifest(
     sequence_number: int,
     io: FileIO,
     output_file,
-    uri: str,
-    include_split_column: bool = False,
+    manifest_uri: str,
+    include_split_column: bool,
+    progress_callback: Callable,
+    max_workers: Optional[int] = None,
 ) -> Tuple[ManifestFile, List]:
     """Create and write a manifest file.
 
@@ -384,12 +389,49 @@ def write_manifest(
         sequence_number: Sequence number for the entries
         io: FileIO instance for reading files
         output_file: OutputFile to write to
-        uri: URI path to use in the returned ManifestFile
+        manifest_uri: URI path to use in the returned ManifestFile
         include_split_column: If True, includes split from ParquetFile in partition
+        progress_callback: Callable for reporting progress (state, percent, stage)
+        max_workers: Maximum number of threads for parallel DataFile conversion.
+            If None, uses ThreadPoolExecutor default
 
     Returns:
         Tuple of (ManifestFile object, List of ManifestEntry objects)
     """
+    progress_callback(state="in_progress", percent=20, stage="Creating metadata files")
+
+    # Convert ParquetFiles to DataFiles in parallel (I/O bound operation)
+    total_files = len(files)
+    completed_files = 0
+    lock = Lock()
+
+    def convert_file(parquet_file: ParquetFile) -> DataFile:
+        nonlocal completed_files
+        result = create_data_file(
+            io=io,
+            table_metadata=metadata,
+            parquet_file=parquet_file,
+            include_split_column=include_split_column,
+        )
+        with lock:
+            completed_files += 1
+            fraction_done = completed_files / total_files
+            percent = 20 + int(fraction_done * 70)  # Map to 20-90% range
+            progress_callback(
+                state="in_progress",
+                percent=percent,
+                stage=f"{parquet_file.path} ({completed_files}/{total_files})",
+            )
+        return result
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        parquet_files = [pf for _, pf in files]
+        data_files = list(executor.map(convert_file, parquet_files))
+
+    # Create a mapping from ParquetFile to DataFile
+    data_file_map = {pf.uri: df for pf, df in zip(parquet_files, data_files)}
+
+    # Write manifest entries with pre-computed DataFiles
     entries = []
     with _write_manifest(
         format_version=2,
@@ -400,13 +442,7 @@ def write_manifest(
         avro_compression="deflate",
     ) as writer:
         for status, parquet_file in files:
-            # Convert ParquetFile to DataFile
-            data_file = parquet_file_to_data_file(
-                io=io,
-                table_metadata=metadata,
-                parquet_file=parquet_file,
-                include_split_column=include_split_column,
-            )
+            data_file = data_file_map[parquet_file.uri]
 
             # Create manifest entry with the appropriate status
             entry = ManifestEntry.from_args(
@@ -421,7 +457,7 @@ def write_manifest(
         manifest = writer.to_manifest_file()
 
     manifest_file = ManifestFile.from_args(
-        manifest_path=uri,
+        manifest_path=manifest_uri,
         manifest_length=manifest.manifest_length,
         partition_spec_id=manifest.partition_spec_id,
         content=manifest.content,
@@ -514,9 +550,11 @@ def write_snapshot(
     current_metadata: Optional[TableMetadataV2],
     output_dir: Path,
     base_uri: str,
-    properties: Optional[Dict[str, str]] = None,
-    include_split_column: bool = True,
-    io: Optional[FileIO] = None,
+    properties: Dict[str, str],
+    progress_callback: Callable,
+    include_split_column: bool,
+    io: FileIO,
+    max_workers: Optional[int] = None,
 ) -> TableMetadataV2:
     """Write new snapshot metadata.
 
@@ -536,14 +574,13 @@ def write_snapshot(
         include_split_column: Whether to include a 'split' column in the schema and partition
             by it. When True, adds a split column to the schema and partitions by split.
             When False, uses unpartitioned spec (default: True)
-        io: Optional FileIO instance (default: PyArrowFileIO)
+        io: FileIO instance
+        max_workers: Maximum number of threads for parallel DataFile conversion in manifest writing.
+            If None, uses ThreadPoolExecutor default
 
     Returns:
         Updated TableMetadataV2
     """
-    properties = properties or {}
-    io = io or PyArrowFileIO()
-
     # Ensure metadata directory exists
     metadata_dir = output_dir / "metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
@@ -593,6 +630,7 @@ def write_snapshot(
             merged_properties.update(properties)
 
     # Diff the provided files against previous snapshot
+    progress_callback(state="in_progress", percent=15, stage="Diffing snapshots")
     diff_results = diff_snapshot(files, current_metadata, io)
 
     # Create single manifest with all entries (mixed statuses)
@@ -602,17 +640,21 @@ def write_snapshot(
 
     output_file = io.new_output(str(manifest_path))
     # Write manifest with final URI and get entries
+
+    progress_callback(state="in_progress", percent=20, stage="Writing manifest file")
     manifest, manifest_entries = write_manifest(
-        diff_results,
-        file_metadata,
-        iceberg_schema,
-        spec,
-        snapshot_id,
-        sequence_number,
-        io,
-        output_file,
-        manifest_uri,
+        files=diff_results,
+        metadata=file_metadata,
+        schema=iceberg_schema,
+        spec=spec,
+        snapshot_id=snapshot_id,
+        sequence_number=sequence_number,
+        io=io,
+        output_file=output_file,
+        manifest_uri=manifest_uri,
         include_split_column=include_split_column,
+        max_workers=max_workers,
+        progress_callback=progress_callback,
     )
 
     # Create manifest list
@@ -620,6 +662,7 @@ def write_snapshot(
     manifest_list_path = metadata_dir / manifest_list_filename
     manifest_list_uri = f"{base_uri}/metadata/{manifest_list_filename}"
 
+    progress_callback(state="in_progress", percent=90, stage="Writing manifest list")
     manifest_list_output = io.new_output(str(manifest_list_path))
     with write_manifest_list(
         format_version=2,
@@ -695,6 +738,7 @@ def write_snapshot(
         )
 
     # Write metadata file and version hint
+    progress_callback(state="in_progress", percent=95, stage="Writing metadata file and type hint")
     version = len(metadata.snapshots)
     metadata_file = metadata_dir / f"v{version}.metadata.json"
     with open(metadata_file, "w") as f:

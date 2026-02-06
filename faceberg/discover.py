@@ -8,9 +8,9 @@ datasets to Iceberg tables.
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from datasets import DownloadConfig, Features, load_dataset_builder
+from datasets import DownloadConfig, Features, StreamingDownloadManager, load_dataset_builder
 from datasets.load import HubDatasetModuleFactoryWithParquetExport, get_dataset_builder_class
 from huggingface_hub import HfApi
 
@@ -132,6 +132,7 @@ def discover_dataset(
     repo_id: str,
     config: str,
     token: Optional[str] = None,
+    progress_callback: Optional[Callable] = None,
 ) -> DatasetInfo:
     """Discover structure and files in a HuggingFace dataset.
 
@@ -149,7 +150,15 @@ def discover_dataset(
     Raises:
         ValueError: If dataset not found, config doesn't exist, or metadata inconsistent
     """
+    if progress_callback is None:
+
+        def progress(*args, **kwargs):
+            pass
+    else:
+        progress = progress_callback
+
     # Step 1: Load dataset builder
+    progress(state="in_progress", percent=0, stage="Loading dataset builder")
     try:
         builder = dataset_builder_safe(repo_id, config=config, token=token)
     except Exception as e:
@@ -165,10 +174,16 @@ def discover_dataset(
         except Exception as e:
             raise ValueError(f"Dataset {repo_id} is not a Parquet dataset.") from e
 
+    # Step 1.1: Infer features if they are absent from the dataset card metadata
+    if builder.info.features is None:
+        dl_manager = StreamingDownloadManager()
+        builder._split_generators(dl_manager)
+
     revision = builder.hash
     features = builder.info.features
 
     # Step 2: Fetch file metadata from HuggingFace Hub
+    progress(state="in_progress", percent=5, stage="Fetching list of dataset files")
     api = HfApi(token=token)
     dataset_info = api.dataset_info(repo_id, revision=revision, files_metadata=True)
     # Build mapping from URI to sibling metadata
