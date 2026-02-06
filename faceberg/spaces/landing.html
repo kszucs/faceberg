@@ -631,7 +631,7 @@
                     <span class="extension-badge">httpfs</span>
                 </span>
                 {% if namespaces|length > 0 %}
-                • Example: <code class="example-query-code">{% set first_ns = namespaces[0] %}{% set first_table = first_ns.tables[0] %}SELECT * FROM catalog.{{ first_ns.name }}.{{ first_table.name }} LIMIT 10;</code>
+                • Example: <code class="example-query-code">{% set first_ns = namespaces[0] %}{% set first_table = first_ns.tables[0] %}SELECT * FROM catalog."{{ first_ns.name }}"."{{ first_table.name }}" LIMIT 10;</code>
                 {% endif %}
             </div>
 
@@ -644,15 +644,20 @@
     <script type="module">
         // Global state
         let shellInitialized = false;
+        let shellTerminal = null;
+        let shellState = { currentLine: '', cursorPos: 0, redrawLine: null };
 
         // Insert query into shell
         window.insertQuery = function(tableName) {
-            const query = `SELECT * FROM catalog.${tableName} LIMIT 10;`;
-            navigator.clipboard.writeText(query).then(() => {
-                alert('Query copied to clipboard! Paste it into the shell with Cmd/Ctrl+V');
-            }).catch(err => {
-                console.error('Failed to copy query:', err);
-            });
+            if (!shellTerminal || !shellState.redrawLine) return;
+            // Quote each part of the table name to handle special characters like hyphens
+            const parts = tableName.split('.');
+            const quotedName = parts.map(p => `"${p}"`).join('.');
+            const query = `SELECT * FROM catalog.${quotedName} LIMIT 10;`;
+            shellState.currentLine = query;
+            shellState.cursorPos = query.length;
+            shellState.redrawLine();
+            shellTerminal.focus();
         };
 
         // Initialize DuckDB Shell
@@ -703,7 +708,7 @@
                 const FitAddon = fitModule.FitAddon;
 
                 // Create terminal
-                const terminal = new Terminal({
+                shellTerminal = new Terminal({
                     cursorBlink: true,
                     fontSize: 14,
                     fontFamily: 'JetBrains Mono, monospace',
@@ -714,64 +719,120 @@
                 });
 
                 const fitAddon = new FitAddon();
-                terminal.loadAddon(fitAddon);
-                terminal.open(container);
+                shellTerminal.loadAddon(fitAddon);
+                shellTerminal.open(container);
                 fitAddon.fit();
 
                 // Simple command prompt
-                let currentLine = '';
                 let historyIndex = -1;
                 const history = [];
 
-                const prompt = () => terminal.write('\r\n\x1b[32mD\x1b[0m ');
+                const prompt = () => shellTerminal.write('\r\n\x1b[32mD\x1b[0m ');
 
-                terminal.writeln('DuckDB v1.31.1 Shell (WASM)');
-                terminal.writeln('Connected to in-memory database');
-                terminal.writeln('Extensions loaded: iceberg, httpfs');
-                terminal.writeln('Catalog attached: Use catalog.namespace.table to query');
-                terminal.writeln('');
+                // Helper to redraw current line
+                shellState.redrawLine = () => {
+                    shellTerminal.write('\r\x1b[K\x1b[32mD\x1b[0m ' + shellState.currentLine);
+                    // Move cursor to correct position
+                    const moveBack = shellState.currentLine.length - shellState.cursorPos;
+                    if (moveBack > 0) {
+                        shellTerminal.write(`\x1b[${moveBack}D`);
+                    }
+                };
+
+                shellTerminal.writeln('DuckDB v1.31.1 Shell (WASM)');
+                shellTerminal.writeln('Connected to in-memory database');
+                shellTerminal.writeln('Extensions loaded: iceberg, httpfs');
+                shellTerminal.writeln('Catalog attached: Use catalog.namespace.table to query');
+                shellTerminal.writeln('');
                 prompt();
 
-                terminal.onData(async (data) => {
+                shellTerminal.onData(async (data) => {
                     const code = data.charCodeAt(0);
+
+                    // Handle escape sequences (arrow keys)
+                    if (data.startsWith('\x1b[')) {
+                        const seq = data.slice(2);
+                        // Up arrow - history previous
+                        if (seq === 'A') {
+                            if (historyIndex < history.length - 1) {
+                                historyIndex++;
+                                shellState.currentLine = history[historyIndex];
+                                shellState.cursorPos = shellState.currentLine.length;
+                                shellState.redrawLine();
+                            }
+                        }
+                        // Down arrow - history next
+                        else if (seq === 'B') {
+                            if (historyIndex > 0) {
+                                historyIndex--;
+                                shellState.currentLine = history[historyIndex];
+                                shellState.cursorPos = shellState.currentLine.length;
+                                shellState.redrawLine();
+                            } else if (historyIndex === 0) {
+                                historyIndex = -1;
+                                shellState.currentLine = '';
+                                shellState.cursorPos = 0;
+                                shellState.redrawLine();
+                            }
+                        }
+                        // Right arrow - move cursor right
+                        else if (seq === 'C') {
+                            if (shellState.cursorPos < shellState.currentLine.length) {
+                                shellState.cursorPos++;
+                                shellTerminal.write('\x1b[C');
+                            }
+                        }
+                        // Left arrow - move cursor left
+                        else if (seq === 'D') {
+                            if (shellState.cursorPos > 0) {
+                                shellState.cursorPos--;
+                                shellTerminal.write('\x1b[D');
+                            }
+                        }
+                        return;
+                    }
 
                     // Handle Enter
                     if (code === 13) {
-                        const query = currentLine.trim();
+                        const query = shellState.currentLine.trim();
                         if (query) {
                             history.unshift(query);
-                            terminal.write('\r\n');
+                            shellTerminal.write('\r\n');
 
                             try {
                                 const conn = await db.connect();
                                 const result = await conn.query(query);
-                                terminal.writeln(result.toString());
+                                shellTerminal.writeln(result.toString());
                                 await conn.close();
                             } catch (err) {
-                                terminal.writeln(`\x1b[31mError: ${err.message}\x1b[0m`);
+                                shellTerminal.writeln(`\x1b[31mError: ${err.message}\x1b[0m`);
                             }
                         }
-                        currentLine = '';
+                        shellState.currentLine = '';
+                        shellState.cursorPos = 0;
                         historyIndex = -1;
                         prompt();
                     }
                     // Handle Backspace
                     else if (code === 127) {
-                        if (currentLine.length > 0) {
-                            currentLine = currentLine.slice(0, -1);
-                            terminal.write('\b \b');
+                        if (shellState.cursorPos > 0) {
+                            shellState.currentLine = shellState.currentLine.slice(0, shellState.cursorPos - 1) + shellState.currentLine.slice(shellState.cursorPos);
+                            shellState.cursorPos--;
+                            shellState.redrawLine();
                         }
                     }
                     // Handle Ctrl+C
                     else if (code === 3) {
-                        terminal.write('^C');
-                        currentLine = '';
+                        shellTerminal.write('^C');
+                        shellState.currentLine = '';
+                        shellState.cursorPos = 0;
                         prompt();
                     }
                     // Handle printable characters
                     else if (code >= 32 && code <= 126) {
-                        currentLine += data;
-                        terminal.write(data);
+                        shellState.currentLine = shellState.currentLine.slice(0, shellState.cursorPos) + data + shellState.currentLine.slice(shellState.cursorPos);
+                        shellState.cursorPos++;
+                        shellState.redrawLine();
                     }
                 });
 
