@@ -7,8 +7,11 @@
     <meta name="description" content="Interactive Apache Iceberg catalog browser with DuckDB-WASM query capabilities">
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- XTerm.js CSS for DuckDB shell -->
+    <!-- XTerm.js CSS for DuckDB shell (required by duckdb-wasm-shell) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+
+    <!-- Shell font preload -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 
     <!-- Google Fonts: DM Sans -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -419,6 +422,28 @@
             transform: translateY(0);
         }
 
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--gray-900);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            opacity: 0;
+            transition: all 0.3s ease;
+            z-index: 1000;
+            pointer-events: none;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+
         /* Empty state */
         .empty-state {
             text-align: center;
@@ -607,10 +632,10 @@
                                     </table>
                                 </div>
 
-                                <!-- Query Button -->
-                                <button onclick="insertQuery('{{ namespace.name }}.{{ table.name }}')" class="action-button">
-                                    <span>🔍</span>
-                                    <span>Query</span>
+                                <!-- Copy Query Button -->
+                                <button onclick="copyQuery('{{ namespace.name }}.{{ table.name }}')" class="action-button">
+                                    <span>📋</span>
+                                    <span>Copy Query</span>
                                 </button>
                             </div>
                         </details>
@@ -630,8 +655,9 @@
                     <span class="extension-badge">iceberg</span>
                     <span class="extension-badge">httpfs</span>
                 </span>
+                • Type <code class="example-query-code">.help</code> for commands
                 {% if namespaces|length > 0 %}
-                • Example: <code class="example-query-code">{% set first_ns = namespaces[0] %}{% set first_table = first_ns.tables[0] %}SELECT * FROM catalog."{{ first_ns.name }}"."{{ first_table.name }}" LIMIT 10;</code>
+                • Click "Copy Query" then paste with <strong>Ctrl+V</strong>
                 {% endif %}
             </div>
 
@@ -640,221 +666,99 @@
         </div>
     </div>
 
+    <!-- Toast notification -->
+    <div id="toast" class="toast"></div>
+
     <!-- JavaScript -->
     <script type="module">
-        // Global state
-        let shellInitialized = false;
-        let shellTerminal = null;
-        let shellState = { currentLine: '', cursorPos: 0, redrawLine: null };
+        // Show toast notification
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2000);
+        }
 
-        // Insert query into shell
-        window.insertQuery = function(tableName) {
-            if (!shellTerminal || !shellState.redrawLine) return;
-            // Quote each part of the table name to handle special characters like hyphens
+        // Copy query to clipboard
+        window.copyQuery = function(tableName) {
             const parts = tableName.split('.');
             const quotedName = parts.map(p => `"${p}"`).join('.');
             const query = `SELECT * FROM catalog.${quotedName} LIMIT 10;`;
-            shellState.currentLine = query;
-            shellState.cursorPos = query.length;
-            shellState.redrawLine();
-            shellTerminal.focus();
+            navigator.clipboard.writeText(query).then(() => {
+                showToast('Query copied! Paste with Ctrl+V / Cmd+V');
+            }).catch(() => {
+                showToast('Failed to copy query');
+            });
         };
 
-        // Initialize DuckDB Shell
+        // Initialize DuckDB Shell using the official shell package
         async function initializeShell() {
-            if (shellInitialized) return;
+            const container = document.getElementById('shell-container');
 
             try {
-                // Load DuckDB modules using jsdelivr +esm (handles dependencies automatically)
-                const duckdb = await import('https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.1-dev35.0/+esm');
+                // Load DuckDB and shell modules (using latest dev versions for iceberg support)
+                const DUCKDB_VERSION = '1.33.1-dev18.0';
+                const [duckdb, shell] = await Promise.all([
+                    import(`https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${DUCKDB_VERSION}/+esm`),
+                    import(`https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm-shell@${DUCKDB_VERSION}/+esm`)
+                ]);
 
-                // Get shell container
-                const container = document.getElementById('shell-container');
+                // Shell WASM module URL
+                const shellWasm = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm-shell@${DUCKDB_VERSION}/dist/shell_bg.wasm`;
 
-                // Initialize DuckDB
-                const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-                const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
-
-                const worker_url = URL.createObjectURL(
-                    new Blob([`importScripts("${bundle.mainWorker}");`], {type: 'text/javascript'})
-                );
-                const worker = new Worker(worker_url);
-                const logger = new duckdb.ConsoleLogger();
-
-                const db = new duckdb.AsyncDuckDB(logger, worker);
-                await db.instantiate(bundle.mainModule);
-                URL.revokeObjectURL(worker_url);
-
-                // Install extensions and attach catalog
-                const conn = await db.connect();
-                await conn.query(`INSTALL httpfs; LOAD httpfs;`);
-                await conn.query(`INSTALL iceberg; LOAD iceberg;`);
-
-                // Attach the REST catalog
-                const catalogEndpoint = window.location.origin;
-                await conn.query(`
-                    ATTACH 'warehouse' AS catalog (
-                        TYPE ICEBERG,
-                        ENDPOINT '${catalogEndpoint}',
-                        AUTHORIZATION_TYPE 'none'
-                    );
-                `);
-                await conn.close();
-
-                // Load XTerm.js for terminal UI
-                const xtermModule = await import('https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm');
-                const Terminal = xtermModule.Terminal;
-                const fitModule = await import('https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm');
-                const FitAddon = fitModule.FitAddon;
-
-                // Create terminal
-                shellTerminal = new Terminal({
-                    cursorBlink: true,
-                    fontSize: 14,
+                // Embed the official DuckDB shell
+                await shell.embed({
+                    shellModule: shellWasm,
+                    container: container,
                     fontFamily: 'JetBrains Mono, monospace',
-                    theme: {
-                        background: '#0F1419',
-                        foreground: '#E6E1CF',
+                    backgroundColor: '#0F1419',
+                    resolveDatabase: async (_progressHandler) => {
+                        // Initialize DuckDB
+                        const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+                        const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+
+                        const worker_url = URL.createObjectURL(
+                            new Blob([`importScripts("${bundle.mainWorker}");`], {type: 'text/javascript'})
+                        );
+                        const worker = new Worker(worker_url);
+                        const logger = new duckdb.ConsoleLogger();
+
+                        const db = new duckdb.AsyncDuckDB(logger, worker);
+                        await db.instantiate(bundle.mainModule);
+                        URL.revokeObjectURL(worker_url);
+
+                        // Install extensions and attach catalog
+                        const conn = await db.connect();
+                        await conn.query(`INSTALL httpfs; LOAD httpfs;`);
+                        await conn.query(`INSTALL iceberg; LOAD iceberg;`);
+
+                        // Attach the REST catalog
+                        const catalogEndpoint = window.location.origin;
+                        await conn.query(`
+                            ATTACH 'warehouse' AS catalog (
+                                TYPE ICEBERG,
+                                ENDPOINT '${catalogEndpoint}',
+                                AUTHORIZATION_TYPE 'none'
+                            );
+                        `);
+                        await conn.close();
+
+                        return db;
                     }
                 });
-
-                const fitAddon = new FitAddon();
-                shellTerminal.loadAddon(fitAddon);
-                shellTerminal.open(container);
-                fitAddon.fit();
-
-                // Simple command prompt
-                let historyIndex = -1;
-                const history = [];
-
-                const prompt = () => shellTerminal.write('\r\n\x1b[32mD\x1b[0m ');
-
-                // Helper to redraw current line
-                shellState.redrawLine = () => {
-                    shellTerminal.write('\r\x1b[K\x1b[32mD\x1b[0m ' + shellState.currentLine);
-                    // Move cursor to correct position
-                    const moveBack = shellState.currentLine.length - shellState.cursorPos;
-                    if (moveBack > 0) {
-                        shellTerminal.write(`\x1b[${moveBack}D`);
-                    }
-                };
-
-                shellTerminal.writeln('DuckDB v1.31.1 Shell (WASM)');
-                shellTerminal.writeln('Connected to in-memory database');
-                shellTerminal.writeln('Extensions loaded: iceberg, httpfs');
-                shellTerminal.writeln('Catalog attached: Use catalog.namespace.table to query');
-                shellTerminal.writeln('');
-                prompt();
-
-                shellTerminal.onData(async (data) => {
-                    const code = data.charCodeAt(0);
-
-                    // Handle escape sequences (arrow keys)
-                    if (data.startsWith('\x1b[')) {
-                        const seq = data.slice(2);
-                        // Up arrow - history previous
-                        if (seq === 'A') {
-                            if (historyIndex < history.length - 1) {
-                                historyIndex++;
-                                shellState.currentLine = history[historyIndex];
-                                shellState.cursorPos = shellState.currentLine.length;
-                                shellState.redrawLine();
-                            }
-                        }
-                        // Down arrow - history next
-                        else if (seq === 'B') {
-                            if (historyIndex > 0) {
-                                historyIndex--;
-                                shellState.currentLine = history[historyIndex];
-                                shellState.cursorPos = shellState.currentLine.length;
-                                shellState.redrawLine();
-                            } else if (historyIndex === 0) {
-                                historyIndex = -1;
-                                shellState.currentLine = '';
-                                shellState.cursorPos = 0;
-                                shellState.redrawLine();
-                            }
-                        }
-                        // Right arrow - move cursor right
-                        else if (seq === 'C') {
-                            if (shellState.cursorPos < shellState.currentLine.length) {
-                                shellState.cursorPos++;
-                                shellTerminal.write('\x1b[C');
-                            }
-                        }
-                        // Left arrow - move cursor left
-                        else if (seq === 'D') {
-                            if (shellState.cursorPos > 0) {
-                                shellState.cursorPos--;
-                                shellTerminal.write('\x1b[D');
-                            }
-                        }
-                        return;
-                    }
-
-                    // Handle Enter
-                    if (code === 13) {
-                        const query = shellState.currentLine.trim();
-                        if (query) {
-                            history.unshift(query);
-                            shellTerminal.write('\r\n');
-
-                            try {
-                                const conn = await db.connect();
-                                const result = await conn.query(query);
-                                shellTerminal.writeln(result.toString());
-                                await conn.close();
-                            } catch (err) {
-                                shellTerminal.writeln(`\x1b[31mError: ${err.message}\x1b[0m`);
-                            }
-                        }
-                        shellState.currentLine = '';
-                        shellState.cursorPos = 0;
-                        historyIndex = -1;
-                        prompt();
-                    }
-                    // Handle Backspace
-                    else if (code === 127) {
-                        if (shellState.cursorPos > 0) {
-                            shellState.currentLine = shellState.currentLine.slice(0, shellState.cursorPos - 1) + shellState.currentLine.slice(shellState.cursorPos);
-                            shellState.cursorPos--;
-                            shellState.redrawLine();
-                        }
-                    }
-                    // Handle Ctrl+C
-                    else if (code === 3) {
-                        shellTerminal.write('^C');
-                        shellState.currentLine = '';
-                        shellState.cursorPos = 0;
-                        prompt();
-                    }
-                    // Handle printable characters
-                    else if (code >= 32 && code <= 126) {
-                        shellState.currentLine = shellState.currentLine.slice(0, shellState.cursorPos) + data + shellState.currentLine.slice(shellState.cursorPos);
-                        shellState.cursorPos++;
-                        shellState.redrawLine();
-                    }
-                });
-
-                // Handle window resize
-                window.addEventListener('resize', () => fitAddon.fit());
-
-                shellInitialized = true;
             } catch (error) {
                 console.error('Shell initialization error:', error);
-                document.getElementById('shell-container').innerHTML = `
-                    <div class="p-4 bg-red-50 border border-red-200 rounded text-red-700">
+                container.innerHTML = `
+                    <div style="padding: 1rem; background: #FEE2E2; border: 1px solid #FECACA; border-radius: 6px; color: #991B1B; margin: 0.5rem;">
                         <strong>Error initializing shell:</strong> ${error.message}
-                        <p class="text-sm mt-2">Please refresh the page and try again.</p>
+                        <p style="font-size: 0.875rem; margin-top: 0.5rem;">Please refresh the page and try again.</p>
                     </div>
                 `;
             }
         }
 
         // Auto-initialize shell on page load
-        window.addEventListener('DOMContentLoaded', async () => {
-            await initializeShell();
-        });
+        window.addEventListener('DOMContentLoaded', initializeShell);
     </script>
 </body>
 </html>
