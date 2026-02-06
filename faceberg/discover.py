@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from datasets import DownloadConfig, Features, load_dataset_builder
-from datastes.load import HubDatasetModuleFactoryWithParquetExport, get_dataset_builder_class
+from datasets.load import HubDatasetModuleFactoryWithParquetExport, get_dataset_builder_class
 from huggingface_hub import HfApi
 
 
