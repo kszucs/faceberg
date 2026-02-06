@@ -33,8 +33,7 @@ dependencies = [
     "rich>=13.0.0",  # For nice CLI output
     "pyarrow>=21.0.0",
     "litestar>=2.0.0",  # REST API server
-    "uvicorn[standard]>=0.27.0",  # ASGI server
-    "jinja2>=3.1.6",  # For HTML landing page
+    "uvicorn[standard]>=0.27.0",  # For HTML landing page
     "uuid-utils>=0.9.0",  # For UUIDv7 support (Python <3.13)
 ]
 
