@@ -10,7 +10,8 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from datasets import Features, StreamingDownloadManager, load_dataset_builder
+from datasets import DownloadConfig, Features, StreamingDownloadManager, load_dataset_builder
+from datasets.load import HubDatasetModuleFactoryWithParquetExport, get_dataset_builder_class
 from huggingface_hub import HfApi
 
 
@@ -45,6 +46,41 @@ def dataset_builder_safe(
     finally:
         # Always restore the original directory
         os.chdir(original_cwd)
+
+
+def dataset_builder_from_parquet_export(
+    repo_id: str,
+    config: str,
+    commit_hash: str,
+    token: Optional[str] = None,
+):
+    """Load dataset builder from Parquet export, if the dataset is not in Parquet already.
+
+    Args:
+        repo_id: HuggingFace dataset repository ID
+        config: Configuration name
+        token: Optional HuggingFace API token
+
+    Returns:
+        Dataset builder object
+
+    Raises:
+        Exception: If loading fails
+    """
+    download_config = DownloadConfig(token=token)
+    dataset_module = HubDatasetModuleFactoryWithParquetExport(
+        repo_id, commit_hash=commit_hash, download_config=download_config
+    ).get_module()
+    builder_class = get_dataset_builder_class(dataset_module)
+    data_files = dataset_module.builder_configs_parameters.builder_configs[0].data_files
+    revision_hash = next(iter(data_files.values()))[0].split("/resolve/", 1)[1].split("/")[0]
+    builder = builder_class(
+        config_name=config,
+        info=dataset_module.dataset_infos.get(config),
+        hash=revision_hash,
+        **dataset_module.builder_kwargs,
+    )
+    return builder
 
 
 @dataclass
@@ -129,6 +165,14 @@ def discover_dataset(
         raise ValueError(
             f"Dataset {repo_id} config {config} not found or not accessible: {e}"
         ) from e
+    if builder.name != "parquet":
+        # Try loading from parquet export instead
+        try:
+            builder = dataset_builder_from_parquet_export(
+                repo_id, config=config, commit_hash=builder.hash, token=token
+            )
+        except Exception as e:
+            raise ValueError(f"Dataset {repo_id} is not a Parquet dataset.") from e
 
     # Step 1.1: Infer features if they are absent from the dataset card metadata
     if builder.info.features is None:

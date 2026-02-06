@@ -105,6 +105,7 @@ def test_discover_dataset_basic():
     """Test basic dataset discovery with mocked APIs."""
     # Mock builder
     mock_builder = MagicMock()
+    mock_builder.name = "parquet"
     mock_builder.hash = "abc123def456"
     mock_builder.info.features = Features({"text": Value("string")})
     mock_builder.config.data_files = {
@@ -145,6 +146,7 @@ def test_discover_dataset_multiple_splits():
     """Test discovery with multiple splits."""
     # Mock builder
     mock_builder = MagicMock()
+    mock_builder.name = "parquet"
     mock_builder.hash = "xyz789"
     mock_builder.info.features = Features({"text": Value("string")})
     mock_builder.config.data_files = {
@@ -193,6 +195,7 @@ def test_discover_dataset_empty():
     """Test discovery of dataset with no files."""
     # Mock builder with no data files
     mock_builder = MagicMock()
+    mock_builder.name = "parquet"
     mock_builder.hash = "empty123"
     mock_builder.info.features = Features({"text": Value("string")})
     mock_builder.config.data_files = {}
@@ -219,6 +222,7 @@ def test_discover_dataset_missing_file_metadata():
     """Test that missing file metadata raises ValueError."""
     # Mock builder with file that won't be in metadata
     mock_builder = MagicMock()
+    mock_builder.name = "parquet"
     mock_builder.hash = "missing123"
     mock_builder.info.features = Features({"text": Value("string")})
     mock_builder.config.data_files = {
