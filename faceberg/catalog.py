@@ -1363,11 +1363,9 @@ class RemoteCatalog(BaseCatalog):
                 spaces_dir = Path(__file__).parent / "spaces"
                 readme_content = (spaces_dir / "README.md").read_text()
                 dockerfile_content = (spaces_dir / "Dockerfile").read_text()
-                gitattributes_content = (spaces_dir / ".gitattributes").read_text()
 
                 (staging / "README.md").write_text(readme_content)
                 (staging / "Dockerfile").write_text(dockerfile_content)
-                (staging / ".gitattributes").write_text(gitattributes_content)
 
                 staging.add("README.md")
                 staging.add("Dockerfile")
