@@ -116,7 +116,9 @@ def make_extra_files(tmp_path, arrow_schema, count=2, start_index=5):
 class TestInitialSnapshot:
     """Tests for creating initial table snapshots."""
 
-    def test_initial_snapshot_creates_valid_metadata(self, tmp_path, parquet_files, arrow_schema, io):
+    def test_initial_snapshot_creates_valid_metadata(
+        self, tmp_path, parquet_files, arrow_schema, io
+    ):
         """Test that initial snapshot creates valid Iceberg metadata."""
         _metadata = write_snapshot(
             files=parquet_files,
