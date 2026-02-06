@@ -95,8 +95,8 @@ class DatasetInfo:
 def discover_dataset(
     repo_id: str,
     config: str,
-    progress_callback: Callable,
     token: Optional[str] = None,
+    progress_callback: Optional[Callable] = None,
 ) -> DatasetInfo:
     """Discover structure and files in a HuggingFace dataset.
 
@@ -114,8 +114,15 @@ def discover_dataset(
     Raises:
         ValueError: If dataset not found, config doesn't exist, or metadata inconsistent
     """
+    if progress_callback is None:
+
+        def progress(*args, **kwargs):
+            pass
+    else:
+        progress = progress_callback
+
     # Step 1: Load dataset builder
-    progress_callback(state="in_progress", percent=0, stage="Loading dataset builder")
+    progress(state="in_progress", percent=0, stage="Loading dataset builder")
     try:
         builder = dataset_builder_safe(repo_id, config=config, token=token)
     except Exception as e:
@@ -127,7 +134,7 @@ def discover_dataset(
     features = builder.info.features
 
     # Step 2: Fetch file metadata from HuggingFace Hub
-    progress_callback(state="in_progress", percent=5, stage="Fetching list of dataset files")
+    progress(state="in_progress", percent=5, stage="Fetching list of dataset files")
     api = HfApi(token=token)
     dataset_info = api.dataset_info(repo_id, revision=revision, files_metadata=True)
     # Build mapping from URI to sibling metadata
