@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import List, Optional
 
-from datasets import Features, load_dataset_builder
+from datasets import Features, load_dataset_builder, StreamingDownloadManager
 from huggingface_hub import HfApi
 
 
@@ -120,6 +120,11 @@ def discover_dataset(
         raise ValueError(
             f"Dataset {repo_id} config {config} not found or not accessible: {e}"
         ) from e
+
+    # Step 1.1: Infer features if they are absent from the dataset card metadata
+    if builder.info.features is None:
+        dl_manager = StreamingDownloadManager()
+        builder._split_generators(dl_manager)
 
     revision = builder.hash
     features = builder.info.features
