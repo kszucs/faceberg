@@ -16,6 +16,23 @@
 
     <style>
         :root {
+            /* Spacing scale */
+            --space-1: 4px;
+            --space-2: 8px;
+            --space-3: 12px;
+            --space-4: 16px;
+            --space-5: 20px;
+            --space-6: 24px;
+            --space-8: 32px;
+
+            /* Radius */
+            --radius-sm: 4px;
+            --radius-md: 6px;
+            --radius-lg: 8px;
+        }
+
+        /* Dark theme (default) */
+        [data-theme="dark"] {
             /* Arctic palette - depth layers */
             --depth-0: #0a0f14;      /* Deepest - shell background */
             --depth-1: #0f1419;      /* Deep - main background */
@@ -37,20 +54,31 @@
             --amber-muted: #d97706;  /* Hover actions */
             --emerald: #34d399;      /* Success */
             --rose: #fb7185;         /* Errors */
+        }
 
-            /* Spacing scale */
-            --space-1: 4px;
-            --space-2: 8px;
-            --space-3: 12px;
-            --space-4: 16px;
-            --space-5: 20px;
-            --space-6: 24px;
-            --space-8: 32px;
+        /* Light theme */
+        [data-theme="light"] {
+            /* Light palette - depth layers */
+            --depth-0: #ffffff;      /* Deepest - shell background */
+            --depth-1: #f8fafc;      /* Deep - main background */
+            --depth-2: #f1f5f9;      /* Mid - sidebar */
+            --depth-3: #e2e8f0;      /* Surface - cards, hover */
+            --depth-4: #cbd5e1;      /* Elevated - active states */
 
-            /* Radius */
-            --radius-sm: 4px;
-            --radius-md: 6px;
-            --radius-lg: 8px;
+            /* Text colors */
+            --ice: #1e293b;          /* Primary text */
+            --ice-muted: #475569;    /* Secondary text */
+            --ice-faint: #94a3b8;    /* Tertiary text */
+            --frost: #cbd5e1;        /* Borders */
+            --frost-light: #94a3b8;  /* Hover borders */
+
+            /* Accents */
+            --teal: #0284c7;         /* Links, highlights */
+            --teal-muted: #0369a1;   /* Hover states */
+            --amber: #d97706;        /* Actions, warnings */
+            --amber-muted: #b45309;  /* Hover actions */
+            --emerald: #059669;      /* Success */
+            --rose: #e11d48;         /* Errors */
         }
 
         * {
@@ -803,6 +831,83 @@
             color: var(--teal-muted);
         }
 
+        /* Resize handles */
+        .resize-handle {
+            width: 4px;
+            background: transparent;
+            cursor: col-resize;
+            flex-shrink: 0;
+            position: relative;
+            z-index: 10;
+            transition: background 0.15s ease;
+        }
+
+        .resize-handle:hover,
+        .resize-handle.active {
+            background: var(--teal);
+        }
+
+        .resize-handle::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: -4px;
+            right: -4px;
+        }
+
+        /* Theme toggle */
+        .theme-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--frost);
+            background: var(--depth-3);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            color: var(--ice-muted);
+        }
+
+        .theme-toggle:hover {
+            background: var(--depth-4);
+            color: var(--ice);
+            border-color: var(--frost-light);
+        }
+
+        .theme-toggle svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .theme-toggle .icon-sun,
+        .theme-toggle .icon-moon {
+            display: none;
+        }
+
+        [data-theme="dark"] .theme-toggle .icon-sun {
+            display: block;
+        }
+
+        [data-theme="light"] .theme-toggle .icon-moon {
+            display: block;
+        }
+
+        /* Shell background - dark in dark theme, lighter grey in light theme */
+        [data-theme="dark"] #shell-container,
+        [data-theme="dark"] .xterm-viewport,
+        [data-theme="dark"] .xterm-screen {
+            background-color: #0a0f14 !important;
+        }
+
+        [data-theme="light"] #shell-container,
+        [data-theme="light"] .xterm-viewport,
+        [data-theme="light"] .xterm-screen {
+            background-color: #1e293b !important;
+        }
+
         /* Responsive */
         @media (max-width: 1200px) {
             .pane-catalog {
@@ -819,6 +924,13 @@
             }
         }
     </style>
+    <script>
+        // Apply theme immediately to prevent flash
+        (function() {
+            const savedTheme = localStorage.getItem('faceberg-theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+        })();
+    </script>
 </head>
 <body>
     <!-- Header -->
@@ -835,6 +947,14 @@
         </div>
         <div class="header-right">
             <span class="header-stat"><strong>{{ total_tables }}</strong> tables</span>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                <svg class="icon-sun" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                <svg class="icon-moon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+            </button>
         </div>
     </header>
 
@@ -895,6 +1015,9 @@
                 {% endif %}
             </div>
         </aside>
+
+        <!-- Resize handle 1 -->
+        <div class="resize-handle" data-resize="catalog"></div>
 
         <!-- Pane 2: Schema & Metadata -->
         <section class="pane-metadata">
@@ -984,6 +1107,9 @@
             </div>
         </section>
 
+        <!-- Resize handle 2 -->
+        <div class="resize-handle" data-resize="metadata"></div>
+
         <!-- Pane 3: DuckDB Shell -->
         <section class="pane-shell">
             <div class="shell-header">
@@ -1015,6 +1141,73 @@
         // State
         let selectedTable = null;
         let shellReady = false;
+
+        // Theme toggle
+        window.toggleTheme = function() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('faceberg-theme', newTheme);
+
+            // Note: Shell always stays dark - duckdb-wasm-shell doesn't support fontColor
+        };
+
+        // Resizable panes
+        function initResizablePanes() {
+            const handles = document.querySelectorAll('.resize-handle');
+            const paneCatalog = document.querySelector('.pane-catalog');
+            const paneMetadata = document.querySelector('.pane-metadata');
+
+            handles.forEach(handle => {
+                let isResizing = false;
+                let startX = 0;
+                let startWidth = 0;
+
+                handle.addEventListener('mousedown', (e) => {
+                    isResizing = true;
+                    startX = e.clientX;
+                    handle.classList.add('active');
+
+                    const resizeTarget = handle.dataset.resize;
+                    if (resizeTarget === 'catalog') {
+                        startWidth = paneCatalog.offsetWidth;
+                    } else if (resizeTarget === 'metadata') {
+                        startWidth = paneMetadata.offsetWidth;
+                    }
+
+                    document.body.style.cursor = 'col-resize';
+                    document.body.style.userSelect = 'none';
+
+                    const onMouseMove = (e) => {
+                        if (!isResizing) return;
+
+                        const diff = e.clientX - startX;
+                        const resizeTarget = handle.dataset.resize;
+
+                        if (resizeTarget === 'catalog') {
+                            const newWidth = Math.max(180, Math.min(500, startWidth + diff));
+                            paneCatalog.style.width = newWidth + 'px';
+                        } else if (resizeTarget === 'metadata') {
+                            const newWidth = Math.max(250, Math.min(600, startWidth + diff));
+                            paneMetadata.style.width = newWidth + 'px';
+                        }
+                    };
+
+                    const onMouseUp = () => {
+                        isResizing = false;
+                        handle.classList.remove('active');
+                        document.body.style.cursor = '';
+                        document.body.style.userSelect = '';
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                    };
+
+                    document.addEventListener('mousemove', onMouseMove);
+                    document.addEventListener('mouseup', onMouseUp);
+                });
+            });
+        }
 
         // Toggle namespace expansion
         window.toggleNamespace = function(header) {
@@ -1247,11 +1440,15 @@
 
                 const shellWasm = `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm-shell@${DUCKDB_VERSION}/dist/shell_bg.wasm`;
 
+                // Shell uses dark bg (light theme gets lighter grey, dark theme gets deep black)
+                const currentTheme = document.documentElement.getAttribute('data-theme');
+                const shellBg = currentTheme === 'light' ? '#1e293b' : '#0a0f14';
+
                 await shell.embed({
                     shellModule: shellWasm,
                     container: container,
                     fontFamily: 'JetBrains Mono, monospace',
-                    backgroundColor: '#0a0f14',
+                    backgroundColor: shellBg,
                     resolveDatabase: async () => {
                         const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
                         const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
@@ -1296,7 +1493,10 @@
             }
         }
 
-        window.addEventListener('DOMContentLoaded', initializeShell);
+        window.addEventListener('DOMContentLoaded', () => {
+            initializeShell();
+            initResizablePanes();
+        });
     </script>
 </body>
 </html>

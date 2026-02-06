@@ -347,6 +347,8 @@ def create_data_file(
             if field.name == "split":
                 partition[i] = parquet_file.split
 
+    # TODO(kszucs): persist information about `content_defined_chunking` in the
+    # parquet key-value-metadata
     return DataFile.from_args(
         content=DataFileContent.DATA,
         file_path=parquet_file.uri,
