@@ -1,5 +1,6 @@
 """Faceberg catalog implementation with HuggingFace Hub support."""
 
+import functools
 import logging
 import os
 import shutil
@@ -881,6 +882,12 @@ class BaseCatalog(Catalog):
     # Faceberg-specific Methods (dataset synchronization)
     # =========================================================================
 
+    def _progress(self, identifier, progress_callback):
+        if progress_callback is None:
+            return lambda *args, **kwargs: None
+        else:
+            return functools.partial(progress_callback, identifier)
+
     def sync_datasets(self, progress_callback=None) -> List[Table]:
         """Sync all Iceberg tables with HuggingFace datasets in config.
 
@@ -926,11 +933,9 @@ class BaseCatalog(Catalog):
             TableAlreadyExistsError: If table already exists with metadata
         """
         identifier = Identifier(identifier)
+        progress = self._progress(identifier, progress_callback)
 
-        # Notify start of add
-        if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=0, stage="Starting")
-
+        progress(state="in_progress", percent=0, stage="Loading config")
         catalog_config = self.config()
 
         if identifier in catalog_config:
@@ -948,23 +953,13 @@ class BaseCatalog(Catalog):
                 pass  # Config entry exists but no metadata - we can proceed
 
         # Discover dataset
-        if progress_callback:
-            progress_callback(
-                identifier, state="in_progress", percent=0, stage="Discovering dataset"
-            )
-
+        progress(state="in_progress", percent=5, stage="Discovering dataset")
         dataset_info = discover_dataset(
             repo_id=repo,
             config=config,
             token=self._hf_token,
+            progress_callback=progress,
         )
-
-        # Prepare schema with split column
-        if progress_callback:
-            progress_callback(
-                identifier, state="in_progress", percent=10, stage="Converting schema"
-            )
-
         if not dataset_info.files:
             raise ValueError(f"No Parquet files found in dataset {repo}")
 
@@ -991,10 +986,7 @@ class BaseCatalog(Catalog):
         }
 
         # Write Iceberg metadata
-        if progress_callback:
-            progress_callback(
-                identifier, state="in_progress", percent=20, stage="Writing Iceberg metadata"
-            )
+        progress(state="in_progress", percent=10, stage="Writing Iceberg metadata")
 
         with self._staging() as staging:
             # Create table URI for metadata
@@ -1013,11 +1005,11 @@ class BaseCatalog(Catalog):
                 properties=properties,
                 include_split_column=True,
                 io=io,
+                progress_callback=progress,
             )
 
             # Record all created files in the table metadata directory
-            if progress_callback:
-                progress_callback(identifier, state="in_progress", percent=90, stage="Finalizing")
+            progress(state="in_progress", percent=95, stage="Persisting catalog metadata")
 
             metadata_dir = staging / identifier.path / "metadata"
             for path in metadata_dir.rglob("*"):
@@ -1038,8 +1030,7 @@ class BaseCatalog(Catalog):
         table = self.load_table(identifier)
 
         # Notify completion
-        if progress_callback:
-            progress_callback(identifier, state="complete", percent=100, stage="Complete")
+        progress(state="complete", percent=100, stage="Complete")
 
         return table
 
@@ -1063,12 +1054,10 @@ class BaseCatalog(Catalog):
             ValueError: If identifier format is invalid or table not in config
         """
         identifier = Identifier(identifier)
-
-        # Notify start of sync
-        if progress_callback:
-            progress_callback(identifier, state="in_progress", percent=0, stage="Starting sync")
+        progress = self._progress(identifier, progress_callback)
 
         # Load config to get dataset info
+        progress(state="in_progress", percent=0, stage="Loading config")
         config = self.config()
 
         # Check if table exists in config
@@ -1105,6 +1094,7 @@ class BaseCatalog(Catalog):
 
         # Update existing table with new snapshot
         # Load table first to get old revision
+        progress(state="in_progress", percent=5, stage="Loading existing table")
         table = self.load_table(identifier)
 
         # Get old revision from table properties (required)
@@ -1119,6 +1109,7 @@ class BaseCatalog(Catalog):
         # Discover dataset at current revision
         # Note: The new discover_dataset() doesn't support since_revision filtering yet
         # So we discover all files and write_snapshot() will handle the diff
+        progress(state="in_progress", percent=0, stage="Discovering dataset")
         dataset_info = discover_dataset(
             repo_id=table_entry.repo,
             config=table_entry.config,
@@ -1128,10 +1119,7 @@ class BaseCatalog(Catalog):
         # Check if already up to date (same revision)
         if dataset_info.revision == old_revision:
             logger.info(f"Table {identifier} already at revision {old_revision}")
-            if progress_callback:
-                progress_callback(
-                    identifier, state="up_to_date", percent=100, stage="Already up to date"
-                )
+            progress(state="up_to_date", percent=100, stage="Already up to date")
             return table
 
         # Use existing table schema - don't modify it
@@ -1157,6 +1145,8 @@ class BaseCatalog(Catalog):
         }
 
         # Append new snapshot with all files (write_snapshot will handle diffing)
+        progress(state="in_progress", percent=10, stage="Writing Iceberg metadata")
+
         with self._staging() as staging:
             # Create table URI for metadata
             table_uri = self.uri / identifier.path
@@ -1175,22 +1165,23 @@ class BaseCatalog(Catalog):
                 base_uri=str(table_uri),
                 properties=properties,
                 io=io,
+                progress_callback=progress,
             )
 
             # Record all files in the metadata directory (including new manifest/metadata files)
+            progress(state="in_progress", percent=95, stage="Persisting catalog metadata")
+
             metadata_dir = staging / identifier.path / "metadata"
             for path in metadata_dir.rglob("*"):
                 if path.is_file():
                     staging.add(path.relative_to(staging.path))
-
             # Note: No need to save config since table entry hasn't changed
 
         # Load and return table after persistence
         table = self.load_table(identifier)
 
         # Notify completion
-        if progress_callback:
-            progress_callback(identifier, state="complete", percent=100, stage="Sync complete")
+        progress(state="complete", percent=100, stage="Sync complete")
 
         return table
 

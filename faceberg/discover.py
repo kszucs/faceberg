@@ -8,7 +8,7 @@ datasets to Iceberg tables.
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from datasets import Features, load_dataset_builder
 from huggingface_hub import HfApi
@@ -95,6 +95,7 @@ class DatasetInfo:
 def discover_dataset(
     repo_id: str,
     config: str,
+    progress_callback: Callable,
     token: Optional[str] = None,
 ) -> DatasetInfo:
     """Discover structure and files in a HuggingFace dataset.
@@ -114,6 +115,7 @@ def discover_dataset(
         ValueError: If dataset not found, config doesn't exist, or metadata inconsistent
     """
     # Step 1: Load dataset builder
+    progress_callback(state="in_progress", percent=0, stage="Loading dataset builder")
     try:
         builder = dataset_builder_safe(repo_id, config=config, token=token)
     except Exception as e:
@@ -125,6 +127,7 @@ def discover_dataset(
     features = builder.info.features
 
     # Step 2: Fetch file metadata from HuggingFace Hub
+    progress_callback(state="in_progress", percent=5, stage="Fetching list of dataset files")
     api = HfApi(token=token)
     dataset_info = api.dataset_info(repo_id, revision=revision, files_metadata=True)
     # Build mapping from URI to sibling metadata
