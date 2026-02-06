@@ -16,6 +16,17 @@ from pyiceberg.types import ListType, StructType
 from faceberg.iceberg import ParquetFile, create_schema, diff_snapshot, write_snapshot
 
 
+def noop_progress_callback(**_kwargs) -> None:
+    """No-op progress callback for tests."""
+    pass
+
+
+@pytest.fixture
+def io():
+    """Create a PyArrowFileIO for testing."""
+    return PyArrowFileIO()
+
+
 @pytest.fixture
 def arrow_schema():
     """Create a simple PyArrow schema for testing."""
@@ -105,7 +116,7 @@ def make_extra_files(tmp_path, arrow_schema, count=2, start_index=5):
 class TestInitialSnapshot:
     """Tests for creating initial table snapshots."""
 
-    def test_initial_snapshot_creates_valid_metadata(self, tmp_path, parquet_files, arrow_schema):
+    def test_initial_snapshot_creates_valid_metadata(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that initial snapshot creates valid Iceberg metadata."""
         _metadata = write_snapshot(
             files=parquet_files,
@@ -113,6 +124,10 @@ class TestInitialSnapshot:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Validate using StaticTable - pass the metadata file path
@@ -135,7 +150,7 @@ class TestInitialSnapshot:
         assert int(snapshot.summary["added-data-files"]) == 5
         assert int(snapshot.summary["total-records"]) == 100
 
-    def test_initial_snapshot_scan_returns_data(self, tmp_path, parquet_files, arrow_schema):
+    def test_initial_snapshot_scan_returns_data(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that initial snapshot can be scanned correctly."""
 
         write_snapshot(
@@ -144,6 +159,10 @@ class TestInitialSnapshot:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         metadata_file = tmp_path / "metadata" / "v1.metadata.json"
@@ -161,7 +180,7 @@ class TestInitialSnapshot:
 class TestAppendSnapshot:
     """Tests for appending files to existing snapshots."""
 
-    def test_append_files_creates_new_snapshot(self, tmp_path, parquet_files, arrow_schema):
+    def test_append_files_creates_new_snapshot(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that appending files creates a new snapshot with all files."""
 
         # Create initial snapshot
@@ -171,6 +190,10 @@ class TestAppendSnapshot:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Create additional files
@@ -183,6 +206,10 @@ class TestAppendSnapshot:
             current_metadata=metadata,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Validate
@@ -209,7 +236,7 @@ class TestAppendSnapshot:
 class TestDeleteSnapshot:
     """Tests for deleting files from snapshots."""
 
-    def test_delete_files_removes_from_snapshot(self, tmp_path, parquet_files, arrow_schema):
+    def test_delete_files_removes_from_snapshot(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that deleting files removes them from the current snapshot."""
 
         # Create initial snapshot
@@ -219,6 +246,10 @@ class TestDeleteSnapshot:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Delete first 2 files (IDs 0-39) by passing only the remaining files
@@ -230,6 +261,10 @@ class TestDeleteSnapshot:
             current_metadata=metadata,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Validate
@@ -256,7 +291,7 @@ class TestDeleteSnapshot:
 class TestOverwriteSnapshot:
     """Tests for overwrite operations (delete + add)."""
 
-    def test_overwrite_replaces_files(self, tmp_path, parquet_files, arrow_schema):
+    def test_overwrite_replaces_files(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that overwrite removes old files and adds new ones."""
 
         # Create initial snapshot
@@ -266,6 +301,10 @@ class TestOverwriteSnapshot:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Create a replacement file
@@ -293,6 +332,10 @@ class TestOverwriteSnapshot:
             current_metadata=metadata,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Validate
@@ -320,7 +363,7 @@ class TestOverwriteSnapshot:
 class TestRenameFile:
     """Tests for file rename operations (delete old URI + add new URI)."""
 
-    def test_rename_file_updates_uri(self, tmp_path, parquet_files, arrow_schema):
+    def test_rename_file_updates_uri(self, tmp_path, parquet_files, arrow_schema, io):
         """Test renaming a file (delete old URI + add new URI with same content)."""
 
         # Create initial snapshot
@@ -330,6 +373,10 @@ class TestRenameFile:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # "Rename" first file: copy to new location
@@ -350,6 +397,10 @@ class TestRenameFile:
             current_metadata=metadata,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Validate
@@ -376,7 +427,7 @@ class TestRenameFile:
 class TestManifestEntries:
     """Tests for manifest entry correctness."""
 
-    def test_initial_entries_are_added(self, tmp_path, parquet_files, arrow_schema):
+    def test_initial_entries_are_added(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that initial snapshot entries have ADDED status."""
 
         write_snapshot(
@@ -385,6 +436,10 @@ class TestManifestEntries:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         metadata_file = tmp_path / "metadata" / "v1.metadata.json"
@@ -396,7 +451,7 @@ class TestManifestEntries:
         assert all(s == 1 for s in statuses)
         assert len(statuses) == 5
 
-    def test_append_entries_are_added(self, tmp_path, parquet_files, arrow_schema):
+    def test_append_entries_are_added(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that appended files have ADDED status in new manifest."""
 
         metadata = write_snapshot(
@@ -405,6 +460,10 @@ class TestManifestEntries:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         extra_files = make_extra_files(tmp_path, arrow_schema, count=1, start_index=5)
@@ -415,6 +474,10 @@ class TestManifestEntries:
             current_metadata=metadata,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         metadata_file = tmp_path / "metadata" / f"v{len(updated_metadata.snapshots)}.metadata.json"
@@ -444,7 +507,7 @@ class TestDiffSnapshotFiles:
             assert status == ManifestEntryStatus.ADDED
             assert pf in parquet_files
 
-    def test_existing_files_unchanged(self, tmp_path, parquet_files, arrow_schema):
+    def test_existing_files_unchanged(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that files unchanged from previous snapshot are EXISTING."""
 
         # Create initial snapshot
@@ -454,6 +517,10 @@ class TestDiffSnapshotFiles:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Diff with same files
@@ -466,7 +533,7 @@ class TestDiffSnapshotFiles:
             assert status == ManifestEntryStatus.EXISTING
             assert pf in parquet_files
 
-    def test_removed_files(self, tmp_path, parquet_files, arrow_schema):
+    def test_removed_files(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that files in previous snapshot but not in current are REMOVED."""
 
         # Create initial snapshot
@@ -476,6 +543,10 @@ class TestDiffSnapshotFiles:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Diff with subset of files (remove first 2)
@@ -498,7 +569,7 @@ class TestDiffSnapshotFiles:
         for pf in removed_files:
             assert pf.uri in [parquet_files[0].uri, parquet_files[1].uri]
 
-    def test_changed_files_removed_and_added(self, tmp_path, parquet_files, arrow_schema):
+    def test_changed_files_removed_and_added(self, tmp_path, parquet_files, arrow_schema, io):
         """Test that files with same URI but different hash/size are REMOVED + ADDED."""
 
         # Create initial snapshot
@@ -508,6 +579,10 @@ class TestDiffSnapshotFiles:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
+            include_split_column=False,
+            io=io,
         )
 
         # Modify first file (same URI, different content)
@@ -686,7 +761,7 @@ class TestSchemaConversion:
 class TestNameMapping:
     """Tests for name mapping with nested structures."""
 
-    def test_name_mapping_with_nested_structs(self, tmp_path):
+    def test_name_mapping_with_nested_structs(self, tmp_path, io):
         """Test that name mapping includes nested struct fields."""
         # Create schema with nested structs
         iceberg_schema = pa.schema(
@@ -736,7 +811,10 @@ class TestNameMapping:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
             include_split_column=False,
+            io=io,
         )
 
         # Get name mapping from properties
@@ -756,7 +834,7 @@ class TestNameMapping:
         assert metadata_mapping["fields"][0]["names"] == ["author"]
         assert metadata_mapping["fields"][1]["names"] == ["year"]
 
-    def test_name_mapping_with_lists(self, tmp_path):
+    def test_name_mapping_with_lists(self, tmp_path, io):
         """Test that name mapping includes list element mappings."""
         # Create schema with list of strings and list of structs
         iceberg_schema = pa.schema(
@@ -806,7 +884,10 @@ class TestNameMapping:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
             include_split_column=False,
+            io=io,
         )
 
         name_mapping = json.loads(metadata.properties["schema.name-mapping.default"])
@@ -836,7 +917,7 @@ class TestNameMapping:
         assert items_element["fields"][0]["names"] == ["name"]
         assert items_element["fields"][1]["names"] == ["value"]
 
-    def test_name_mapping_with_maps(self, tmp_path):
+    def test_name_mapping_with_maps(self, tmp_path, io):
         """Test that name mapping includes map key and value mappings."""
         # Create schema with a map
         iceberg_schema = pa.schema(
@@ -885,7 +966,10 @@ class TestNameMapping:
             current_metadata=None,
             output_dir=tmp_path,
             base_uri=f"file://{tmp_path}",
+            properties={},
+            progress_callback=noop_progress_callback,
             include_split_column=False,
+            io=io,
         )
 
         name_mapping = json.loads(metadata.properties["schema.name-mapping.default"])
