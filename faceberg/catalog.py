@@ -1388,6 +1388,26 @@ class RemoteCatalog(BaseCatalog):
             commit_message="Sync catalog metadata",
         )
 
+        # TODO(kszucs): remove once the default .gitattributes includes .avro files for LFS
+        # .gitattributes is added by default for spaces to set LFS for large files
+        # add a subsequent commit to add .avro to .gitattributes for Iceberg metadata files
+        path = self._hf_api.hf_hub_download(
+            repo_id=self._hf_repo,
+            repo_type=self._hf_repo_type,
+            filename=".gitattributes",
+        )
+        # append "*.avro filter=lfs diff=lfs merge=lfs -text" to .gitattributes
+        with open(path, "a") as f:
+            f.write("*.avro filter=lfs diff=lfs merge=lfs -text\n")
+        # upload updated .gitattributes
+        self._hf_api.upload_file(
+            path_or_fileobj=path,
+            path_in_repo=".gitattributes",
+            repo_id=self._hf_repo,
+            repo_type=self._hf_repo_type,
+            commit_message="Update .gitattributes to treat .avro files as LFS",
+        )
+
     def _checkout(self, path: str | Path, is_dir: bool = False) -> Path:
         """Get local path to a file or directory in the catalog.
 

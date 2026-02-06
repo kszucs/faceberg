@@ -99,3 +99,8 @@ python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+]
