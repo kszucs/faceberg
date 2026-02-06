@@ -35,6 +35,7 @@ dependencies = [
     "litestar>=2.0.0",  # REST API server
     "uvicorn[standard]>=0.27.0",  # For HTML landing page
     "uuid-utils>=0.9.0",  # For UUIDv7 support (Python <3.13)
+    "jinja2>=3.1.6",
 ]
 
 [project.optional-dependencies]
