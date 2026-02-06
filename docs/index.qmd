@@ -112,6 +112,44 @@ from pyiceberg.expressions import EqualTo
 df = table.scan(row_filter=EqualTo("split", "train")).to_pandas()
 ```
 
+## Query using Pandas
+
+Read tables directly into pandas DataFrames using `pd.read_iceberg()`.
+
+**Via REST catalog** (recommended for remote catalogs):
+
+```python
+import pandas as pd
+
+df = pd.read_iceberg(
+    table_identifier="stanfordnlp.imdb",
+    catalog_name="faceberg",
+    catalog_properties={
+        "type": "rest",
+        "uri": "https://user-mycatalog.hf.space",
+    },
+    columns=["text", "label"],
+    limit=10,
+)
+```
+
+**Via Faceberg catalog** (supports both local and remote):
+
+```python
+import pandas as pd
+
+df = pd.read_iceberg(
+    table_identifier="stanfordnlp.imdb",
+    catalog_name="faceberg",
+    catalog_properties={
+        "py-catalog-impl": "faceberg.catalog.RemoteCatalog",
+        "uri": "hf://spaces/user/mycatalog",
+    },
+    columns=["text", "label"],
+    limit=10,
+)
+```
+
 ## Catalog API
 
 The catalog object supports standard Iceberg operations:
