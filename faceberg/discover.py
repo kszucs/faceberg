@@ -69,9 +69,7 @@ def dataset_builder_from_parquet_export(
     """
     download_config = DownloadConfig(token=token)
     dataset_module = HubDatasetModuleFactoryWithParquetExport(
-        repo_id,
-        commit_hash=commit_hash,
-        download_config=download_config
+        repo_id, commit_hash=commit_hash, download_config=download_config
     ).get_module()
     builder_class = get_dataset_builder_class(dataset_module)
     data_files = dataset_module.builder_configs_parameters.builder_configs[0].data_files
@@ -80,7 +78,7 @@ def dataset_builder_from_parquet_export(
         config_name=config,
         info=dataset_module.dataset_infos.get(config),
         hash=revision_hash,
-        **dataset_module.builder_kwargs
+        **dataset_module.builder_kwargs,
     )
     return builder
 
@@ -162,15 +160,10 @@ def discover_dataset(
         # Try loading from parquet export instead
         try:
             builder = dataset_builder_from_parquet_export(
-                repo_id,
-                config=config,
-                commit_hash=builder.hash,
-                token=token
+                repo_id, config=config, commit_hash=builder.hash, token=token
             )
         except Exception as e:
-            raise ValueError(
-                f"Dataset {repo_id} is not a Parquet dataset."
-            ) from e
+            raise ValueError(f"Dataset {repo_id} is not a Parquet dataset.") from e
 
     revision = builder.hash
     features = builder.info.features
