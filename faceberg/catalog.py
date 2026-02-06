@@ -1094,7 +1094,7 @@ class BaseCatalog(Catalog):
 
         # Update existing table with new snapshot
         # Load table first to get old revision
-        progress(state="in_progress", percent=5, stage="Loading existing table")
+        progress(state="in_progress", percent=3, stage="Loading existing table")
         table = self.load_table(identifier)
 
         # Get old revision from table properties (required)
@@ -1109,7 +1109,7 @@ class BaseCatalog(Catalog):
         # Discover dataset at current revision
         # Note: The new discover_dataset() doesn't support since_revision filtering yet
         # So we discover all files and write_snapshot() will handle the diff
-        progress(state="in_progress", percent=0, stage="Discovering dataset")
+        progress(state="in_progress", percent=5, stage="Discovering dataset")
         dataset_info = discover_dataset(
             repo_id=table_entry.repo,
             config=table_entry.config,

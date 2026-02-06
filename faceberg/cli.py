@@ -3,12 +3,15 @@
 from pathlib import Path
 
 import click
+from huggingface_hub.utils import disable_progress_bars
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .catalog import RemoteCatalog, catalog
 from .config import Config
 from .pretty import progress_bars, progress_tree, tree
+
+disable_progress_bars()
 
 console = Console()
 
