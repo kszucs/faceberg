@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import List, Optional
 
-from datasets import Features, load_dataset_builder, StreamingDownloadManager
+from datasets import Features, StreamingDownloadManager, load_dataset_builder
 from huggingface_hub import HfApi
 
 
