@@ -21,7 +21,7 @@ export HF_TOKEN=your_huggingface_token
 faceberg user/mycatalog init
 
 # Add datasets
-faceberg user/mycatalog add stanfordnlp/imdb --config plain_text
+faceberg user/mycatalog add stanfordnlp/imdb
 faceberg user/mycatalog add openai/gsm8k --config main
 
 # Query with interactive DuckDB shell

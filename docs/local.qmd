@@ -49,7 +49,7 @@ The same CLI commands work for local catalogs:
 faceberg ./mycatalog init
 
 # Add datasets
-faceberg ./mycatalog add default.imdb stanfordnlp/imdb --config plain_text
+faceberg ./mycatalog add default.imdb stanfordnlp/imdb
 
 # List tables
 faceberg ./mycatalog list
