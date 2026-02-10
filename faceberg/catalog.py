@@ -453,6 +453,18 @@ class BaseCatalog(Catalog):
             staging.add("faceberg.yml")
             staging.add(identifier.path / ".gitkeep")
 
+    def namespace_exists(self, namespace: Union[str, Identifier]) -> bool:
+        """Check if a namespace exists.
+
+        Args:
+            namespace: Namespace identifier.
+
+        Returns:
+            bool: True if the namespace exists, False otherwise.
+        """
+        identifier = Identifier(namespace)
+        return identifier in self.config()
+
     def drop_namespace(self, namespace: Union[str, Identifier]) -> None:
         """Drop a namespace.
 
