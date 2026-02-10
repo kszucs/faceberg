@@ -1503,6 +1503,7 @@
                         URL.revokeObjectURL(worker_url);
 
                         const conn = await db.connect();
+                        await conn.query(`SET builtin_httpfs = false;`);
                         await conn.query(`INSTALL httpfs; LOAD httpfs;`);
                         await conn.query(`INSTALL iceberg; LOAD iceberg;`);
                         if (oauthResult) {
