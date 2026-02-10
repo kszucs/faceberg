@@ -1176,7 +1176,7 @@
             document.getElementById("signin").style.removeProperty("display");
             document.getElementById("signin").onclick = async function() {
                 // prompt=consent to re-trigger the consent screen instead of silently redirecting
-                window.location.href = (await oauthLoginUrl({scopes: window.huggingface.variables.OAUTH_SCOPES})) + "&prompt=consent";
+                window.location.href = (await oauthLoginUrl({scopes: "openid profile read-repos"})) + "&prompt=consent";
             }
         }
 
