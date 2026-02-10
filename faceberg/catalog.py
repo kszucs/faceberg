@@ -453,6 +453,18 @@ class BaseCatalog(Catalog):
             staging.add("faceberg.yml")
             staging.add(identifier.path / ".gitkeep")
 
+    def namespace_exists(self, namespace: Union[str, Identifier]) -> bool:
+        """Check if a namespace exists.
+
+        Args:
+            namespace: Namespace identifier.
+
+        Returns:
+            bool: True if the namespace exists, False otherwise.
+        """
+        identifier = Identifier(namespace)
+        return identifier in self.config()
+
     def drop_namespace(self, namespace: Union[str, Identifier]) -> None:
         """Drop a namespace.
 
@@ -911,7 +923,7 @@ class BaseCatalog(Catalog):
         self,
         identifier: Union[str, Identifier],
         repo: str,
-        config: str = "default",
+        config: Optional[str] = None,
         progress_callback: Optional[Callable] = None,
     ) -> Table:
         """Add a dataset to the catalog and create the Iceberg table.
@@ -979,7 +991,7 @@ class BaseCatalog(Catalog):
             "write.py-location-provider.impl": "faceberg.catalog.HfLocationProvider",
             "write.data.path": data_path,
             "hf.dataset.repo": repo,
-            "hf.dataset.config": config,
+            "hf.dataset.config": dataset_info.config,
             "hf.dataset.revision": dataset_info.revision,
             "hf.write.pattern": "{split}-{uuid}-iceberg.parquet",
             "hf.write.split": "train",

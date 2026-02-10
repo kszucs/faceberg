@@ -46,7 +46,7 @@ def main(ctx, uri, token):
 @main.command()
 @click.argument("dataset")
 @click.option("--table", "-t", help="Explicit table identifier (namespace.table)")
-@click.option("--config", "-c", default="default", help="Dataset config name")
+@click.option("--config", "-c", default=None, help="Dataset config name")
 @click.pass_context
 def add(ctx, dataset, table, config):
     """Add a table to the catalog.
@@ -90,7 +90,8 @@ def add(ctx, dataset, table, config):
     # Display summary
     console.print(f"\n[green]✓ Added {name} to catalog[/green]")
     console.print(f"  Dataset: {dataset}")
-    console.print(f"  Config: {config}")
+    if config:
+        console.print(f"  Config: {config}")
     console.print(f"  Location: {table.metadata_location}")
 
     # Display table schema

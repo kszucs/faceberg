@@ -108,6 +108,7 @@ def test_discover_dataset_basic():
     mock_builder.name = "parquet"
     mock_builder.hash = "abc123def456"
     mock_builder.info.features = Features({"text": Value("string")})
+    mock_builder.config.name = "plain_text"
     mock_builder.config.data_files = {
         "train": ["hf://datasets/squad@abc123def456/data/train-00000.parquet"],
     }

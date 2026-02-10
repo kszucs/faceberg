@@ -41,7 +41,7 @@ Add existing HuggingFace datasets to your catalog. The table name is inferred fr
 
 ```bash
 # Add datasets (table name inferred: org.repo)
-faceberg user/mycatalog add stanfordnlp/imdb --config plain_text
+faceberg user/mycatalog add stanfordnlp/imdb
 faceberg user/mycatalog add Salesforce/wikitext --config wikitext-2-v1
 faceberg user/mycatalog add openai/gsm8k --config main
 ```
@@ -49,7 +49,7 @@ faceberg user/mycatalog add openai/gsm8k --config main
 You can also specify an explicit table name:
 
 ```bash
-faceberg user/mycatalog add stanfordnlp/imdb --table default.movies --config plain_text
+faceberg user/mycatalog add stanfordnlp/imdb --table default.movies
 ```
 
 ## List Tables

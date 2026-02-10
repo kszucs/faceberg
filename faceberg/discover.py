@@ -130,7 +130,7 @@ class DatasetInfo:
 
 def discover_dataset(
     repo_id: str,
-    config: str,
+    config: Optional[str],
     token: Optional[str] = None,
     progress_callback: Optional[Callable] = None,
 ) -> DatasetInfo:
@@ -165,6 +165,7 @@ def discover_dataset(
         raise ValueError(
             f"Dataset {repo_id} config {config} not found or not accessible: {e}"
         ) from e
+    config = builder.config.name
     if builder.name != "parquet":
         # Try loading from parquet export instead
         try:

@@ -19,7 +19,7 @@ os.makedirs("mycatalog", exist_ok=True)
 from faceberg import catalog
 cat = catalog("mycatalog")
 cat.init()
-cat.add_dataset("default.imdb", "stanfordnlp/imdb", config="plain_text")
+cat.add_dataset("default.imdb", "stanfordnlp/imdb")
 ```
 
 Install DuckDB with Iceberg support:
