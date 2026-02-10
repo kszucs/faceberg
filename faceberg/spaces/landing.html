@@ -1506,6 +1506,7 @@
                         await conn.query(`INSTALL httpfs; LOAD httpfs;`);
                         await conn.query(`INSTALL iceberg; LOAD iceberg;`);
                         if (oauthResult) {
+                            console.log(`CREATE SECRET hf_token (TYPE huggingface, TOKEN '${oauthResult.accessToken}');`)
                             await conn.query(`CREATE SECRET hf_token (TYPE huggingface, TOKEN '${oauthResult.accessToken}');`)
                         }
 
