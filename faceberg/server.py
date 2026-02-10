@@ -195,6 +195,16 @@ def landing_page(state: State) -> Template:
                 }
             )
 
+    huggingface_env = "undefined"
+    if "OAUTH_CLIENT_ID" in os.environ:
+        huggingface_env = {}
+        huggingface_env["variables"] = {
+            "OAUTH_CLIENT_ID": os.environ["OAUTH_CLIENT_ID"],
+            "OAUTH_SCOPES": os.environ["OAUTH_SCOPES"],
+            "OPENID_PROVIDER_URL": os.environ["OPENID_PROVIDER_URL"],
+            "SPACE_CREATOR_USER_ID": os.environ["SPACE_CREATOR_USER_ID"],
+        }
+
     # Render template
     return Template(
         template_name="landing.html",
@@ -202,6 +212,7 @@ def landing_page(state: State) -> Template:
             "catalog_uri": catalog.uri,
             "namespaces": namespaces_data,
             "total_tables": sum(ns["table_count"] for ns in namespaces_data),
+            "huggingface_env": huggingface_env
         },
     )
 

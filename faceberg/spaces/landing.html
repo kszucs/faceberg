@@ -1153,6 +1153,7 @@
         let shellReady = false;
 
         // Auth
+        window.huggingface = {{ huggingface_env | safe }};
         console.log("huggingface env", window.huggingface);
         let oauthResult = localStorage.getItem("oauth");
         if (oauthResult) {
@@ -1172,11 +1173,11 @@
                 window.location.href = window.location.href.replace(/\?.*$/, '');
                 window.location.reload();
             }
-        } else if (window.location.host.endsWith(".hf.space") || window.location.host.startsWith("https://huggingface.co/")) {
+        } else if (window.huggingface) {
             document.getElementById("signin").style.removeProperty("display");
             document.getElementById("signin").onclick = async function() {
                 // prompt=consent to re-trigger the consent screen instead of silently redirecting
-                window.location.href = (await oauthLoginUrl({scopes: "openid profile read-repos"})) + "&prompt=consent";
+                window.location.href = (await oauthLoginUrl({scopes: window.huggingface.variables.OAUTH_SCOPES})) + "&prompt=consent";
             }
         }
 
