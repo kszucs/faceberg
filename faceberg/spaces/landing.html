@@ -1172,7 +1172,7 @@
                 window.location.href = window.location.href.replace(/\?.*$/, '');
                 window.location.reload();
             }
-        } else if (window.huggingface) {
+        } else if (window.location.host.endsWith(".hf.space") || window.location.host.startsWith("https://huggingface.co/")) {
             document.getElementById("signin").style.removeProperty("display");
             document.getElementById("signin").onclick = async function() {
                 // prompt=consent to re-trigger the consent screen instead of silently redirecting
