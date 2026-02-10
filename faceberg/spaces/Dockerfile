@@ -2,8 +2,8 @@ FROM python:3.13-slim
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-RUN apk update
-RUN apk add git
+RUN apt update
+RUN apt install -y git
 
 RUN uv pip install --system --no-cache git+https://github.com/kszucs/faceberg.git@oauth
 
