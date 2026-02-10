@@ -931,6 +931,14 @@
             document.documentElement.setAttribute('data-theme', savedTheme);
         })();
     </script>
+    <script src="https://unpkg.com/es-module-shims@1.7.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "@huggingface/hub": "https://cdn.jsdelivr.net/npm/@huggingface/hub@0.21.0/+esm"
+            }
+        }
+    </script>
 </head>
 <body>
     <!-- Header -->
@@ -1120,9 +1128,9 @@
                     DuckDB Shell
                 </div>
                 <div class="shell-hints">
-                    <span class="hint-badge">iceberg</span>
-                    <span class="hint-badge">httpfs</span>
                     <span>Type <code class="hint-badge">.help</code> for commands</span>
+                    <img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/sign-in-with-huggingface-sm-dark.svg" alt="Sign in with Hugging Face" style="cursor: pointer; display: none;" id="signin">
+                    <button id="signout" style="display: none">Sign out</button>
                 </div>
             </div>
             <div id="shell-container"></div>
@@ -1138,9 +1146,39 @@
     </div>
 
     <script type="module">
+        import { oauthLoginUrl, oauthHandleRedirectIfPresent } from "@huggingface/hub";
+
         // State
         let selectedTable = null;
         let shellReady = false;
+
+        // Auth
+        console.log("huggingface env", window.huggingface);
+        let oauthResult = localStorage.getItem("oauth");
+        if (oauthResult) {
+            try {
+                oauthResult = JSON.parse(oauthResult);
+            } catch {
+                oauthResult = null;
+            }
+        }
+        
+        oauthResult ||= await oauthHandleRedirectIfPresent();
+        if (oauthResult) {
+            localStorage.setItem("oauth", JSON.stringify(oauthResult));
+            document.getElementById("signout").style.removeProperty("display");
+            document.getElementById("signout").onclick = async function() {
+                localStorage.removeItem("oauth");
+                window.location.href = window.location.href.replace(/\?.*$/, '');
+                window.location.reload();
+            }
+        } else if (window.huggingface) {
+            document.getElementById("signin").style.removeProperty("display");
+            document.getElementById("signin").onclick = async function() {
+                // prompt=consent to re-trigger the consent screen instead of silently redirecting
+                window.location.href = (await oauthLoginUrl({scopes: window.huggingface.variables.OAUTH_SCOPES})) + "&prompt=consent";
+            }
+        }
 
         // Theme toggle
         window.toggleTheme = function() {
@@ -1466,6 +1504,9 @@
                         const conn = await db.connect();
                         await conn.query(`INSTALL httpfs; LOAD httpfs;`);
                         await conn.query(`INSTALL iceberg; LOAD iceberg;`);
+                        if (oauthResult) {
+                            await con.query(`CREATE SECRET hf_token (TYPE huggingface, TOKEN '${oauthResult.accessToken}');`)
+                        }
 
                         const catalogEndpoint = window.location.origin;
                         await conn.query(`

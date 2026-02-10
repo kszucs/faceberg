@@ -2,7 +2,7 @@ FROM python:3.13-slim
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-RUN uv pip install --system --no-cache faceberg
+RUN uv pip install --system --no-cache git+https://github.com/kszucs/faceberg.git@oauth
 
 EXPOSE 7860
 
