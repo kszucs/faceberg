@@ -1427,6 +1427,25 @@
             setTimeout(() => toast.classList.remove('show'), 2000);
         }
 
+        // Workaround for duckdb-wasm bug: bearer_token from CREATE SECRET is
+        // never converted to an Authorization header by the WASM HTTP client.
+        // See: https://github.com/duckdb/duckdb-wasm/issues/1967
+        const HF_TOKEN = '{{ hf_token or "" }}';
+        if (HF_TOKEN) {
+            const _xhrOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this._url = typeof url === 'string' ? url : url.toString();
+                return _xhrOpen.apply(this, arguments);
+            };
+            const _xhrSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function() {
+                if (this._url && (this._url.includes('huggingface.co') || this._url.includes('hf.co'))) {
+                    try { this.setRequestHeader('Authorization', 'Bearer ' + HF_TOKEN); } catch(e) {}
+                }
+                return _xhrSend.apply(this, arguments);
+            };
+        }
+
         // Initialize DuckDB Shell
         async function initializeShell() {
             const container = document.getElementById('shell-container');
@@ -1464,8 +1483,13 @@
                         URL.revokeObjectURL(worker_url);
 
                         const conn = await db.connect();
+                        await conn.query(`SET builtin_httpfs = false;`);
                         await conn.query(`INSTALL httpfs; LOAD httpfs;`);
                         await conn.query(`INSTALL iceberg; LOAD iceberg;`);
+
+                        if (HF_TOKEN) {
+                            await conn.query(`CREATE SECRET hf_secret (TYPE HUGGINGFACE, TOKEN '${HF_TOKEN}');`);
+                        }
 
                         const catalogEndpoint = window.location.origin;
                         await conn.query(`

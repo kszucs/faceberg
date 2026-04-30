@@ -202,6 +202,7 @@ def landing_page(state: State) -> Template:
             "catalog_uri": catalog.uri,
             "namespaces": namespaces_data,
             "total_tables": sum(ns["table_count"] for ns in namespaces_data),
+            "hf_token": state.get("hf_token", ""),
         },
     )
 
@@ -368,6 +369,7 @@ def create_app(
         {
             "catalog": catalog,
             "prefix": prefix.strip("/"),
+            "hf_token": hf_token,
         }
     )
 

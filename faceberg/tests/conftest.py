@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import uuid
 from contextlib import contextmanager
 
 import pytest
@@ -55,7 +56,25 @@ def remote_catalog():
         pass
 
 
-@pytest.fixture(params=["local", "remote"])
+@contextmanager
+def bucket_catalog():
+    hf_org = os.environ.get("FACEBERG_TEST_ORG")
+    hf_token = os.environ.get("FACEBERG_TEST_TOKEN")
+    if not (hf_org and hf_token):
+        pytest.skip("FACEBERG_TEST_ORG and FACEBERG_TEST_TOKEN environment variables must be set")
+
+    bucket_id = f"faceberg-test-{uuid.uuid4().hex[:8]}"
+    uri = f"hf://buckets/{hf_org}/{bucket_id}"
+    catalog = RemoteCatalog(name="bucket", uri=uri, hf_token=hf_token)
+
+    try:
+        catalog.init()
+        yield catalog
+    finally:
+        catalog.hf_api.delete_bucket(catalog.hf_repo, missing_ok=True)
+
+
+@pytest.fixture(params=["local", "remote", "bucket"])
 def catalog(request, tmp_path):
     """Parametrized empty catalog fixture for both local and remote catalogs.
 
@@ -82,6 +101,11 @@ def catalog(request, tmp_path):
         if not request.config.getoption("--hf-live"):
             pytest.skip("Live HF testing not enabled (use --hf-live)")
         with remote_catalog() as catalog:
+            yield catalog
+    elif request.param == "bucket":
+        if not request.config.getoption("--hf-live"):
+            pytest.skip("Live HF testing not enabled (use --hf-live)")
+        with bucket_catalog() as catalog:
             yield catalog
     else:
         raise ValueError(f"Unknown catalog type: {request.param}")

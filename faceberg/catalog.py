@@ -1341,6 +1341,8 @@ class RemoteCatalog(BaseCatalog):
             self._hf_repo_type = "space"
         elif repo_type == "datasets":
             self._hf_repo_type = "dataset"
+        elif repo_type == "buckets":
+            self._hf_repo_type = "bucket"
         else:
             raise ValueError(f"Unsupported repo_type in URI: {repo_type}")
 
@@ -1351,11 +1353,18 @@ class RemoteCatalog(BaseCatalog):
     def _init(self, config) -> None:
         """Initialize remote catalog storage.
 
-        Creates a new HuggingFace repository with an empty faceberg.yml.
+        Creates a new HuggingFace repository or bucket with an empty faceberg.yml.
 
         Raises:
-            ValueError: If repository already exists
+            ValueError: If repository/bucket already exists
         """
+        if self._hf_repo_type == "bucket":
+            self._hf_api.create_bucket(self._hf_repo, exist_ok=False)
+            with self._staging() as staging:
+                config.to_yaml(staging / "faceberg.yml")
+                staging.add("faceberg.yml")
+            return
+
         # Create the repository
         self._hf_api.create_repo(
             repo_id=self._hf_repo,
@@ -1385,11 +1394,29 @@ class RemoteCatalog(BaseCatalog):
     def _commit(self, staging_ctx) -> None:
         """Persist staged changes to HuggingFace Hub.
 
-        Uses staged changes to create atomic commit with all operations.
-        Files are automatically cached by HuggingFace Hub's download mechanism.
+        For buckets: uses batch_bucket_files() — no git semantics, no LFS.
+        For datasets/spaces: creates an atomic git commit.
 
         Must be called within _staging() context.
         """
+        if self._hf_repo_type == "bucket":
+            add = [
+                (op.path_or_fileobj, op.path_in_repo)
+                for op in staging_ctx.changes
+                if isinstance(op, CommitOperationAdd)
+            ]
+            delete = [
+                op.path_in_repo
+                for op in staging_ctx.changes
+                if isinstance(op, CommitOperationDelete)
+            ]
+            self._hf_api.batch_bucket_files(
+                self._hf_repo,
+                add=add or None,
+                delete=delete or None,
+            )
+            return
+
         # Create commit with all operations already stored in HF flavor in staging_ctx
         self._hf_api.create_commit(
             repo_id=self._hf_repo,
@@ -1421,8 +1448,8 @@ class RemoteCatalog(BaseCatalog):
     def _checkout(self, path: str | Path, is_dir: bool = False) -> Path:
         """Get local path to a file or directory in the catalog.
 
-        For files: downloads individual file using hf_hub_download.
-        For directories: downloads directory contents using snapshot_download with allow_patterns.
+        For buckets: downloads via download_bucket_files() to a fresh temp dir.
+        For datasets/spaces: uses hf_hub_download (file) or snapshot_download (dir).
 
         Args:
             path: Relative path within the catalog
@@ -1434,6 +1461,30 @@ class RemoteCatalog(BaseCatalog):
             FileNotFoundError: If file/directory doesn't exist
         """
         path = Path(path)
+
+        if self._hf_repo_type == "bucket":
+            tmp = Path(tempfile.mkdtemp(prefix="faceberg_bucket_"))
+            local_path = tmp / path
+            if is_dir:
+                items = [
+                    item
+                    for item in self._hf_api.list_bucket_tree(
+                        self._hf_repo, prefix=path.as_posix(), recursive=True
+                    )
+                    if item.type == "file"
+                ]
+                if items:
+                    self._hf_api.download_bucket_files(
+                        self._hf_repo,
+                        files=[(item, tmp / item.path) for item in items],
+                    )
+            else:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                self._hf_api.download_bucket_files(
+                    self._hf_repo,
+                    files=[(path.as_posix(), str(local_path))],
+                )
+            return local_path
 
         if is_dir:
             # download directory using snapshot_download
@@ -1478,7 +1529,8 @@ def catalog(
 
     Args:
         uri: Catalog URI
-            - HuggingFace Hub: "hf://{repo_type}/org/repo" (e.g., "hf://datasets/org/repo", "hf://spaces/org/repo")
+            - HuggingFace Bucket: "hf://buckets/org/name" (S3-like, no git history)
+            - HuggingFace Hub: "hf://datasets/org/repo" or "hf://spaces/org/repo"
             - HuggingFace Hub (shorthand): "org/repo" (defaults to spaces repo type)
             - Local file system: "/path/to/catalog" or "file:///path/to/catalog"
         hf_token: HuggingFace API token (optional for public repos)
